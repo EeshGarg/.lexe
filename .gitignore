@@ -1,0 +1,13 @@
+# Build directories (parallel agents use their own dirs)
+/build/
+/build-*/
+/out/
+
+# Editor / IDE
+.vs/
+.vscode/
+.idea/
+*.user
+
+# CMake user presets
+CMakeUserPresets.json
