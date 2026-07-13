@@ -1,0 +1,18 @@
+# Normalize line endings; this repo is developed on Windows but ships to Linux.
+* text=auto
+
+# Files that must always be LF for Linux consumers
+*.sh eol=lf
+*.desktop eol=lf
+*.xml eol=lf
+*.yml eol=lf
+
+# Windows batch files must be CRLF
+*.cmd eol=crlf
+*.bat eol=crlf
+
+# Vendored / binary
+third_party/** -text
+*.png binary
+*.lexe binary
+*.sig binary
