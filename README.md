@@ -16,4 +16,7 @@ The specification is drafted. The reference Lexe Runtime is implemented in moder
 
 ## License
 
-[Apache-2.0](LICENSE)
+Proprietary during the pre-release phase while the signing and trust
+infrastructure is established — see [LICENSE](LICENSE). The stated intent is to
+relicense under the GPL once that foundation is in place. Revisions published
+before this change remain under their original Apache-2.0 terms.
