@@ -12,7 +12,7 @@ A `.lexe` file is a self-describing application package or launcher. The Lexe Ru
 
 ## Status
 
-Pre-implementation. The specification is drafted; the Lexe 0.1 runtime is not yet built.
+The specification is drafted. The reference Lexe Runtime is implemented in modern C++; the specification itself is language-neutral, and compatible third-party runtimes may be implemented in any language.
 
 ## License
 

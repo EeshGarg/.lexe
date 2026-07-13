@@ -78,6 +78,12 @@ The runtime should be open source and auditable.
 
 The runtime itself should be available through normal distribution repositories, Flatpak, or an official bootstrap installer.
 
+### Reference Implementation
+
+The reference Lexe Runtime is implemented in modern C++.
+
+The `.lexe` specification itself is language-neutral, and compatible third-party runtimes may be implemented in any language.
+
 ---
 
 ## 2. `.lexe` Package
