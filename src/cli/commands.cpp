@@ -63,6 +63,8 @@ constexpr const char* kPackUsage =
     "usage: lexe pack <source-dir> --manifest <lexe.json> --key "
     "<keyfile.json> -o <out.lexe> [--icons <dir>] [--metadata <dir>]";
 constexpr const char* kIntegrateUsage = "usage: lexe integrate";
+constexpr const char* kSignUpdateUsage =
+    "usage: lexe sign-update <update.json> --key <keyfile.json>";
 
 // -------------------------------------------------------- argument parsing
 
@@ -317,8 +319,9 @@ int cmd_install(const std::vector<std::string>& args) {
         std::cout << "\n";
         if (!confirm("Install " + manifest.name + " " + manifest.version +
                      "?")) {
+            // Declining the prompt is a valid user choice, not an error.
             std::cerr << "installation cancelled\n";
-            return 1;
+            return 0;
         }
     }
 
@@ -425,8 +428,9 @@ int cmd_remove(const std::vector<std::string>& args) {
             purge ? "Remove " + id + " and delete its application data?"
                   : "Remove " + id + "?";
         if (!confirm(question)) {
+            // Declining the prompt is a valid user choice, not an error.
             std::cerr << "removal cancelled\n";
-            return 1;
+            return 0;
         }
     }
     Installer(paths).uninstall(id, purge);
@@ -741,6 +745,30 @@ int cmd_pack(const std::vector<std::string>& args) {
     return 0;
 }
 
+int cmd_sign_update(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {"--key"}, false, kSignUpdateUsage);
+    require_positionals(parsed, 1, kSignUpdateUsage);
+    const fs::path update_file(parsed.positionals[0]);
+    const fs::path keyfile(require_option(parsed, "--key", kSignUpdateUsage));
+
+    // Sign the EXACT bytes of update.json, matching what the updater verifies
+    // (FORMAT-0.1 §7 check 1: detached raw 64-byte Ed25519 over the stored
+    // update.json bytes). The document is signed as bytes, never re-serialized.
+    const std::vector<std::uint8_t> bytes = util::slurp(update_file);
+    const crypto::KeyPair key = crypto::read_keyfile(keyfile);
+    const crypto::Signature signature = crypto::sign(bytes, key);
+
+    const fs::path sig_file = update_file.string() + ".sig";
+    util::spit(sig_file,
+               std::vector<std::uint8_t>(signature.begin(), signature.end()));
+    std::cout << "Signed " << update_file.string() << "\n"
+              << "Signature: " << sig_file.string() << " (64 bytes, Ed25519)\n"
+              << "Public key: " << crypto::encode_public_key(key.public_key)
+              << "\n";
+    return 0;
+}
+
 int cmd_integrate(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(args, {}, {}, false, kIntegrateUsage);
     require_positionals(parsed, 0, kIntegrateUsage);
@@ -792,6 +820,9 @@ std::string usage_text() {
            "-o <out.lexe>\n"
            "       [--icons <dir>] [--metadata <dir>]      build a signed "
            "package\n"
+           "  sign-update <update.json> --key <keyfile.json>\n"
+           "                                               sign an update "
+           "manifest (writes <update.json>.sig)\n"
            "  integrate                                    register .lexe "
            "handling for the runtime\n"
            "  help                                         show this help\n";
@@ -820,6 +851,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "list") return cmd_list(rest);
     if (command == "keygen") return cmd_keygen(rest);
     if (command == "pack") return cmd_pack(rest);
+    if (command == "sign-update") return cmd_sign_update(rest);
     if (command == "integrate") return cmd_integrate(rest);
 
     throw UsageError("unknown command \"" + command + "\"\n" + usage_text());

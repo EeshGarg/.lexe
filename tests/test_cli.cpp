@@ -220,7 +220,8 @@ TEST_CASE("help prints the full command surface and exits 0") {
     CHECK(r.exit_code == 0);
     for (const char* command :
          {"install", "run", "update", "remove", "repair", "info", "verify",
-          "source set", "rollback", "list", "keygen", "pack", "integrate"}) {
+          "source set", "rollback", "list", "keygen", "pack", "sign-update",
+          "integrate"}) {
         CAPTURE(command);
         CHECK(contains(r.stdout_text, command));
     }
@@ -338,6 +339,63 @@ TEST_CASE("pack rejects bad invocations and mismatched signing keys") {
                    tree.manifest_file.string(), "--key", keyfile.string(),
                    "-o", out.string()})
               .exit_code == 1);
+}
+
+// --------------------------------------------------------------- sign-update
+
+TEST_CASE("sign-update produces a .sig that verifies over the exact bytes") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const fs::path keyfile = work.dir / "key.json";
+    REQUIRE(run_cli({"keygen", keyfile.string()}).exit_code == 0);
+    const crypto::KeyPair key = crypto::read_keyfile(keyfile);
+
+    // Arbitrary update-manifest bytes; sign-update signs bytes, not structure.
+    const fs::path update = work.dir / "update.json";
+    const std::string body =
+        "{ \"lexeVersion\":\"0.1\", \"id\":\"com.example.hello\" }\n";
+    util::spit(update, std::string_view(body));
+
+    const auto r = run_cli({"sign-update", update.string(), "--key",
+                            keyfile.string()});
+    CHECK(r.exit_code == 0);
+
+    // The detached signature is exactly 64 raw bytes (FORMAT-0.1 §7 / §4)...
+    const fs::path sig = fs::path(update.string() + ".sig");
+    REQUIRE(fs::exists(sig));
+    const std::vector<std::uint8_t> sig_bytes = util::slurp(sig);
+    REQUIRE(sig_bytes.size() == 64);
+
+    // ...and it verifies over the exact update.json bytes with the publisher
+    // key — i.e. exactly what updater.cpp check 1 will do.
+    crypto::Signature signature{};
+    std::copy(sig_bytes.begin(), sig_bytes.end(), signature.begin());
+    const std::vector<std::uint8_t> update_bytes = util::slurp(update);
+    CHECK(crypto::verify_signature(update_bytes, signature, key.public_key));
+
+    // A single flipped byte in the document must break verification.
+    std::vector<std::uint8_t> tampered = update_bytes;
+    tampered[0] ^= 0x01;
+    CHECK_FALSE(crypto::verify_signature(tampered, signature, key.public_key));
+}
+
+TEST_CASE("sign-update rejects bad invocations") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const fs::path keyfile = work.dir / "key.json";
+    REQUIRE(run_cli({"keygen", keyfile.string()}).exit_code == 0);
+    const fs::path update = work.dir / "update.json";
+    util::spit(update, std::string_view("{}"));
+
+    // Missing --key -> usage (2).
+    CHECK(run_cli({"sign-update", update.string()}).exit_code == 2);
+    // Missing document operand -> usage (2).
+    CHECK(run_cli({"sign-update", "--key", keyfile.string()}).exit_code == 2);
+    // Nonexistent document -> not-found (4), the CLI's convention for a
+    // missing input file (matches `info` on a missing file).
+    CHECK(run_cli({"sign-update", (work.dir / "nope.json").string(), "--key",
+                   keyfile.string()})
+              .exit_code == 4);
 }
 
 // ------------------------------------------------------------------ verify
@@ -494,14 +552,17 @@ TEST_CASE("install without --yes shows the SPEC primary screen and honors "
 
     REQUIRE(run_cli({"remove", kId, "--yes"}).exit_code == 0);
 
-    // Answer "n": cancelled, nothing installed, exit 1.
+    // Answer "n": cancelled, nothing installed. Declining is a valid choice,
+    // not a runtime error (exit 1 means "runtime error" in this CLI's
+    // taxonomy), so a clean decline exits 0.
     const auto no = run_cli_stdin({"install", pkg.string()}, "n\n", work.dir);
-    CHECK(no.exit_code == 1);
+    CHECK(no.exit_code == 0);
     CHECK_FALSE(Registry(Paths::detect()).is_installed(kId));
 
-    // EOF on stdin (no answer at all) also cancels.
+    // EOF on stdin (no answer at all) also cancels, and is likewise not an
+    // error.
     const auto eof = run_cli_stdin({"install", pkg.string()}, "", work.dir);
-    CHECK(eof.exit_code == 1);
+    CHECK(eof.exit_code == 0);
     CHECK_FALSE(Registry(Paths::detect()).is_installed(kId));
 }
 
@@ -661,9 +722,9 @@ TEST_CASE("remove honors the prompt, --yes, and --purge-data") {
     REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
     util::spit(data_file, std::string_view("precious save data\n"));
 
-    // Declined prompt: nothing happens, exit 1.
+    // Declined prompt: nothing happens; declining is not an error, so exit 0.
     const auto declined = run_cli_stdin({"remove", kId}, "n\n", work.dir);
-    CHECK(declined.exit_code == 1);
+    CHECK(declined.exit_code == 0);
     CHECK(registry.is_installed(kId));
 
     // Confirmed prompt: removed, but application data survives.
