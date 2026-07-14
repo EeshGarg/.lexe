@@ -65,6 +65,8 @@ constexpr const char* kPackUsage =
 constexpr const char* kIntegrateUsage = "usage: lexe integrate";
 constexpr const char* kSignUpdateUsage =
     "usage: lexe sign-update <update.json> --key <keyfile.json>";
+constexpr const char* kBuildUsage =
+    "usage: lexe build <project-dir> [-o <out.lexe>] [--key <keyfile.json>]";
 
 // -------------------------------------------------------- argument parsing
 
@@ -745,6 +747,127 @@ int cmd_pack(const std::vector<std::string>& args) {
     return 0;
 }
 
+int cmd_build(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {"-o", "--key"}, false, kBuildUsage);
+    require_positionals(parsed, 1, kBuildUsage);
+    const fs::path project(parsed.positionals[0]);
+
+    if (!fs::is_directory(project)) {
+        throw NotFoundError("no such project directory: " + project.string());
+    }
+    // A Lexe project folder is: lexe.json + payload/ (+ optional icons/,
+    // metadata/). "Drop your app files into payload/, describe them in
+    // lexe.json, then `lexe build`."
+    const fs::path manifest_file = project / "lexe.json";
+    const fs::path payload_dir = project / "payload";
+    if (!fs::is_regular_file(manifest_file)) {
+        throw Error("project is missing lexe.json: " + manifest_file.string() +
+                    "\n  a Lexe project folder holds lexe.json plus a payload/ "
+                    "directory");
+    }
+    if (!fs::is_directory(payload_dir)) {
+        throw Error("project is missing a payload/ directory: " +
+                    payload_dir.string() +
+                    "\n  put the application's files under payload/");
+    }
+
+    // Resolve the signing key: --key, else <project>/key.json, else generate
+    // one there. The signing key is the application's durable identity — every
+    // future update must be signed with it (FORMAT-0.1 §7.1).
+    fs::path keyfile;
+    bool generated_key = false;
+    const auto key_opt = parsed.options.find("--key");
+    if (key_opt != parsed.options.end()) {
+        keyfile = fs::path(key_opt->second);
+        if (!fs::is_regular_file(keyfile)) {
+            throw NotFoundError("no such key file: " + keyfile.string());
+        }
+    } else {
+        keyfile = project / "key.json";
+        if (!fs::exists(keyfile)) {
+            crypto::write_keyfile(keyfile, crypto::generate_keypair());
+            generated_key = true;
+        }
+    }
+    const crypto::KeyPair key = crypto::read_keyfile(keyfile);
+    const std::string pubkey = crypto::encode_public_key(key.public_key);
+
+    // Fill in publisher.publicKey when it is blank or the literal "AUTO": the
+    // manifest key must equal the signing key, and hand-copying a freshly
+    // generated key is exactly the friction a builder should remove.
+    ordered_json doc =
+        ordered_json::parse(util::slurp_text(manifest_file), nullptr, false);
+    bool injected_key = false;
+    if (doc.is_object()) {
+        std::string existing;
+        if (doc.contains("publisher") && doc["publisher"].is_object() &&
+            doc["publisher"].contains("publicKey") &&
+            doc["publisher"]["publicKey"].is_string()) {
+            existing = doc["publisher"]["publicKey"].get<std::string>();
+        }
+        if (existing.empty() || existing == "AUTO") {
+            doc["publisher"]["publicKey"] = pubkey;
+            util::spit(manifest_file, std::string_view(doc.dump(2) + "\n"));
+            injected_key = true;
+        }
+    }
+
+    // Validate the manifest (friendly early error) and confirm the publisher
+    // key matches the signing key — otherwise the package can never verify.
+    const Manifest manifest = Manifest::parse(util::slurp(manifest_file));
+    if (manifest.decoded_public_key() != key.public_key) {
+        throw Error(
+            "manifest publisher.publicKey (" + manifest.publisher_public_key +
+            ") does not match the signing key (" + pubkey +
+            "); set publicKey to \"AUTO\" (or remove it) to have `lexe build` "
+            "fill it in from --key");
+    }
+
+    fs::path out;
+    const auto out_opt = parsed.options.find("-o");
+    if (out_opt != parsed.options.end()) {
+        out = fs::path(out_opt->second);
+    } else {
+        std::string base = project.filename().string();
+        if (base.empty() || base == ".") base = manifest.id;
+        out = fs::path(base + ".lexe");
+    }
+
+    PackageWriter::Inputs inputs;
+    inputs.payload_dir = payload_dir;
+    inputs.manifest_file = manifest_file;
+    const fs::path icons = project / "icons";
+    if (fs::is_directory(icons)) inputs.icons_dir = icons;
+    const fs::path metadata = project / "metadata";
+    if (fs::is_directory(metadata)) inputs.metadata_dir = metadata;
+
+    PackageWriter::write(inputs, key, out);
+
+    // Verify what we just built (no architecture gate — a cross-arch build is
+    // legitimate) and report.
+    const VerificationReport report =
+        verify_package(out, /*check_architecture=*/false);
+
+    std::cout << "Built " << out.string() << " ("
+              << format_size(static_cast<std::uint64_t>(fs::file_size(out)))
+              << ")\n"
+              << "  application:   " << manifest.name << " "
+              << manifest.version << " (" << manifest.id << ")\n"
+              << "  publisher key: " << pubkey << "\n"
+              << "  verification:  " << (report.ok() ? "OK" : "FAILED") << "\n";
+    if (injected_key) {
+        std::cout << "  filled in publisher.publicKey in "
+                  << manifest_file.string() << "\n";
+    }
+    if (generated_key) {
+        std::cout << "  generated a signing key at " << keyfile.string()
+                  << " — keep it safe and out of version control; it is the "
+                     "identity of every future update\n";
+    }
+    return report.ok() ? 0 : 3;
+}
+
 int cmd_sign_update(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {}, {"--key"}, false, kSignUpdateUsage);
@@ -820,6 +943,9 @@ std::string usage_text() {
            "-o <out.lexe>\n"
            "       [--icons <dir>] [--metadata <dir>]      build a signed "
            "package\n"
+           "  build <project-dir> [-o <out.lexe>] [--key <keyfile.json>]\n"
+           "                                               build a .lexe from a "
+           "project folder (lexe.json + payload/)\n"
            "  sign-update <update.json> --key <keyfile.json>\n"
            "                                               sign an update "
            "manifest (writes <update.json>.sig)\n"
@@ -851,6 +977,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "list") return cmd_list(rest);
     if (command == "keygen") return cmd_keygen(rest);
     if (command == "pack") return cmd_pack(rest);
+    if (command == "build") return cmd_build(rest);
     if (command == "sign-update") return cmd_sign_update(rest);
     if (command == "integrate") return cmd_integrate(rest);
 

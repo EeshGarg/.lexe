@@ -220,8 +220,8 @@ TEST_CASE("help prints the full command surface and exits 0") {
     CHECK(r.exit_code == 0);
     for (const char* command :
          {"install", "run", "update", "remove", "repair", "info", "verify",
-          "source set", "rollback", "list", "keygen", "pack", "sign-update",
-          "integrate"}) {
+          "source set", "rollback", "list", "keygen", "pack", "build",
+          "sign-update", "integrate"}) {
         CAPTURE(command);
         CHECK(contains(r.stdout_text, command));
     }
@@ -339,6 +339,61 @@ TEST_CASE("pack rejects bad invocations and mismatched signing keys") {
                    tree.manifest_file.string(), "--key", keyfile.string(),
                    "-o", out.string()})
               .exit_code == 1);
+}
+
+// --------------------------------------------------------------------- build
+
+TEST_CASE("build turns a project folder into an installable .lexe") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+
+    // A Lexe project folder: lexe.json (publicKey "AUTO") + payload/.
+    const fs::path project = work.dir / "myapp";
+    fs::create_directories(project / "payload" / "bin");
+    util::spit(project / "payload" / "bin" / "app",
+               std::string_view("#!/bin/sh\necho hi\n"));
+    util::spit(
+        project / "lexe.json",
+        std::string_view(
+            "{\n  \"lexeVersion\": \"0.1\",\n  \"id\": \"com.example.built\",\n"
+            "  \"name\": \"Built\",\n  \"version\": \"1.0.0\",\n"
+            "  \"publisher\": { \"name\": \"Me\", \"publicKey\": \"AUTO\" },\n"
+            "  \"applicationType\": \"native\",\n"
+            "  \"architectures\": [\"x86_64\", \"aarch64\"],\n"
+            "  \"entrypoint\": { \"executable\": \"bin/app\" },\n"
+            "  \"install\": { \"scope\": \"user\", \"mode\": \"bundled\" }\n}\n"));
+
+    const fs::path out = work.dir / "built.lexe";
+    const auto r =
+        run_cli({"build", project.string(), "-o", out.string()});
+    CHECK(r.exit_code == 0);
+    REQUIRE(fs::exists(out));
+    // A key was generated in the project and the AUTO publicKey was filled in.
+    CHECK(fs::exists(project / "key.json"));
+    const json manifest = json::parse(util::slurp_text(project / "lexe.json"));
+    const std::string pubkey = manifest["publisher"]["publicKey"];
+    CHECK(pubkey.rfind("ed25519:", 0) == 0);
+
+    // The product verifies and installs.
+    CHECK(run_cli({"verify", out.string()}).exit_code == 0);
+    CHECK(run_cli({"install", out.string(), "--yes"}).exit_code == 0);
+    CHECK(Registry(Paths::detect()).is_installed("com.example.built"));
+
+    // Rebuilding with the now-existing key is deterministic.
+    const fs::path out2 = work.dir / "built2.lexe";
+    REQUIRE(run_cli({"build", project.string(), "-o", out2.string()})
+                .exit_code == 0);
+    CHECK(util::slurp(out) == util::slurp(out2));
+}
+
+TEST_CASE("build rejects a folder that is not a Lexe project") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    // Missing lexe.json / payload -> runtime error (1).
+    fs::create_directories(work.dir / "empty");
+    CHECK(run_cli({"build", (work.dir / "empty").string()}).exit_code == 1);
+    // Missing directory entirely -> not found (4).
+    CHECK(run_cli({"build", (work.dir / "nope").string()}).exit_code == 4);
 }
 
 // --------------------------------------------------------------- sign-update
