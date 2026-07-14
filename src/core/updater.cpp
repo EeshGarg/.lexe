@@ -20,6 +20,7 @@
 #include "core/crypto.hpp"
 #include "core/error.hpp"
 #include "core/http.hpp"
+#include "core/installer.hpp"
 #include "core/manifest.hpp"
 #include "core/package.hpp"
 #include "core/registry.hpp"
@@ -249,32 +250,27 @@ InstallResult Updater::apply(const std::string& id) {
     // ---- §7 check 7: strictly newer than what is installed ---------------
     require_strictly_newer(new_manifest.version, chk.installed_version, id);
 
-    // ---- install the new version beside the previous one (§9) ------------
-    // Previous version directories are retained for `lexe rollback` (§7).
-    const std::string new_version = new_manifest.version;
-    const fs::path version_dir = registry.version_dir(id, new_version);
-    // A stale directory can exist when this version was installed before and
-    // rolled back; re-extract it fresh from the verified package.
-    util::remove_recursive(version_dir);
-    const PackageReader reader(package_path);
-    reader.extract_payload(version_dir);
-
-    registry.set_current_version(id, new_version); // flip current
-    registry.write_manifest_bytes(id, reader.read_entry("lexe.json"));
-
-    InstallationRecord updated = record;
-    updated.version = new_version;
-    updated.source = chk.package_url; // where this version came from
-    updated.installed_at = util::now_utc_string();
-    // channel, update_url (user-approved source), publisher_key (pinned),
-    // created_files and lastRun are carried over unchanged.
-    registry.write_record(updated);
-
-    InstallResult result;
-    result.id = id;
-    result.version = new_version;
-    result.app_dir = registry.app_dir(id);
-    return result;
+    // ---- commit the new version via the CANONICAL install path (§9) ------
+    // The updater must NOT hand-roll the version commit. Doing so previously
+    // skipped the per-version meta store (apps/<id>/meta/<v>/), the active
+    // apps/<id>/hashes.json and the entrypoint exec bit that Installer::install
+    // writes — which made `lexe repair` mis-flag every updated app as corrupt
+    // (it compared the new payload against the pre-update digests) and left
+    // `lexe rollback` unable to restore an updated version. Delegating keeps
+    // ONE canonical version-commit implementation (HARDENING.md §A), so install
+    // and update can never drift again. Previous version directories are
+    // retained because install() only replaces versions/<new_version>, so
+    // `lexe rollback` still finds the prior version. install() re-runs the §6
+    // pipeline — cheap, and defense in depth over the §7 checks just done. It
+    // reads the existing record and preserves update_url (the user-approved
+    // source is never silently changed — SPEC "Update Ownership"), the pinned
+    // publisher key, created_files and lastRun, while refreshing version,
+    // source, channel and installed_at.
+    InstallOptions install_opts;
+    install_opts.source = chk.package_url; // where this version came from
+    install_opts.channel = record.channel; // preserve the installed channel
+    Installer installer(paths_);
+    return installer.install(package_path, install_opts);
 }
 
 void Updater::set_source(const std::string& id, const std::string& url) {

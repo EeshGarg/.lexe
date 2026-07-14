@@ -20,6 +20,7 @@
 
 #include "core/crypto.hpp"
 #include "core/error.hpp"
+#include "core/installer.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
 #include "core/registry.hpp"
@@ -268,6 +269,48 @@ TEST_CASE("previous version is retained and rollback works after update") {
     CHECK(fx.registry.current_version(fx.id) == "2.0.0");
     CHECK(lexe::util::slurp_text(fx.registry.version_dir(fx.id, "2.0.0") /
                                  "data.txt") == payload_marker(fx.id, "2.0.0"));
+}
+
+// Regression: apply() must commit the new version through the SAME canonical
+// path as install (HARDENING.md §A) — the per-version meta store, the active
+// hashes.json and the entrypoint exec bit. Before the fix, apply() hand-rolled
+// a partial commit, so `lexe repair` compared the new payload against the
+// PRE-update digests and falsely reported every updated app as corrupt.
+TEST_CASE("repair is healthy after an update (install/update commit parity)") {
+    UpdaterFixture fx;
+    // Install 1.0.0 through the REAL installer so its per-version meta store
+    // exists (install_baseline is a hand-laid shortcut that skips it; a real
+    // deployment always goes through Installer::install). The manifest's
+    // updates block points at fx.update_url, so the updater can find the
+    // update afterwards.
+    lexe::Installer installer(fx.paths);
+    installer.install(fx.build_package("1.0.0", fx.key), lexe::InstallOptions{});
+    REQUIRE(fx.registry.current_version(fx.id) == "1.0.0");
+
+    fx.publish_update("2.0.0", fx.key);
+    fx.updater.apply(fx.id);
+    REQUIRE(fx.registry.current_version(fx.id) == "2.0.0");
+
+    // The commit bookkeeping the updater used to skip now exists for 2.0.0.
+    const fs::path app_dir = fx.registry.app_dir(fx.id);
+    CHECK(fs::is_regular_file(app_dir / "meta" / "2.0.0" / "hashes.json"));
+    CHECK(fs::is_regular_file(app_dir / "meta" / "2.0.0" / "lexe.json"));
+    // The active hashes.json describes the NEW version (not the pre-update one).
+    CHECK(lexe::util::slurp(app_dir / "hashes.json") ==
+          lexe::util::slurp(app_dir / "meta" / "2.0.0" / "hashes.json"));
+
+    // Repair on a byte-perfect updated install reports healthy (was: exit-3
+    // false corruption).
+    const lexe::RepairReport report = installer.repair(fx.id);
+    CHECK(report.ok);
+    CHECK(report.corrupt_files.empty());
+
+    // And repair still works after rolling back to the updated-then-retained
+    // 1.0.0 (rollback restores its meta copies).
+    installer.rollback(fx.id);
+    REQUIRE(fx.registry.current_version(fx.id) == "1.0.0");
+    const lexe::RepairReport rolled = installer.repair(fx.id);
+    CHECK(rolled.ok);
 }
 
 TEST_CASE("tampered update.json signature is refused (check 1)") {
