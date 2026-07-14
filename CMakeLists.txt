@@ -112,4 +112,9 @@ endif()
 if(LEXE_GUI_ENABLED)
   add_executable(lexe-installer src/gui/main.cpp)
   target_link_libraries(lexe-installer PRIVATE lexe_core PkgConfig::GTK3)
+
+  # lexe-builder — GTK 3 developer app: point it at a project folder, fill in
+  # the manifest, generate/choose a signing key, and build a signed .lexe.
+  add_executable(lexe-builder src/gui/builder.cpp)
+  target_link_libraries(lexe-builder PRIVATE lexe_core PkgConfig::GTK3)
 endif()
