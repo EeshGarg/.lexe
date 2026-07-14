@@ -1,7 +1,9 @@
 // versioncmp — the "semver-lite" total order of FORMAT-0.1 §8. Split both
-// versions on '.'; compare component-wise (numerically when both components
-// are all ASCII digits, as byte strings otherwise); a version that is a
-// strict prefix (fewer components) is smaller.
+// versions on '.'; compare component-wise: numerically when both components are
+// all ASCII digits; otherwise a numeric component sorts before a non-numeric
+// one, and two non-numeric components compare as byte strings. A version that
+// is a strict prefix (fewer components) is smaller. The class partition in the
+// mixed case is what keeps the order total (see compare_component).
 
 #include "core/versioncmp.hpp"
 
@@ -34,10 +36,20 @@ int compare_numeric(std::string_view a, std::string_view b) {
 }
 
 int compare_component(std::string_view a, std::string_view b) {
-    if (all_ascii_digits(a) && all_ascii_digits(b)) {
+    const bool numeric_a = all_ascii_digits(a);
+    const bool numeric_b = all_ascii_digits(b);
+    if (numeric_a && numeric_b) {
         return compare_numeric(a, b);
     }
-    // char_traits<char>::compare orders like unsigned bytes (memcmp).
+    // Mixed classes: a numeric component sorts before a non-numeric one. This
+    // is what makes the order TOTAL — a raw byte compare here would contradict
+    // the numeric branch's leading-zero stripping (e.g. "1"=="01" numerically,
+    // yet byte-compare puts "1">"0a" while "01"<"0a", breaking transitivity and
+    // making version_less an invalid std::sort comparator → UB). FORMAT-0.1 §8.
+    if (numeric_a != numeric_b) {
+        return numeric_a ? -1 : 1;
+    }
+    // Both non-numeric: char_traits<char>::compare orders like unsigned bytes.
     return sign_of(a.compare(b));
 }
 
