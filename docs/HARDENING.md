@@ -77,9 +77,13 @@ The determinism test MUST assert byte-identity of repeated packs **and**
 structurally assert: zeroed timestamps, lexicographic entry order, forward-slash
 UTF-8 names (flag bit 11 handling pinned), fixed compression parameters, no
 directory entries, no extra fields, no archive comment, stable external
-attributes (permissions field pinned: 0644 files / 0755 for the manifest-declared
-entrypoint), no ZIP64 records for small archives. Two different source-tree
-enumeration orders (created shuffled) MUST still produce identical packages.
+attributes (Unix mode in the external-attrs high word: **0755** for files
+executable in the source tree, **0644** otherwise — the only two modes ever
+written; no special bits; see FORMAT §1), no ZIP64 records for small archives.
+Two different source-tree enumeration orders (created shuffled) MUST still
+produce identical packages. Multi-executable payloads (a helper binary beside
+the entrypoint) MUST install and run — the round-trip preserves each file's
+exec bit, not only the declared entrypoint's.
 
 ## E. Health Check + Automatic Rollback (minimal 0.1 semantics)
 

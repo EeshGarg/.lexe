@@ -468,6 +468,53 @@ TEST_CASE("round-trip: pack -> read -> extract payload -> identical tree") {
     }
 }
 
+TEST_CASE("payload executable bits round-trip through pack + extract "
+          "(FORMAT-0.1 §1/§D)") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const lexe::test::TestAppTree tree =
+        lexe::test::make_test_app_tree(home.path() / "tree");
+    // A helper executable beside the entrypoint, plus a plain data file.
+    const fs::path helper = tree.payload_dir / "bin" / "helper";
+    const fs::path data = tree.payload_dir / "bin" / "data.bin";
+    lexe::util::spit(helper, std::string_view("#!/bin/sh\necho hi\n"));
+    lexe::util::spit(data, std::string_view("not executable\n"));
+#ifndef _WIN32
+    std::error_code perm_ec;
+    fs::permissions(helper,
+                    fs::perms::owner_exec | fs::perms::group_exec |
+                        fs::perms::others_exec,
+                    fs::perm_options::add, perm_ec);
+#endif
+
+    lexe::PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    const fs::path pkg = home.path() / "app.lexe";
+    lexe::PackageWriter::write(inputs, key, pkg);
+
+    // Recording modes must not break §1 determinism.
+    const fs::path pkg2 = home.path() / "app2.lexe";
+    lexe::PackageWriter::write(inputs, key, pkg2);
+    CHECK(lexe::util::slurp(pkg) == lexe::util::slurp(pkg2));
+
+    const fs::path dest = home.path() / "extracted";
+    lexe::PackageReader(pkg).extract_payload(dest);
+
+#ifndef _WIN32
+    // On POSIX the exec bit is authoritative and must survive the round-trip:
+    // the helper (0755) is executable, the data file (0644) is not. Before the
+    // fix, PackageWriter stored ext_attr = 0 so no non-entrypoint file was ever
+    // executable after extraction (helper binaries failed with EACCES).
+    auto is_exec = [](const fs::path& p) {
+        return (fs::status(p).permissions() & fs::perms::owner_exec) !=
+               fs::perms::none;
+    };
+    CHECK(is_exec(dest / "bin" / "helper"));
+    CHECK_FALSE(is_exec(dest / "bin" / "data.bin"));
+#endif
+}
+
 TEST_CASE("reader is movable") {
     TempLexeHome home;
     const lexe::crypto::KeyPair key = lexe::test::make_keypair();

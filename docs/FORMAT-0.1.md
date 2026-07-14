@@ -17,6 +17,13 @@ Writers (i.e. `lexe pack`) MUST produce **deterministic** archives:
 * entry paths use forward slashes (`/`) and are UTF-8;
 * compression is DEFLATE at a fixed level (9), or STORE for entries smaller than
   64 bytes;
+* each central-directory record carries the entry's Unix permission mode in its
+  external attributes (high word), with "version made by" marked Unix: **0755**
+  for a file that is executable in the source tree, **0644** otherwise. Only
+  these two canonical modes are ever written — no umask leakage, and setuid,
+  setgid and sticky bits are never recorded. On filesystems without Unix
+  permission bits (e.g. Windows) every collected file is recorded as 0644, so
+  helper executables must be packed on a POSIX filesystem;
 * no ZIP64 unless the archive requires it; no encryption; no archive comment;
   no per-entry extra fields or comments beyond what the amalgamated miniz writer
   emits with the settings above.
@@ -188,10 +195,19 @@ The previous version directory is retained for `lexe rollback`.
 
 ## 8. Version Ordering ("semver-lite")
 
-Split both versions on `.`. Compare component-wise: if both components are all
-ASCII digits, compare numerically; otherwise compare as byte strings. A version
-that is a strict prefix (fewer components) is smaller. This is a total order and
-is the ONLY ordering the 0.1 runtime uses.
+Split both versions on `.`. Compare component-wise. For a pair of components:
+
+* if **both** are all ASCII digits, compare numerically (leading zeros ignored,
+  so `1` == `01`; arbitrary length, no integer overflow);
+* if exactly **one** is all ASCII digits, the numeric one sorts **before** the
+  non-numeric one (this class partition is what keeps the order total — a raw
+  byte compare here would contradict the leading-zero stripping above and break
+  transitivity);
+* if **neither** is all ASCII digits, compare as unsigned byte strings.
+
+A version that is a strict prefix (fewer components) is smaller. This is a total
+order and is the ONLY ordering the 0.1 runtime uses; `version_less` derived from
+it is a valid strict-weak-ordering comparator for `std::sort`.
 
 ## 9. Installed Layout
 

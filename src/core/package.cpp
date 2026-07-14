@@ -336,12 +336,23 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
 
 namespace {
 
+// FORMAT-0.1 §1/§D: entries record a normalized Unix mode in the ZIP external
+// attributes — 0755 for files executable in the source tree, 0644 otherwise.
+// Only these two canonical modes are ever recorded (no umask leakage, no
+// special bits), so packing stays deterministic.
+constexpr mz_uint32 kModeExec = 0755;
+constexpr mz_uint32 kModeData = 0644;
+
 struct WriteEntry {
     std::string path;
     std::vector<std::uint8_t> bytes;
+    mz_uint32 mode = kModeData; // generated entries default to 0644
 };
 
-/// Recursively collect regular files of `dir` as entries `prefix + relpath`.
+/// Recursively collect regular files of `dir` as entries `prefix + relpath`,
+/// recording each file's executability. On POSIX the owner-exec bit is
+/// authoritative; Windows has no Unix exec bit, so files pack as 0644 there
+/// (a package's helper executables must be produced on a POSIX filesystem).
 void collect_tree(const fs::path& dir, const std::string& prefix,
                   std::vector<WriteEntry>& out) {
     for (fs::recursive_directory_iterator it(dir), end; it != end; ++it) {
@@ -363,7 +374,70 @@ void collect_tree(const fs::path& dir, const std::string& prefix,
             throw Error("pack: invalid entry path '" + printable(entry_path) +
                         "': " + *problem);
         }
-        out.push_back({entry_path, util::slurp(it->path())});
+        mz_uint32 mode = kModeData;
+#ifndef _WIN32
+        std::error_code ec;
+        if ((it->status(ec).permissions() & fs::perms::owner_exec) !=
+            fs::perms::none) {
+            mode = kModeExec;
+        }
+#endif
+        out.push_back({entry_path, util::slurp(it->path()), mode});
+    }
+}
+
+/// Rewrite each central-directory record's external attributes to carry the
+/// entry's Unix mode (miniz's add-from-memory path hardcodes ext_attr = 0), and
+/// mark "version made by" as Unix so both PackageReader and `unzip` restore the
+/// modes. Operates on miniz's finalized output — the vendored library is not
+/// modified. Deterministic: the patched bytes are a pure function of the modes.
+void patch_central_directory_modes(std::vector<std::uint8_t>& zip,
+                                   const std::vector<WriteEntry>& entries) {
+    auto rd16 = [&](std::size_t o) -> mz_uint32 {
+        return static_cast<mz_uint32>(zip[o]) |
+               (static_cast<mz_uint32>(zip[o + 1]) << 8);
+    };
+    auto rd32 = [&](std::size_t o) -> mz_uint32 {
+        return static_cast<mz_uint32>(zip[o]) |
+               (static_cast<mz_uint32>(zip[o + 1]) << 8) |
+               (static_cast<mz_uint32>(zip[o + 2]) << 16) |
+               (static_cast<mz_uint32>(zip[o + 3]) << 24);
+    };
+    constexpr mz_uint32 kEocdSig = 0x06054b50u;
+    constexpr mz_uint32 kCdSig = 0x02014b50u;
+
+    if (zip.size() < 22) return;
+    // No ZIP comment is ever written, so the EOCD is the final 22 bytes; scan
+    // back defensively in case that ever changes.
+    std::size_t eocd = zip.size() - 22;
+    while (rd32(eocd) != kEocdSig) {
+        if (eocd == 0) return; // no EOCD found; leave the archive as miniz built it
+        --eocd;
+    }
+    const mz_uint32 count = rd16(eocd + 10);
+    std::size_t off = rd32(eocd + 16);
+
+    std::map<std::string, mz_uint32> modes;
+    for (const WriteEntry& e : entries) modes[e.path] = e.mode;
+
+    for (mz_uint32 i = 0; i < count; ++i) {
+        if (off + 46 > zip.size() || rd32(off) != kCdSig) return;
+        const mz_uint32 fnlen = rd16(off + 28);
+        const mz_uint32 extralen = rd16(off + 30);
+        const mz_uint32 commentlen = rd16(off + 32);
+        if (off + 46 + fnlen > zip.size()) return;
+        const std::string name(reinterpret_cast<const char*>(&zip[off + 46]),
+                               fnlen);
+        const auto found = modes.find(name);
+        if (found != modes.end()) {
+            const mz_uint32 ext = found->second << 16; // Unix mode in high word
+            zip[off + 38] = static_cast<std::uint8_t>(ext & 0xFF);
+            zip[off + 39] = static_cast<std::uint8_t>((ext >> 8) & 0xFF);
+            zip[off + 40] = static_cast<std::uint8_t>((ext >> 16) & 0xFF);
+            zip[off + 41] = static_cast<std::uint8_t>((ext >> 24) & 0xFF);
+            zip[off + 5] = 3; // "version made by" host = Unix (3)
+        }
+        off += 46u + fnlen + extralen + commentlen;
     }
 }
 
@@ -495,8 +569,14 @@ void PackageWriter::write(const Inputs& inputs, const crypto::KeyPair& key,
     if (!mz_zip_writer_finalize_heap_archive(&zip, &buf, &buf_size)) {
         throw Error("pack: cannot finalize archive");
     }
-    util::spit(out_lexe, static_cast<const std::uint8_t*>(buf), buf_size);
+    // Copy out of miniz's heap buffer, then stamp the Unix modes into the
+    // central directory (FORMAT-0.1 §1/§D) before writing to disk.
+    std::vector<std::uint8_t> archive(
+        static_cast<const std::uint8_t*>(buf),
+        static_cast<const std::uint8_t*>(buf) + buf_size);
     // guard's mz_zip_writer_end frees buf.
+    patch_central_directory_modes(archive, entries);
+    util::spit(out_lexe, archive);
 }
 
 } // namespace lexe
