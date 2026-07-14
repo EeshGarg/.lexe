@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lexe Installer
+Comment=Install Lexe application packages
+Exec=lexe-installer %f
+Icon=application-x-lexe
+Terminal=false
+NoDisplay=true
+MimeType=application/x-lexe;

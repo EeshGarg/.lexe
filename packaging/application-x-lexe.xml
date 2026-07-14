@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-lexe">
+    <comment>Lexe application package</comment>
+    <!-- A .lexe file is a signed ZIP archive; declaring the parent type lets
+         tools that understand ZIP fall back gracefully. -->
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.lexe"/>
+  </mime-type>
+</mime-info>

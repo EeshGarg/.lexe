@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lexe Builder
+Comment=Build a .lexe application package
+Exec=lexe-builder
+Icon=application-x-lexe
+Terminal=false
+Categories=Development;Utility;
