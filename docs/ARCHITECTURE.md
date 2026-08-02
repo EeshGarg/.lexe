@@ -56,6 +56,11 @@ compiled with `MINIZ_NO_TIME` (deterministic archives, FORMAT §1).
 | `updater.{hpp,cpp}` | fetch + verify `update.json` (+`.sig`), FORMAT §7 checks 1–7, download to cache, hand to installer as new version, retain previous; `check(id)` (dry) and `apply(id)`; `set_source(id, url)` |
 | `launcher.{hpp,cpp}` | `run(id, argv)` — resolve current version, take a shared launch lease (WS9 TOCTOU closure), validate entrypoint containment + hash integrity, launch THROUGH the isolation backend (WS7), record last-run/exit in installation.json, propagate exit code |
 | `versioncmp.{hpp,cpp}` | FORMAT §8 semver-lite total order |
+| `elf.{hpp,cpp}` | Defensive, bounds-checked ELF metadata reader (DX3, docs/DEPENDENCY_ENGINE.md): class/arch/type, interpreter, `DT_NEEDED`/`SONAME`/`RPATH`/`RUNPATH`, `DT_VERNEED` version needs. Never runs `ldd`; never over-reads |
+| `depengine.{hpp,cpp}` | Automatic dependency resolution (DX3): recursive graph from a root binary, deterministic soname resolution, typed classification (host-interface / bundle / forbidden / unresolved / language-runtime hook), hashing, cycles, glibc-version aggregation |
+| `runtime_profile.{hpp,cpp}` | Runtime-profile model (DX2, docs/RUNTIME_PROFILES.md): Core Portable / Forward Runtime / Native Capture + honest `assess_profile` (no silent portability claim) |
+| `compat.{hpp,cpp}` | Compatibility analysis (DX4): per-runtime verdicts (UshaOS/Fedora/Debian/Ubuntu glibc baselines) + explained warnings |
+| `buildreport.{hpp,cpp}` | Build/analysis summary (DX5): identity + deps + profile + compatibility + output, rendered to text and JSON. Shared by `lexe analyze` and the builder result screen |
 
 Dependency order (implementation waves): `crypto`/`manifest`/`package`/`versioncmp`
 → `verify`/`registry`/`desktop` → `installer`/`updater`/`launcher` → CLI/GUI.
