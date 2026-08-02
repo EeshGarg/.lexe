@@ -5,6 +5,8 @@
 #include "core/crypto.hpp"
 
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/util.hpp"
 
 #include <ed25519/ed25519.h>
@@ -256,9 +258,11 @@ KeyPair read_keyfile(const std::filesystem::path& file) {
         throw NotFoundError("read_keyfile: no such key file: " + file.string());
     }
     const std::string text = util::slurp_text(file);
+    // Strict parse (HARDENING.md §E): a key file carries signing-key material;
+    // reject duplicate keys (e.g. two "privateSeed") rather than pick one.
     const nlohmann::json j =
-        nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (j.is_discarded() || !j.is_object()) {
+        json_strict::parse(text, "key file", limits::kMaxKeyfileBytes);
+    if (!j.is_object()) {
         throw Error("read_keyfile: not a JSON object: " + file.string());
     }
     if (!j.contains("algorithm") || !j["algorithm"].is_string() ||

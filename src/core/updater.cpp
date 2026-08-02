@@ -21,6 +21,8 @@
 #include "core/error.hpp"
 #include "core/http.hpp"
 #include "core/installer.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/manifest.hpp"
 #include "core/package.hpp"
 #include "core/registry.hpp"
@@ -133,12 +135,16 @@ UpdateCheck Updater::check(const std::string& id) {
              "0.1 — reinstall manually to accept a new key");
     }
 
-    // Parse only after the signature verified (invariant #2).
+    // Parse only after the signature verified (invariant #2). Strict parse
+    // (HARDENING.md §E): reject duplicate keys in the signed update manifest.
     json manifest;
     try {
-        manifest = json::parse(update_bytes.begin(), update_bytes.end());
-    } catch (const json::exception& e) {
-        fail(std::string("update.json: not valid JSON: ") + e.what());
+        manifest = json_strict::parse(
+            std::string_view(reinterpret_cast<const char*>(update_bytes.data()),
+                             update_bytes.size()),
+            "update.json", limits::kMaxUpdateJsonBytes);
+    } catch (const Error& e) {
+        fail(e.what()); // json_strict already prefixes with "update.json: "
     }
     if (!manifest.is_object()) {
         fail("update.json: top level must be a JSON object");

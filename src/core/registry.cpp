@@ -11,6 +11,8 @@
 #include "core/registry.hpp"
 
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/util.hpp"
 
 #include <nlohmann/json.hpp>
@@ -107,11 +109,15 @@ std::string trim_whitespace(std::string text) {
 // ------------------------------------------------------- InstallationRecord
 
 InstallationRecord InstallationRecord::from_json(std::string_view json_text) {
+    // Strict parse (HARDENING.md §E): the record pins the publisher key and
+    // update source that drive update trust — a duplicate "publisherKey" must
+    // never be resolved by parser precedence.
     json j;
     try {
-        j = json::parse(json_text);
-    } catch (const json::exception& e) {
-        fail_record(std::string("not valid JSON: ") + e.what());
+        j = json_strict::parse(json_text, "installation record",
+                               limits::kMaxRecordBytes);
+    } catch (const Error& e) {
+        fail_record(e.what());
     }
     if (!j.is_object()) {
         fail_record("top level must be a JSON object");

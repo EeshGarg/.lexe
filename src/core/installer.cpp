@@ -19,6 +19,8 @@
 #include "core/crypto.hpp"
 #include "core/desktop.hpp"
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/package.hpp"
 #include "core/registry.hpp"
 #include "core/util.hpp"
@@ -91,9 +93,12 @@ struct PayloadHash {
 /// Payload entries of a stored hashes.json copy. Throws Error on malformed
 /// contents. Keys come back sorted (nlohmann object iteration order).
 std::vector<PayloadHash> load_payload_hashes(const fs::path& hashes_file) {
-    const nlohmann::json doc = nlohmann::json::parse(
-        util::slurp_text(hashes_file), nullptr, /*allow_exceptions=*/false);
-    if (doc.is_discarded() || !doc.is_object()) {
+    // Strict parse (HARDENING.md §E): the installed hashes.json is the source of
+    // truth for repair; reject duplicate keys rather than silently collapse.
+    const nlohmann::json doc = json_strict::parse(
+        util::slurp_text(hashes_file), "installed hashes.json",
+        limits::kMaxHashesBytes);
+    if (!doc.is_object()) {
         throw Error("recorded hashes are malformed: " + hashes_file.string());
     }
     const auto files = doc.find("files");

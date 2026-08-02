@@ -8,6 +8,8 @@
 #include "core/manifest.hpp"
 
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -129,8 +131,9 @@ bool is_ascii_alpha(char c) {
 /// FORMAT-0.1 §5: reverse-DNS — 2+ dot-separated segments of [a-zA-Z0-9-]+,
 /// at most 255 characters.
 void validate_id(const std::string& id) {
-    if (id.size() > 255) {
-        fail("\"id\" must be at most 255 characters");
+    if (id.size() > limits::kMaxIdBytes) {
+        fail("\"id\" must be at most " + std::to_string(limits::kMaxIdBytes) +
+             " characters");
     }
     std::size_t segment_count = 0;
     std::size_t segment_length = 0;
@@ -290,12 +293,12 @@ Manifest Manifest::parse(std::string_view json_text) {
         fail("UTF-8 BOM is not allowed");
     }
 
-    json root;
-    try {
-        root = json::parse(json_text); // validates UTF-8, throws on error
-    } catch (const json::exception& e) {
-        fail(std::string("invalid JSON: ") + e.what());
-    }
+    // Strict parse (HARDENING.md §E/§F): rejects duplicate keys, invalid UTF-8,
+    // and an over-budget document before the DOM is built. A duplicate
+    // "publicKey"/"entrypoint" could otherwise make the verifier and a reviewer
+    // read different values.
+    json root = json_strict::parse(json_text, "manifest",
+                                    limits::kMaxManifestBytes);
     if (!root.is_object()) {
         fail("top-level value must be a JSON object");
     }
@@ -314,14 +317,31 @@ Manifest Manifest::parse(std::string_view json_text) {
     validate_id(m.id);
 
     m.name = require_nonempty_string(root, "name", "name");
+    if (m.name.size() > limits::kMaxNameBytes) {
+        fail("\"name\" exceeds the " + std::to_string(limits::kMaxNameBytes) +
+             "-byte limit");
+    }
     m.version = require_nonempty_string(root, "version", "version");
+    if (m.version.size() > limits::kMaxVersionBytes) {
+        fail("\"version\" exceeds the " +
+             std::to_string(limits::kMaxVersionBytes) + "-byte limit");
+    }
 
     const json& publisher = require_object(root, "publisher", "publisher");
     m.publisher_name =
         require_nonempty_string(publisher, "name", "publisher.name");
-    // Presence + string-ness only; decoding is pipeline stage 3 (§6).
+    if (m.publisher_name.size() > limits::kMaxNameBytes) {
+        fail("\"publisher.name\" exceeds the " +
+             std::to_string(limits::kMaxNameBytes) + "-byte limit");
+    }
+    // Presence + string-ness only; decoding is pipeline stage 3 (§6). A giant
+    // key field is rejected here before it ever reaches the base64 decoder.
     m.publisher_public_key =
         require_nonempty_string(publisher, "publicKey", "publisher.publicKey");
+    if (m.publisher_public_key.size() > limits::kMaxKeyFieldBytes) {
+        fail("\"publisher.publicKey\" exceeds the " +
+             std::to_string(limits::kMaxKeyFieldBytes) + "-byte limit");
+    }
     m.publisher_website =
         optional_string(publisher, "website", "publisher.website", "");
 

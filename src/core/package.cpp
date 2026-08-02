@@ -7,6 +7,8 @@
 
 #include "core/package.hpp"
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/util.hpp"
 
 #include <ed25519/ed25519.h>
@@ -464,13 +466,16 @@ void PackageWriter::write(const Inputs& inputs, const crypto::KeyPair& key,
 
     // lexe.json — stored verbatim; the signature covers these exact bytes.
     // Full §5 validation is the manifest module's concern (the CLI runs it);
-    // here we only require well-formed JSON so a broken file cannot ship.
+    // here we require well-formed, duplicate-key-free JSON (HARDENING.md §E) so
+    // a manifest the reader would later reject cannot be shipped and signed.
     std::vector<std::uint8_t> manifest_bytes =
         util::slurp(inputs.manifest_file);
     {
-        const nlohmann::json parsed = nlohmann::json::parse(
-            manifest_bytes.begin(), manifest_bytes.end(), nullptr, false);
-        if (parsed.is_discarded() || !parsed.is_object()) {
+        const nlohmann::json parsed = json_strict::parse(
+            std::string_view(reinterpret_cast<const char*>(manifest_bytes.data()),
+                             manifest_bytes.size()),
+            "manifest", limits::kMaxManifestBytes);
+        if (!parsed.is_object()) {
             throw Error("pack: manifest is not a valid JSON object: " +
                         inputs.manifest_file.string());
         }

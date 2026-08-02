@@ -10,7 +10,9 @@
 #include "core/desktop.hpp"
 #include "core/error.hpp"
 #include "core/installer.hpp"
+#include "core/json_strict.hpp"
 #include "core/launcher.hpp"
+#include "core/limits.hpp"
 #include "core/manifest.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
@@ -796,8 +798,10 @@ int cmd_build(const std::vector<std::string>& args) {
     // Fill in publisher.publicKey when it is blank or the literal "AUTO": the
     // manifest key must equal the signing key, and hand-copying a freshly
     // generated key is exactly the friction a builder should remove.
-    ordered_json doc =
-        ordered_json::parse(util::slurp_text(manifest_file), nullptr, false);
+    // Strict parse (HARDENING.md §E): even on the authoring side, a manifest
+    // with duplicate keys must be rejected rather than silently rewritten.
+    ordered_json doc = json_strict::parse_ordered(
+        util::slurp_text(manifest_file), "manifest", limits::kMaxManifestBytes);
     bool injected_key = false;
     if (doc.is_object()) {
         std::string existing;

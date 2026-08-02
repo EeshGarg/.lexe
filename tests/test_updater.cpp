@@ -403,7 +403,18 @@ TEST_CASE("missing channel entry is refused (check 3)") {
     SUBCASE("update.json is not valid JSON (verified signature, bad body)") {
         fx.serve_update_json("this is { not json", fx.key);
         CHECK_THROWS_WITH_AS(fx.updater.check(fx.id),
-                             doctest::Contains("not valid JSON"),
+                             doctest::Contains("update.json"),
+                             lexe::VerificationError);
+    }
+
+    SUBCASE("update.json with a duplicate key is rejected (HARDENING §E)") {
+        // Correctly signed over its exact bytes, but a duplicate "id" — strict
+        // parsing must reject it AFTER the signature check, not let parser
+        // key-precedence pick a value.
+        fx.serve_update_json(
+            R"({"lexeVersion":"0.1","id":"a","id":"b","channels":{}})", fx.key);
+        CHECK_THROWS_WITH_AS(fx.updater.check(fx.id),
+                             doctest::Contains("duplicate object key"),
                              lexe::VerificationError);
     }
 

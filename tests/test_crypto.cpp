@@ -386,9 +386,18 @@ TEST_CASE("key file rejects missing and malformed inputs") {
         util::spit(f, std::string_view(content));
         CAPTURE(name);
         CHECK_THROWS_AS(crypto::read_keyfile(f), lexe::Error);
-        // ...but never as "not found": the file exists, it is malformed.
-        CHECK_THROWS_WITH_AS(crypto::read_keyfile(f),
-                             doctest::Contains("read_keyfile"), lexe::Error);
+        // ...but never as "not found": the file exists, it is malformed. Assert
+        // the error CATEGORY rather than message text (which varies between the
+        // strict-JSON parser and read_keyfile's own semantic checks).
+        try {
+            crypto::read_keyfile(f);
+            FAIL("expected read_keyfile to throw for: " << name);
+        } catch (const lexe::NotFoundError&) {
+            FAIL("malformed key file must not be reported as not-found: "
+                 << name);
+        } catch (const lexe::Error&) {
+            // expected
+        }
     };
 
     const crypto::KeyPair kp = crypto::generate_keypair();

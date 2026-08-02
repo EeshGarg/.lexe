@@ -14,6 +14,8 @@
 
 #include "core/crypto.hpp"
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/package.hpp"
 
 #include <nlohmann/json.hpp>
@@ -100,10 +102,21 @@ hash_problems(const PackageReader& reader,
     std::vector<std::string> problems;
     covered_count = 0;
 
-    const nlohmann::json doc = nlohmann::json::parse(
-        hashes_bytes.begin(), hashes_bytes.end(), nullptr,
-        /*allow_exceptions=*/false);
-    if (doc.is_discarded() || !doc.is_object()) {
+    // Strict parse (HARDENING.md §E): reject duplicate keys in the integrity
+    // index — a duplicate "files" or a repeated digest key must not be silently
+    // collapsed. A parse failure (duplicate/malformed/over-budget) is a stage-6
+    // failure, not an exception that escapes.
+    nlohmann::json doc;
+    try {
+        doc = json_strict::parse(
+            std::string_view(reinterpret_cast<const char*>(hashes_bytes.data()),
+                             hashes_bytes.size()),
+            "metadata/hashes.json", limits::kMaxHashesBytes);
+    } catch (const Error& e) {
+        problems.push_back(e.what());
+        return problems;
+    }
+    if (!doc.is_object()) {
         problems.push_back("metadata/hashes.json is not a JSON object");
         return problems;
     }
