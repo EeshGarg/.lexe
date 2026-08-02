@@ -47,6 +47,7 @@ groundwork — each distinguishes what is Implemented, Planned, and Future.
 | Document | Kind | What it covers |
 |---|---|---|
 | [TUX32.md](TUX32.md) | Placeholder | The future conforming-runtime baseline. |
+| [SDK.md](SDK.md) | Placeholder | The future SDK / sysroot for baseline-pinned, portable builds. |
 
 ## Conventions
 
