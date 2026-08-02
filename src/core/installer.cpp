@@ -163,6 +163,33 @@ void validate_staged_tree(const fs::path& version_dir,
     }
 }
 
+/// Health checks for a version directory (HARDENING.md §D): the manifest-
+/// declared entrypoint must exist inside the version root and be a regular file,
+/// and on POSIX it must be executable. Returns the list of problems found (empty
+/// = healthy). Package §6 verification does NOT check that the declared
+/// entrypoint is actually present in the payload — this does. It executes
+/// nothing: package-controlled content is never run to verify the package.
+std::vector<std::string> entrypoint_health_issues(const fs::path& version_dir,
+                                                  const Manifest& manifest) {
+    std::vector<std::string> issues;
+    const fs::path exe = version_dir / fs::path(manifest.entrypoint_executable);
+    std::error_code ec;
+    if (!fs::is_regular_file(exe, ec)) {
+        issues.push_back("declared entrypoint \"" +
+                         manifest.entrypoint_executable +
+                         "\" is missing from the payload");
+        return issues; // nothing more to check
+    }
+#ifndef _WIN32
+    const fs::perms perms = fs::status(exe, ec).permissions();
+    if (!ec && (perms & fs::perms::owner_exec) == fs::perms::none) {
+        issues.push_back("entrypoint \"" + manifest.entrypoint_executable +
+                         "\" is not executable");
+    }
+#endif
+    return issues;
+}
+
 /// Extract the package's flat `icons/<name>` entries into `dest` so
 /// desktop::integrate_app can copy them into the hicolor theme. Entry paths
 /// already passed the §2 rules in PackageReader.
@@ -303,9 +330,22 @@ InstallResult Installer::install(const fs::path& lexe_file,
         fault::maybe("after-staged");
 
         // (5) Staged validation: the extracted tree must match its own signed
-        // hashes before anything is promoted.
+        // hashes, and pass the health check (declared entrypoint present +
+        // executable), BEFORE anything is promoted. Because this gate runs
+        // before the `current` flip, an upgrade to a package that fails its
+        // health check NEVER replaces the working version — the previous
+        // known-good version simply stays active (HARDENING.md §D auto-rollback,
+        // achieved by never activating an unhealthy version).
         validate_staged_tree(txn.staging_version_dir(),
                              txn.staging_meta_dir() / "hashes.json");
+        {
+            const std::vector<std::string> issues =
+                entrypoint_health_issues(txn.staging_version_dir(), manifest);
+            if (!issues.empty()) {
+                throw VerificationError("post-install health check failed: " +
+                                        issues.front());
+            }
+        }
         txn.mark_verified();
 
         // (6) Atomic promotion of versions/<v> + meta/<v>.
@@ -458,6 +498,44 @@ void Installer::recover_all() {
             // One app's recovery failure must not block the others.
         }
     }
+}
+
+HealthReport Installer::check_health(const std::string& id) const {
+    const Registry registry(paths_);
+    const std::string current = registry.current_version(id); // NotFoundError
+    const fs::path app_dir = registry.app_dir(id);
+    const fs::path version_dir = registry.version_dir(id, current);
+    const Manifest manifest = registry.read_manifest(id); // NotFoundError
+
+    HealthReport report;
+    // Identity: the active manifest must describe THIS application.
+    if (manifest.id != id) {
+        report.issues.push_back("manifest id \"" + manifest.id +
+                                "\" does not match installed id \"" + id + "\"");
+    }
+    // Entrypoint present + executable.
+    for (std::string& issue : entrypoint_health_issues(version_dir, manifest)) {
+        report.issues.push_back(std::move(issue));
+    }
+    // Integrity: every recorded payload file present and matching its hash.
+    std::error_code ec;
+    fs::path hashes_file = meta_dir(app_dir, current) / "hashes.json";
+    if (!fs::is_regular_file(hashes_file, ec)) {
+        hashes_file = app_dir / "hashes.json";
+    }
+    if (fs::is_regular_file(hashes_file, ec)) {
+        const std::vector<PayloadHash> expected =
+            load_payload_hashes(hashes_file);
+        for (const PayloadHash& bad :
+             corrupt_payload_files(version_dir, expected)) {
+            report.issues.push_back("payload file missing or corrupt: " +
+                                    bad.key);
+        }
+    } else {
+        report.issues.push_back("no recorded hashes to verify against");
+    }
+    report.ok = report.issues.empty();
+    return report;
 }
 
 void Installer::uninstall(const std::string& id, bool purge_data) {

@@ -46,6 +46,13 @@ struct RepairReport {
     std::vector<std::string> corrupt_files;
 };
 
+/// Result of Installer::check_health (HARDENING.md §D). A structured result, not
+/// a free-form string: `ok` is true only when `issues` is empty.
+struct HealthReport {
+    bool ok = false;
+    std::vector<std::string> issues; // human-readable health problems
+};
+
 class Installer {
 public:
     explicit Installer(const Paths& paths);
@@ -73,6 +80,13 @@ public:
     /// verifying it (§6). Without a package, reports health only.
     RepairReport repair(const std::string& id,
                         const std::optional<std::filesystem::path>& package = std::nullopt);
+
+    /// Post-install health check of the active version (HARDENING.md §D):
+    /// re-parses the manifest and confirms identity, that the declared
+    /// entrypoint exists inside the committed version root and (on POSIX) is
+    /// executable, and that every recorded payload file is present and matches
+    /// its hash. Executes nothing. Throws NotFoundError when not installed.
+    HealthReport check_health(const std::string& id) const;
 
     /// Finish or roll back an interrupted install transaction for `id`
     /// (HARDENING.md §A/§C): a pre-promotion transaction is rolled back
