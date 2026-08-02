@@ -13,6 +13,7 @@
 
 #include <doctest/doctest.h>
 
+#include "elf_builder.hpp"
 #include "helpers.hpp"
 
 #include "core/crypto.hpp"
@@ -938,6 +939,47 @@ TEST_CASE("info and verify expose the signing-key fingerprint and trust state") 
     CHECK(ins.at("localTrust").at("state") == "known");
     CHECK(ins.at("localTrust").at("identityVerified") == false);
     CHECK(ins.at("localTrust").at("blocked") == false);
+}
+
+TEST_CASE("analyze reports dependency classification and compatibility") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+
+    // A payload: an app that needs a host lib, a bundled lib (present), a
+    // forbidden GPU interface, and an unresolved lib.
+    test::ElfSpec lib;
+    lib.soname = "libcustom.so.1";
+    test::write_elf(work.dir / "libcustom.so.1", lib);
+    test::ElfSpec app;
+    app.interp = "/lib64/ld-linux-x86-64.so.2";
+    app.needed = {"libc.so.6", "libcustom.so.1", "libGL.so.1", "libmystery.so.9"};
+    const fs::path root = work.dir / "app";
+    test::write_elf(root, app);
+
+    const auto human = run_cli({"analyze", root.string()});
+    CHECK(human.exit_code == 0);
+    CHECK(contains(human.stdout_text, "Dependencies:"));
+    CHECK(contains(human.stdout_text, "libcustom.so.1"));
+    CHECK(contains(human.stdout_text, "Compatibility:"));
+
+    const auto j = run_cli({"analyze", root.string(), "--json"});
+    CHECK(j.exit_code == 0);
+    const json doc = json::parse(j.stdout_text);
+    CHECK(doc.at("runtimeProfile") == "core-portable");
+    CHECK(doc.at("dependencySummary").at("forbidden") == 1);
+    CHECK(doc.at("dependencySummary").at("unresolved") == 1);
+    CHECK(doc.at("dependencySummary").at("hostInterface") == 1);
+
+    // --profile selects a profile; a bad profile is a usage error.
+    const auto nc =
+        run_cli({"analyze", root.string(), "--profile", "native-capture", "--json"});
+    CHECK(json::parse(nc.stdout_text).at("runtimeProfile") == "native-capture");
+    CHECK(run_cli({"analyze", root.string(), "--profile", "bogus"}).exit_code == 2);
+
+    // A non-ELF target is a clean error, not a crash.
+    const fs::path text = work.dir / "readme.txt";
+    util::spit(text, std::string_view("hello"));
+    CHECK(run_cli({"analyze", text.string()}).exit_code != 0);
 }
 
 } // TEST_SUITE("cli")

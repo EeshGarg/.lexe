@@ -6,8 +6,12 @@
 
 #include "commands.hpp"
 
+#include "core/buildreport.hpp"
+#include "core/compat.hpp"
 #include "core/crypto.hpp"
+#include "core/depengine.hpp"
 #include "core/desktop.hpp"
+#include "core/elf.hpp"
 #include "core/error.hpp"
 #include "core/installer.hpp"
 #include "core/isolation.hpp"
@@ -21,6 +25,7 @@
 #include "core/permissions.hpp"
 #include "core/presentation.hpp"
 #include "core/registry.hpp"
+#include "core/runtime_profile.hpp"
 #include "core/trust.hpp"
 #include "core/updater.hpp"
 #include "core/util.hpp"
@@ -63,6 +68,9 @@ constexpr const char* kRemoveUsage =
     "usage: lexe remove <id> [--remove-cache] [--purge-data] [--yes]";
 constexpr const char* kRepairUsage = "usage: lexe repair <id>";
 constexpr const char* kInfoUsage = "usage: lexe info <file.lexe | id> [--json]";
+constexpr const char* kAnalyzeUsage =
+    "usage: lexe analyze <binary | project-dir | payload-dir> [--json] "
+    "[--profile <core-portable|forward-runtime|native-capture>]";
 constexpr const char* kVerifyUsage = "usage: lexe verify <file.lexe> [--json]";
 constexpr const char* kSourceUsage = "usage: lexe source set <id> <url>";
 constexpr const char* kRollbackUsage = "usage: lexe rollback <id>";
@@ -582,6 +590,117 @@ int cmd_repair(const std::vector<std::string>& args) {
         " corrupt or missing file(s) that could not be repaired: " +
         join(report.corrupt_files, ", ") +
         " (reinstall from the original package to repair)");
+}
+
+// A directory plus every subdirectory under it (bounded), used as dependency
+// search paths so an app's own bundled libraries resolve first.
+std::vector<fs::path> gather_dirs(const fs::path& root) {
+    std::vector<fs::path> dirs{root};
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(root, ec);
+         it != fs::recursive_directory_iterator() && dirs.size() < 4096;
+         it.increment(ec)) {
+        if (it->is_directory(ec)) dirs.push_back(it->path());
+    }
+    return dirs;
+}
+
+// The likely main executable in a payload directory: a dynamically linked ELF
+// executable/PIE (has a program interpreter). Deterministic (first by path).
+fs::path find_main_executable(const fs::path& dir) {
+    std::error_code ec;
+    std::vector<fs::path> found;
+    for (auto it = fs::recursive_directory_iterator(dir, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const elf::ElfInfo info = elf::read(it->path());
+        if (info.is_elf && info.has_interpreter) found.push_back(it->path());
+    }
+    std::sort(found.begin(), found.end());
+    return found.empty() ? fs::path() : found.front();
+}
+
+int cmd_analyze(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json"}, {"--profile"}, false, kAnalyzeUsage);
+    require_positionals(parsed, 1, kAnalyzeUsage);
+    const fs::path target(parsed.positionals[0]);
+
+    RuntimeProfile profile = RuntimeProfile::CorePortable;
+    const auto pf = parsed.options.find("--profile");
+    if (pf != parsed.options.end()) {
+        profile = runtime_profile_from_string(pf->second); // UsageError on bad id
+    }
+
+    // Resolve the root binary, its search paths, and (for a project) identity.
+    fs::path root;
+    std::vector<fs::path> search;
+    std::string app_name, app_id, app_version;
+    std::vector<std::string> permissions;
+
+    std::error_code ec;
+    if (fs::is_regular_file(target, ec)) {
+        root = target;
+        if (target.has_parent_path()) search = gather_dirs(target.parent_path());
+    } else if (fs::is_directory(target, ec)) {
+        fs::path payload = target;
+        const fs::path manifest_file = target / "lexe.json";
+        if (fs::is_regular_file(manifest_file, ec) &&
+            fs::is_directory(target / "payload", ec)) {
+            payload = target / "payload";
+            try {
+                const Manifest m = Manifest::parse(util::slurp(manifest_file));
+                app_name = m.name;
+                app_id = m.id;
+                app_version = m.version;
+                permissions = m.permissions;
+                root = payload / fs::path(m.entrypoint_executable);
+            } catch (const Error&) {
+                // Fall back to auto-detection below.
+            }
+        }
+        search = gather_dirs(payload);
+        if (root.empty() || !fs::is_regular_file(root, ec)) {
+            root = find_main_executable(payload);
+        }
+        if (root.empty()) {
+            throw NotFoundError("no ELF executable found under " +
+                                payload.string() +
+                                " (point `lexe analyze` at a binary, a project "
+                                "folder, or a payload directory)");
+        }
+    } else {
+        throw NotFoundError("no such file or directory: " + target.string());
+    }
+
+    DependencyOptions opts;
+    opts.payload_search_paths = search;
+    DependencyReport deps = analyze_dependencies(root, opts);
+    if (!deps.root_info.is_elf) {
+        throw Error(root.string() +
+                    " is not an ELF binary; `lexe analyze` inspects native "
+                    "executables");
+    }
+
+    BuildReport report = assemble_report(std::move(deps), profile);
+    report.app_name = app_name;
+    report.app_id = app_id;
+    report.app_version = app_version;
+    report.permissions = permissions;
+
+    if (parsed.flags.count("--json") != 0) {
+        std::cout << build_report_json(report).dump(2) << "\n";
+    } else {
+        std::cout << render_build_report_text(report);
+        if (!report.profile_assessment.warnings.empty()) {
+            std::cout << "Profile notes (" << runtime_profile_info(profile).name
+                      << "):\n";
+            for (const std::string& w : report.profile_assessment.warnings) {
+                std::cout << "  ! " << w << "\n";
+            }
+        }
+    }
+    return 0; // analysis is informational; the report content conveys issues
 }
 
 int cmd_info(const std::vector<std::string>& args) {
@@ -1312,6 +1431,9 @@ std::string usage_text() {
            "installed files\n"
            "  info <file.lexe | id> [--json]               show package or "
            "application details\n"
+           "  analyze <binary | dir> [--json] [--profile <p>]\n"
+           "                                               inspect dependencies "
+           "and runtime compatibility\n"
            "  verify <file.lexe> [--json]                  run the "
            "verification pipeline\n"
            "  source set <id> <url>                        set the update "
@@ -1358,6 +1480,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "remove") return cmd_remove(rest);
     if (command == "repair") return cmd_repair(rest);
     if (command == "info") return cmd_info(rest);
+    if (command == "analyze") return cmd_analyze(rest);
     if (command == "verify") return cmd_verify(rest);
     if (command == "source") return cmd_source(rest);
     if (command == "rollback") return cmd_rollback(rest);
