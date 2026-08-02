@@ -19,6 +19,7 @@
 #include "core/manifest.hpp"
 #include "core/permissions.hpp"
 #include "core/registry.hpp"
+#include "core/trust.hpp"
 #include "core/util.hpp"
 
 #include <nlohmann/json.hpp>
@@ -51,6 +52,23 @@ int run_app(const Paths& paths, const std::string& id,
 
     // Throws NotFoundError when the app is not installed.
     InstallationRecord record = registry.read_record(id);
+
+    // Runtime-trust WS4: enforce LOCAL trust before doing anything else. A
+    // locally blocked App ID must not launch; a corrupt trust record, or one
+    // that binds a DIFFERENT key than the installed (pinned) key, fails closed.
+    // The launcher never falls through to executing a refused application.
+    {
+        crypto::PublicKey installed_key;
+        try {
+            installed_key = crypto::decode_public_key(record.publisher_key);
+        } catch (const Error&) {
+            throw LaunchError("launcher: installed publisher key for " + id +
+                              " is unreadable; refusing to launch");
+        }
+        const TrustEvaluation eval = TrustStore(paths).evaluate(
+            id, installed_key, SignatureState::Valid, std::nullopt);
+        eval.throw_if_rejected(); // no-op when allowed; BlockedKeyError / etc.
+    }
 
     // Active version (symlink or current.txt fallback, FORMAT-0.1 §9).
     // version_dir() re-validates the version string, so a tampered current

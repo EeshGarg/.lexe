@@ -9,6 +9,7 @@
 
 #include "core/error.hpp"
 #include "core/installer.hpp"
+#include "core/launcher.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
 #include "core/registry.hpp"
@@ -143,6 +144,74 @@ TEST_CASE("recovery completes trust persistence for a committed install, idempot
 
     Installer(paths).recover_all(); // idempotent
     CHECK(TrustStore(paths).read(kId).value().public_key == enc(key));
+}
+
+// ------------------------------------------------------- enforcement
+
+TEST_CASE("a locally blocked application refuses to launch, allowed once unblocked") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const crypto::KeyPair key = test::make_keypair();
+    Installer(paths).install(build_pkg(work, key, "1.0.0"));
+
+    TrustStore(paths).block(kId);
+    CHECK_THROWS_AS(run_app(paths, kId, {}), BlockedKeyError);
+
+    // Blocking must not kill or damage the install — only refuse the launch.
+    CHECK(Registry(paths).is_installed(kId));
+
+    TrustStore(paths).unblock(kId);
+    CHECK(run_app(paths, kId, {}) == 0); // launches normally again
+}
+
+TEST_CASE("a corrupt trust record fails the launch closed") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const crypto::KeyPair key = test::make_keypair();
+    Installer(paths).install(build_pkg(work, key, "1.0.0"));
+
+    util::spit(Registry(paths).trust_record_file(kId),
+               std::string_view("{ corrupt"));
+    CHECK_THROWS_AS(run_app(paths, kId, {}), CorruptTrustError);
+}
+
+TEST_CASE("rollback cannot reactivate a locally blocked application") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const crypto::KeyPair key = test::make_keypair();
+    Installer inst(paths);
+    inst.install(build_pkg(work, key, "1.0.0"));
+    inst.install(build_pkg(work, key, "2.0.0"));
+
+    TrustStore(paths).block(kId);
+    CHECK_THROWS_AS(inst.rollback(kId), BlockedKeyError);
+    CHECK(Registry(paths).current_version(kId) == "2.0.0"); // unchanged
+}
+
+TEST_CASE("uninstall and purge preserve local trust history") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const crypto::KeyPair key = test::make_keypair();
+
+    Installer(paths).install(build_pkg(work, key, "1.0.0"));
+    REQUIRE(TrustStore(paths).exists(kId));
+
+    // Ordinary uninstall keeps trust.
+    Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly);
+    CHECK(TrustStore(paths).exists(kId));
+
+    // Purge removes data but still keeps trust history (WS4).
+    Installer(paths).install(build_pkg(work, key, "1.0.0"));
+    Installer(paths).uninstall(kId, Installer::UninstallMode::PurgeData);
+    CHECK(TrustStore(paths).exists(kId));
 }
 
 } // TEST_SUITE("trust-lifecycle")

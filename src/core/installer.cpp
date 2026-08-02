@@ -721,6 +721,19 @@ void Installer::rollback(const std::string& id) {
         locks_->lock_app_mutation(id, "rollback", mutation_wait_);
     const Registry registry(paths_);
     InstallationRecord record = registry.read_record(id); // NotFoundError
+
+    // Runtime-trust WS4: rollback cannot reactivate a locally blocked App ID,
+    // and it fails closed on a corrupt trust record. Every retained version of
+    // an app shares the pinned publisher key (install enforces key continuity),
+    // so any rollback target is signed by the bound key by construction.
+    {
+        const std::optional<TrustRecord> rec = TrustStore(paths_).read(id);
+        if (rec.has_value() && rec->blocked) {
+            throw BlockedKeyError("refusing to roll back " + id +
+                                  ": it is locally blocked");
+        }
+    }
+
     const std::string current = registry.current_version(id);
 
     // The newest retained version strictly older than current, under the
