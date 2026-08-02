@@ -12,6 +12,7 @@
 
 #include <doctest/doctest.h>
 
+#include "elf_builder.hpp"
 #include "helpers.hpp"
 
 #include "core/manifest.hpp"
@@ -204,6 +205,95 @@ TEST_CASE("is_reverse_dns_id matches the FORMAT-0.1 §5 shape") {
     CHECK_FALSE(lexe::gui::is_reverse_dns_id("com.example."));
     CHECK_FALSE(lexe::gui::is_reverse_dns_id("com..example"));
     CHECK_FALSE(lexe::gui::is_reverse_dns_id("com.exa_mple"));
+}
+
+// ------------------------------------------------------- Phase 2 wizard model
+
+TEST_CASE("wizard_steps lists the seven-step default workflow in order") {
+    const auto& steps = lexe::gui::wizard_steps();
+    REQUIRE(steps.size() == 7);
+    CHECK(steps.front().step == lexe::gui::WizardStep::Source);
+    CHECK(steps[1].step == lexe::gui::WizardStep::Dependencies);
+    CHECK(steps.back().step == lexe::gui::WizardStep::Build);
+    CHECK(steps[3].title == "Installer"); // metadata step
+}
+
+TEST_CASE("detect_source finds the main executable, arch and dependencies") {
+    TempLexeHome home;
+    const fs::path folder = home.path() / "src";
+    fs::create_directories(folder / "bin");
+
+    // A bundled library and a main executable that needs it + host + missing.
+    lexe::test::ElfSpec lib;
+    lib.soname = "libhelper.so.1";
+    lexe::test::write_elf(folder / "libhelper.so.1", lib);
+
+    lexe::test::ElfSpec app;
+    app.interp = "/lib64/ld-linux-x86-64.so.2";
+    app.needed = {"libc.so.6", "libhelper.so.1", "libmissing.so.9"};
+    lexe::test::write_elf(folder / "bin" / "app", app);
+    // A plain data file too (not an executable).
+    lexe::util::spit(folder / "data.txt", std::string_view("hello"));
+
+    const lexe::gui::SourceDetection d = lexe::gui::detect_source(folder);
+    CHECK(d.ok);
+    CHECK(d.main_executable == "bin/app");
+    CHECK(d.detected_arch == "x86_64");
+    CHECK(contains(d.executable_type, "x86_64"));
+    CHECK(d.payload_size > 0);
+    CHECK(d.dependencies.count(lexe::DependencyKind::HostInterface) == 1);
+    CHECK(d.dependencies.count(lexe::DependencyKind::Bundle) == 1);
+    CHECK(d.dependencies.count(lexe::DependencyKind::Unresolved) == 1);
+    CHECK(contains(d.summary, "dependency"));
+    // Every file is offered as a candidate entrypoint.
+    CHECK(std::find(d.entrypoints.begin(), d.entrypoints.end(), "bin/app") !=
+          d.entrypoints.end());
+}
+
+TEST_CASE("detect_source reports no native executable for a script-only folder") {
+    TempLexeHome home;
+    const fs::path folder = home.path() / "scripts";
+    fs::create_directories(folder);
+    lexe::util::spit(folder / "run.sh", std::string_view("#!/bin/sh\necho hi\n"));
+
+    const lexe::gui::SourceDetection d = lexe::gui::detect_source(folder);
+    CHECK_FALSE(d.ok);
+    CHECK(contains(d.summary, "No native executable"));
+    CHECK(std::find(d.entrypoints.begin(), d.entrypoints.end(), "run.sh") !=
+          d.entrypoints.end()); // still offered for manual selection
+}
+
+TEST_CASE("dependency_rows flags forbidden and unresolved dependencies") {
+    lexe::DependencyReport r;
+    lexe::Dependency host;
+    host.soname = "libc.so.6";
+    host.kind = lexe::DependencyKind::HostInterface;
+    lexe::Dependency gpu;
+    gpu.soname = "libGL.so.1";
+    gpu.kind = lexe::DependencyKind::Forbidden;
+    r.dependencies = {host, gpu};
+
+    const auto rows = lexe::gui::dependency_rows(r);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].handling == "host-interface");
+    CHECK_FALSE(rows[0].warn);
+    CHECK(rows[1].handling == "forbidden");
+    CHECK(rows[1].warn);
+}
+
+TEST_CASE("build_manifest_json emits categories, estimatedSize and description") {
+    TempLexeHome home;
+    BuilderForm form = valid_form();
+    form.categories = {"Utility", "Development"};
+    form.description = "A tidy little tool.";
+    form.payload_size_bytes = 125829120;
+
+    const std::string json = lexe::gui::build_manifest_json(form, kZeroKey);
+    const Manifest m = Manifest::parse(json); // still a valid 0.1 manifest
+    CHECK(m.install_estimated_size == 125829120);
+    CHECK(m.categories == std::vector<std::string>{"Utility", "Development"});
+    // description is forward-compatible metadata carried in the JSON.
+    CHECK(contains(json, "A tidy little tool."));
 }
 
 } // TEST_SUITE("builder")
