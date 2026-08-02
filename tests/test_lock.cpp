@@ -11,6 +11,7 @@
 #include "core/installer.hpp"
 #include "core/lock.hpp"
 #include "core/paths.hpp"
+#include "core/registry.hpp"
 
 #include <chrono>
 #include <memory>
@@ -199,6 +200,33 @@ TEST_CASE("installer: uninstall and rollback are gated by the app lock") {
     CHECK_THROWS_AS(installer.uninstall(kAppA), BusyError);
     CHECK_THROWS_AS(installer.rollback(kAppA), BusyError);
     CHECK_THROWS_AS(installer.repair(kAppA), BusyError);
+}
+
+TEST_CASE("installer: uninstall refuses while a version is leased (running)") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const crypto::KeyPair key = test::make_keypair();
+
+    auto locks = std::make_shared<test::FakeLockManager>();
+    Installer installer(paths, locks);
+    installer.set_mutation_wait(WaitPolicy::none());
+    installer.install(make_pkg(work, key, kAppA));
+
+    // A launch is running: it holds a SHARED lease on the active version.
+    LaunchLease running =
+        locks->acquire_launch_lease(kAppA, "1.0.0", WaitPolicy::none());
+
+    // Uninstall must not delete files out from under it — it refuses (busy),
+    // rather than silently killing the running app.
+    CHECK_THROWS_AS(installer.uninstall(kAppA), BusyError);
+    CHECK(Registry(paths).is_installed(kAppA)); // still fully installed
+
+    // When the launch ends and the lease drops, uninstall succeeds.
+    running.release();
+    CHECK_NOTHROW(installer.uninstall(kAppA));
+    CHECK_FALSE(Registry(paths).is_installed(kAppA));
 }
 
 } // TEST_SUITE("lock")

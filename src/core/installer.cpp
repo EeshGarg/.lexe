@@ -641,6 +641,24 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     const Registry registry(paths_);
     const InstallationRecord record = registry.read_record(id); // NotFoundError
 
+    // Runtime-trust WS9: never delete the binaries of an app that is currently
+    // running. A launch holds a SHARED lease on its version; probe every
+    // installed version with a non-blocking EXCLUSIVE gc-lock. If any is leased,
+    // a live process is using it — refuse with BusyError (the documented
+    // policy) rather than silently pull files out from under it. Holding the
+    // exclusive locks across the removal also prevents a launch from STARTING
+    // mid-uninstall (its shared lease would block on our exclusive hold).
+    std::vector<LaunchLease> version_locks;
+    for (const std::string& v : registry.installed_versions(id)) {
+        std::optional<LaunchLease> vlock = locks_->try_lock_version_for_gc(id, v);
+        if (!vlock.has_value()) {
+            throw BusyError("cannot remove " + id +
+                            ": it is currently running (version " + v +
+                            " is in use); close it and try again");
+        }
+        version_locks.push_back(std::move(*vlock));
+    }
+
     // Application binaries + integration are removed in EVERY mode.
     // Desktop-side removal first (refreshes the databases on Linux) …
     desktop::remove_integration(paths_, record.created_files);

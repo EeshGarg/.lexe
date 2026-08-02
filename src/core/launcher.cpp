@@ -15,6 +15,7 @@
 #include "core/isolation.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
+#include "core/lock.hpp"
 #include "core/manifest.hpp"
 #include "core/permissions.hpp"
 #include "core/registry.hpp"
@@ -57,7 +58,23 @@ int run_app(const Paths& paths, const std::string& id,
     const std::string version = registry.current_version(id);
     const fs::path version_dir = registry.version_dir(id, version);
 
+    // Runtime-trust WS9 — TOCTOU closure around the launch. The version we just
+    // resolved is the ACTIVE one, so a conservative GC will not remove it; we
+    // now take a SHARED launch lease on THIS (id, version) and hold it for the
+    // entire run. From here on every check and the exec use the IMMUTABLE
+    // versions/<version> path — `current` is never re-read — so a concurrent
+    // update that flips `current` cannot make us run a torn mix, and the lease
+    // keeps the version's files on disk even after it is superseded (an upgrade
+    // while the old version is running does not GC it). The lock fd is
+    // O_CLOEXEC, so the sandboxed child never inherits or observes it.
+    const std::unique_ptr<OperationLockManager> locks = make_lock_manager(paths);
+    const LaunchLease lease = locks->acquire_launch_lease(
+        id, version, WaitPolicy::bounded(std::chrono::seconds(5)));
+
     std::error_code ec;
+    // Revalidate AFTER leasing: if a concurrent remove/GC won the tiny race
+    // between resolving the version and leasing it, fail closed rather than
+    // execute a half-removed version.
     if (!fs::is_directory(version_dir, ec)) {
         throw Error("launcher: current version directory of " + id +
                     " is missing: " + version_dir.string());
