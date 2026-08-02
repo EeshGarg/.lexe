@@ -13,6 +13,7 @@
 #include "core/paths.hpp"
 #include "core/registry.hpp"
 #include "core/transaction.hpp"
+#include "core/trust.hpp"
 #include "core/util.hpp"
 
 #include <memory>
@@ -188,15 +189,22 @@ TEST_CASE("retained data: a different publisher key may not inherit it") {
     Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly);
     REQUIRE(registry.has_retained_data(kId));
 
-    // A DIFFERENT publisher claiming the same id must be refused — it must not
-    // silently inherit A's retained data.
-    {
-        test::TestAppSpec spec;
-        spec.id = kId;
-        const fs::path pkg_b = test::make_test_package(work.dir, key_b, spec);
-        CHECK_THROWS_AS(Installer(paths).install(pkg_b), RetainedDataConflict);
-    }
-    // A's data is still present and unmodified: the refusal changed nothing.
+    test::TestAppSpec spec;
+    spec.id = kId;
+    const fs::path pkg_b = test::make_test_package(work.dir, key_b, spec);
+
+    // App-only uninstall preserves the LOCAL TRUST record (bound to key A), so a
+    // different key is refused as a changed key (runtime-trust WS4) — the
+    // strongest form of "must not silently inherit".
+    CHECK_THROWS_AS(Installer(paths).install(pkg_b), ChangedKeyError);
+    CHECK(util::slurp_text(registry.app_data_dir(kId) / "profile.db") ==
+          "A's data");
+
+    // If the local trust is DELIBERATELY forgotten but data still remains, a
+    // different key is refused as a retained-data conflict instead — it still
+    // never inherits A's data.
+    TrustStore(paths).forget(kId);
+    CHECK_THROWS_AS(Installer(paths).install(pkg_b), RetainedDataConflict);
     CHECK(util::slurp_text(registry.app_data_dir(kId) / "profile.db") ==
           "A's data");
 
@@ -206,7 +214,7 @@ TEST_CASE("retained data: a different publisher key may not inherit it") {
           "A's data");
 }
 
-TEST_CASE("retained data: purge clears the owner marker so any publisher may reinstall") {
+TEST_CASE("retained data: purge removes data but preserves local trust history") {
     test::TempLexeHome home;
     TempWorkDir work;
     const Paths paths = Paths::detect();
@@ -219,9 +227,15 @@ TEST_CASE("retained data: purge clears the owner marker so any publisher may rei
     util::spit(registry.app_data_dir(kId) / "profile.db",
                std::string_view("A's data"));
     Installer(paths).uninstall(kId, Installer::UninstallMode::PurgeData);
-    CHECK_FALSE(registry.has_retained_data(kId));
+    CHECK_FALSE(registry.has_retained_data(kId)); // data gone
 
-    // With the retained data (and marker) gone, B may take over the id cleanly.
+    // Purge deletes DATA, but must NOT silently delete trust history: a
+    // different key is still refused as a changed key.
+    CHECK_THROWS_AS(install_with(paths, work.dir, key_b), ChangedKeyError);
+
+    // Forgetting trust is the explicit, separate step that lets a new publisher
+    // claim the id cleanly.
+    TrustStore(paths).forget(kId);
     CHECK_NOTHROW(install_with(paths, work.dir, key_b));
 }
 

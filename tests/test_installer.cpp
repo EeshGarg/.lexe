@@ -246,14 +246,15 @@ TEST_CASE("install: same id with a different publisher key is a hard error") {
     installer.install(make_versioned_package(work.dir, key_a, "1.0.0"));
 
     // Same id, newer version, valid signatures — but a DIFFERENT key. The
-    // pinned key is the update trust anchor (FORMAT-0.1 §7.1): hard error.
+    // pinned key is the update trust anchor (FORMAT-0.1 §7.1); a changed key is
+    // a typed trust rejection (runtime-trust WS4), never a silent takeover.
     const fs::path impostor = make_versioned_package(work.dir, key_b, "1.1.0");
     bool threw = false;
     try {
         installer.install(impostor);
-    } catch (const VerificationError& e) {
+    } catch (const ChangedKeyError& e) {
         threw = true;
-        CHECK(std::string(e.what()).find("key mismatch") != std::string::npos);
+        CHECK(std::string(e.what()).find("key rotation") != std::string::npos);
     }
     CHECK(threw);
 

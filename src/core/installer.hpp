@@ -36,6 +36,12 @@ struct InstallOptions {
     /// bare "--yes" never sets this — approving new authority is a separate,
     /// deliberate act.
     bool allow_permission_expansion = false;
+    /// The user deliberately chose to TRUST this signing key locally (runtime-
+    /// trust WS4), not merely to consent to this install. Recorded in the trust
+    /// record as an explicit trust decision. A plain install leaves this false
+    /// (the App-ID/key binding is still recorded, but only as "accepted").
+    /// Separate from permission consent, and never set by a bare "--yes".
+    bool explicit_trust = false;
 };
 
 /// What an install/update produced.

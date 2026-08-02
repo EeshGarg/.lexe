@@ -26,6 +26,7 @@
 #include "core/permissions.hpp"
 #include "core/registry.hpp"
 #include "core/transaction.hpp"
+#include "core/trust.hpp"
 #include "core/util.hpp"
 #include "core/verify.hpp"
 #include "core/versioncmp.hpp"
@@ -277,17 +278,19 @@ InstallResult Installer::install(const fs::path& lexe_file,
     std::string previous_version; // active version before this install ("" = fresh)
     if (registry.is_installed(manifest.id)) {
         record = registry.read_record(manifest.id);
-        // The pinned publisher key is the update trust anchor (FORMAT-0.1
-        // §7.1): a different key MUST NOT silently take over an installed id.
+        // Defense in depth: the installation record pins the publisher key
+        // (FORMAT-0.1 §7.1). A different key MUST NOT silently take over an
+        // installed id — this catches even the case where the local trust
+        // record was forgotten while the app stayed installed. Reported as a
+        // ChangedKey trust rejection (runtime-trust WS4).
         if (record.publisher_key != manifest.publisher_public_key) {
-            throw VerificationError(
-                "publisher key mismatch for " + manifest.id +
-                ": the installed application is pinned to key " +
-                record.publisher_key + " but this package is signed with " +
+            throw ChangedKeyError(
+                "refusing: " + manifest.id +
+                " is installed under key " + record.publisher_key +
+                " but this package is signed with " +
                 manifest.publisher_public_key +
-                "; refusing to install. Key rotation is not supported in "
-                "0.1 — uninstall the application first to accept the new "
-                "key (SPEC \"Update Ownership\").");
+                ". FORMAT 0.1 has no authenticated key rotation — remove the "
+                "application (and its data) to accept a new publisher key.");
         }
         try {
             previous_version = registry.current_version(manifest.id);
@@ -307,11 +310,15 @@ InstallResult Installer::install(const fs::path& lexe_file,
     const NormalizedPermissions requested_perms =
         normalize_permissions(manifest.permissions);
 
-    // Runtime-trust WS8: retained-data key continuity. If persistent data is
-    // retained for this id under a DIFFERENT publisher key (e.g. after an
-    // app-only uninstall), a new publisher must NOT inherit it — refuse until
-    // the user explicitly purges. The same publisher reinstalling inherits it.
+    // Runtime-trust WS3/WS4: evaluate LOCAL publisher trust before staging.
+    // Authenticity (§6) already passed, so the signature is valid; this gate
+    // decides key CONTINUITY. A first-seen key is allowed (the separate
+    // --yes/confirm is the install consent); a known matching key is allowed;
+    // a changed key, a locally blocked App ID, a corrupt trust record, or data
+    // retained under a different key are all rejected with typed errors. No
+    // --yes / --force / --accept-permissions bypasses this.
     {
+        std::optional<std::string> retained_owner;
         const fs::path owner = registry.data_owner_marker(manifest.id);
         std::error_code ec;
         if (fs::is_regular_file(owner, ec)) {
@@ -321,14 +328,13 @@ InstallResult Installer::install(const fs::path& lexe_file,
                     prior.back() == ' ')) {
                 prior.pop_back();
             }
-            if (!prior.empty() && prior != manifest.publisher_public_key) {
-                throw RetainedDataConflict(
-                    "persistent data for " + manifest.id +
-                    " belongs to a different publisher key; purge it first "
-                    "(`lexe remove " + manifest.id +
-                    " --purge-data`) to install under the new key");
-            }
+            if (!prior.empty()) retained_owner = prior;
         }
+        const TrustStore trust(paths_);
+        const TrustEvaluation eval =
+            trust.evaluate(manifest.id, manifest.decoded_public_key(),
+                           SignatureState::Valid, retained_owner);
+        eval.throw_if_rejected();
     }
 
     // Runtime-trust WS5: on an UPGRADE, an update that expands the approved
@@ -481,6 +487,19 @@ InstallResult Installer::install(const fs::path& lexe_file,
                    std::string_view(manifest.publisher_public_key));
     }
 
+    // Runtime-trust WS4: persist the local trust binding — ONLY here, after a
+    // fully committed install (a failed install never records trust). Idempotent:
+    // it refreshes an existing same-key record and creates one on first install.
+    // The trust gate above already rejected a changed/blocked key, so this cannot
+    // rebind. explicit_trust records the user deliberately trusting the key (a
+    // stronger, separate act than consenting to the install).
+    {
+        TrustStore trust(paths_);
+        trust.record_accept(
+            manifest.id, manifest.decoded_public_key(), opts.explicit_trust,
+            opts.explicit_trust ? "install-trust" : "install-accept");
+    }
+
     return InstallResult{manifest.id, manifest.version, app_dir};
 }
 
@@ -566,6 +585,20 @@ void Installer::recover_locked(const std::string& id) {
     registry.write_record(rec);
 
     registry.set_current_version(id, journal.target_version); // atomic activation
+
+    // Runtime-trust WS4: a PROMOTED install committed, so recovery completes its
+    // trust persistence too (never for a rolled-back transaction — that path
+    // returns above without reaching here). Idempotent, derives the key from the
+    // committed manifest, and NEVER records explicit trust. Best-effort: the
+    // install is already active and the installation record pins the key, so a
+    // trust-record edge (e.g. a block set during the crash window) must not
+    // fail the recovery.
+    try {
+        TrustStore(paths_).record_accept(id, manifest.decoded_public_key(),
+                                         false, "install-accept");
+    } catch (const TrustError&) {
+    }
+
     txn.commit();
 }
 
