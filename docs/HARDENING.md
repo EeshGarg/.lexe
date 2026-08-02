@@ -164,3 +164,53 @@ this):
 
 When this passes reliably, 0.1 has crossed from an idea into a platform
 foundation. Until then, no new features.
+
+---
+
+# Enforced Invariants (implemented and proven)
+
+These are the security invariants the runtime now enforces, each with the code
+that enforces it and the test that proves it. "Proven" means an automated test
+fails if the property regresses.
+
+| Invariant | Enforced by | Proven by |
+|---|---|---|
+| No package path escapes the staging/install roots | `package.cpp` `entry_path_problem` + zip-slip containment in `extract_payload`; installs extract into staging under `apps/<id>/` | `test_package` (malicious-path corpus, case collision, over-long component), `test_invariants` |
+| No partially installed package becomes active | `transaction.cpp` (stage → validate → promote → **flip `current` last**); `installer.cpp` | `test_crash_recovery` (8 failpoints × fresh/upgrade), `test_transaction` |
+| A failed upgrade preserves/restores the previous known-good version | pre-activation health gate + retained version dirs (`installer.cpp`) | `test_health_check` (unhealthy upgrade), `test_crash_recovery` |
+| Recovery is idempotent | `installer.cpp` `recover`/`recover_all` (all steps overwrite) | `test_crash_recovery` (double recovery), `test_transaction` |
+| Duplicate security-relevant JSON keys are rejected | `json_strict.cpp` (SAX duplicate-key detector), wired into manifest / hashes.json / update.json / installation record / key file | `test_json_strict`, `test_updater` |
+| Package expansion is bounded | `limits.hpp` + `package.cpp` (size/entry/path/per-entry/total/ratio caps, actual-emitted tracking) | `test_limits`, `test_hostile_packages` |
+| Signature verification is strict and performed before activation | `verify.cpp` §6 pipeline over exact bytes; `crypto.cpp` canonical-S + canonical-key checks; `installer.cpp` verifies before any write | `test_verify`, `test_ed25519_strict`, `test_hostile_packages`, `test_invariants` |
+| The manifest public key is always tied to the signing key | `lexe build` / `lexe-builder` set `publisher.publicKey` from the signing key; never user-typed | `test_cli` (build), `test_builder`, `test_invariants` |
+| Installation records cannot claim a version never committed | `current` flips only after promotion; record written with the committed version | `test_invariants`, `test_crash_recovery` |
+| Installer-owned cleanup cannot delete arbitrary paths | every deletion target is an `apps/<id>/…` path with id+version validated by the registry; never a path from package content | `test_invariants` (uninstall spares other apps), `transaction.cpp` review |
+| Package-controlled content is never executed to verify a package | the health check is STATIC (no launch probe); `scripts/` inert | `test_health_check`, design (§D note) |
+| No trailing/prepended data or archive comment rides along | `package.cpp` `archive_spans_whole_file` (EOCD is the tail; CD ends there) | `test_hostile_packages` |
+
+# A–H Disposition
+
+| § | Requirement | Disposition |
+|---|---|---|
+| A | Transactional staging install with explicit journal | **Implemented** — `transaction.{hpp,cpp}` (journal, staged validation, atomic promote, recovery); `installer.cpp`. Proven by `test_transaction`, `test_crash_recovery`. |
+| B | Malformed-package corpus with categorized failures | **Implemented** — `test_hostile_packages` (categorized by stage) + `test_package` (path corpus) + `test_json_strict` + `test_limits`. |
+| C | Deterministic failpoints + crash-recovery matrix | **Implemented** — `fault.{hpp,cpp}`; `test_crash_recovery` drives all 8 failpoints × {fresh, upgrade} and proves the three valid end states + idempotency. |
+| D | Health-check + automatic rollback | **Implemented (static gate)** — pre-activation health check (`installer.cpp check_health` + staged gate); an unhealthy upgrade never replaces the working version. A launch-probe that RUNS the entrypoint is deliberately **not** implemented (conflicts with the "never execute package content to verify" invariant); documented as such. |
+| E | Duplicate JSON key rejection | **Implemented** — `json_strict.{hpp,cpp}` at every trust boundary. Proven by `test_json_strict`, `test_updater`. |
+| F | Decompression / resource-exhaustion limits | **Implemented** — `limits.hpp` central policy; bounded extraction in `package.cpp`. Proven by `test_limits`; multi-GiB caps documented as impractical to boundary-test with real files and covered by the crafted corpus + code review. |
+| G | Strict Ed25519 verification | **Implemented** — canonical-S (malleability) + canonical/degenerate public-key rejection + exact lengths (`crypto.cpp`); positive RFC 8032 KATs (`test_crypto`) + negative vectors (`test_ed25519_strict`). Backend is the vendored orlp/ed25519; **comprehensive small-order-point rejection is deferred to the planned libsodium provider** (see docs/TRUST.md) and documented, not claimed. |
+| H | Invariants doc + e2e matrix | **Implemented** — this section + `test_invariants`. |
+
+## Remaining limitations (0.1)
+
+* Ed25519 uses the vendored orlp backend with our added canonical-S / canonical-
+  encoding checks; full small-order-point rejection awaits the libsodium
+  provider (TRUST.md). The malleability-relevant property (S < L) is enforced.
+* The health check is static; a post-launch health probe is intentionally not
+  implemented in 0.1.
+* Recovery of a Promoted transaction re-does desktop integration without icons
+  (the source package may be gone); a later `lexe repair`/reinstall restores
+  full icon integration.
+* The 2 GiB package / 1 GiB per-entry / 65535-entry caps are enforced in code
+  but not boundary-tested with real multi-GiB files (impractical); the crafted
+  corpus and the ratio/depth guards are tested end-to-end.

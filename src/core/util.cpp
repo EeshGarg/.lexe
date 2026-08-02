@@ -495,7 +495,10 @@ std::string now_utc_string() {
 #else
     ::gmtime_r(&t, &tm);
 #endif
-    char buf[32];
+    // Sized for the worst case the compiler must assume — six full `int`
+    // fields (11 bytes each) plus separators — so -Wformat-truncation is
+    // satisfied without relying on the (always valid) gmtime ranges.
+    char buf[80];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
                   tm.tm_min, tm.tm_sec);
