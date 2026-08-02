@@ -19,6 +19,7 @@
 #include "core/crypto.hpp"
 #include "core/desktop.hpp"
 #include "core/error.hpp"
+#include "core/fault.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
 #include "core/package.hpp"
@@ -284,11 +285,14 @@ InstallResult Installer::install(const fs::path& lexe_file,
     // before promotion leaves the previous version untouched.
     InstallTransaction txn(paths_, manifest.id, manifest.version);
     try {
+        fault::maybe("before-staging");
         txn.begin(previous_version, new_record.to_json());
 
         // (3) Extract payload and (4) write meta INTO staging — never the live
         // version directory.
+        fault::maybe("during-extraction"); // staging exists, extraction not done
         reader.extract_payload(txn.staging_version_dir());
+        fault::maybe("after-extraction");
 #ifndef _WIN32
         ensure_entrypoint_executable(txn.staging_version_dir(),
                                      manifest.entrypoint_executable);
@@ -296,6 +300,7 @@ InstallResult Installer::install(const fs::path& lexe_file,
         util::spit(txn.staging_meta_dir() / "lexe.json", manifest_bytes);
         util::spit(txn.staging_meta_dir() / "hashes.json", hashes_bytes);
         txn.mark_staged();
+        fault::maybe("after-staged");
 
         // (5) Staged validation: the extracted tree must match its own signed
         // hashes before anything is promoted.
@@ -304,7 +309,9 @@ InstallResult Installer::install(const fs::path& lexe_file,
         txn.mark_verified();
 
         // (6) Atomic promotion of versions/<v> + meta/<v>.
+        fault::maybe("before-promote");
         txn.promote();
+        fault::maybe("after-promote"); // version in place, not yet active
 
         // (7) Activation — idempotently redone by recovery if interrupted:
         // active copies, desktop integration, record, then the atomic `current`
@@ -332,13 +339,18 @@ InstallResult Installer::install(const fs::path& lexe_file,
 
         registry.set_current_version(manifest.id, manifest.version); // atomic
         txn.mark_record_updated();
+        fault::maybe("after-record"); // activated, cleanup not yet done
 
         // (8) Done: drop staging and clear the journal.
         txn.commit();
+    } catch (const fault::Injected&) {
+        // Simulate a crash: leave the journal mid-transaction so recovery runs
+        // on the NEXT invocation (recover_all), not here. Do not clean up.
+        throw;
     } catch (...) {
-        // Drive the app back to a consistent state per the journal, then
-        // propagate. Pre-promotion → rolled back (previous untouched);
-        // post-promotion → completed forward (new version active).
+        // A genuine error: drive the app back to a consistent state per the
+        // journal, then propagate. Pre-promotion → rolled back (previous
+        // untouched); post-promotion → completed forward (new version active).
         try {
             recover(manifest.id);
         } catch (...) {

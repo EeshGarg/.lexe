@@ -6,6 +6,7 @@
 #include "core/transaction.hpp"
 
 #include "core/error.hpp"
+#include "core/fault.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
 #include "core/util.hpp"
@@ -187,6 +188,10 @@ void InstallTransaction::promote() {
         throw Error("transaction: cannot promote meta into place: " +
                     meta_target.string());
     }
+    // Crash BETWEEN the two renames: meta/<v> is in place, versions/<v> is not,
+    // and the journal still says Verified — recovery must roll this back
+    // cleanly (HARDENING.md §C "during replacement").
+    fault::maybe("during-promote");
     fs::rename(staging_version_dir(), version_target, ec);
     if (ec) {
         throw Error("transaction: cannot promote version into place: " +
