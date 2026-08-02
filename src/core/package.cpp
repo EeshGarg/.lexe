@@ -71,6 +71,10 @@ std::string printable(const std::string& raw) {
 /// (including directory entries, whose trailing '/' is stripped first).
 std::optional<std::string> entry_path_problem(const std::string& raw) {
     if (raw.empty()) return "empty entry path";
+    if (raw.size() > limits::kMaxPathBytes) {
+        return "entry path exceeds the " +
+               std::to_string(limits::kMaxPathBytes) + "-byte limit";
+    }
     if (raw.find('\0') != std::string::npos) return "path contains a NUL byte";
     if (raw.find('\\') != std::string::npos) return "path contains a backslash";
     if (raw.front() == '/') return "absolute path";
@@ -81,8 +85,17 @@ std::optional<std::string> entry_path_problem(const std::string& raw) {
     if (path.empty()) return "empty entry path";
 
     const std::vector<std::string> segments = split_segments(path);
+    if (segments.size() > limits::kMaxPathDepth) {
+        return "entry path exceeds the maximum directory depth (" +
+               std::to_string(limits::kMaxPathDepth) + ")";
+    }
     for (const std::string& seg : segments) {
         if (seg.empty()) return "empty path segment";
+        if (seg.size() > limits::kMaxPathComponentBytes) {
+            return "path component exceeds the " +
+                   std::to_string(limits::kMaxPathComponentBytes) +
+                   "-byte limit";
+        }
         if (seg == "..") return "'..' path segment";
         if (seg == ".") return "'.' path segment";
         if (seg.size() >= 2 && is_ascii_alpha(seg[0]) && seg[1] == ':') {
@@ -176,6 +189,18 @@ struct PackageReader::Impl {
 PackageReader::PackageReader(const fs::path& lexe_file)
     : impl_(std::make_unique<Impl>()) {
     impl_->file = lexe_file;
+    // Bound the package size BEFORE loading it into memory (HARDENING.md §F):
+    // check the on-disk size so a hostile multi-gigabyte file is never slurped.
+    {
+        std::error_code ec;
+        const auto on_disk = fs::file_size(lexe_file, ec);
+        if (!ec && on_disk > limits::kMaxPackageBytes) {
+            throw VerificationError(
+                "package: file is " + std::to_string(on_disk) +
+                " bytes, exceeds the " +
+                std::to_string(limits::kMaxPackageBytes) + "-byte limit");
+        }
+    }
     impl_->bytes = util::slurp(lexe_file); // NotFoundError when missing
     if (!mz_zip_reader_init_mem(&impl_->zip, impl_->bytes.data(),
                                 impl_->bytes.size(), 0)) {
@@ -183,6 +208,13 @@ PackageReader::PackageReader(const fs::path& lexe_file)
                                 lexe_file.string());
     }
     impl_->open = true;
+
+    // Bound the entry count before walking the central directory (§F).
+    if (mz_zip_reader_get_num_files(&impl_->zip) > limits::kMaxEntryCount) {
+        throw VerificationError(
+            "package: archive has more than " +
+            std::to_string(limits::kMaxEntryCount) + " entries");
+    }
 
     // FORMAT-0.1 §2 — validate every entry before anything is trusted.
     std::set<std::string> seen;
@@ -275,6 +307,17 @@ PackageReader::read_entry(const std::string& entry_path) const {
         throw NotFoundError("package: no such entry: " + entry_path);
     }
     const Impl::File& f = impl_->files[it->second];
+    // Bound the allocation by the DECLARED size before extracting (§F). A ZIP
+    // bomb that declares a huge uncompressed size is rejected here, before
+    // miniz tries to allocate it; a declaration that lies small is caught by
+    // miniz (the decompressed stream cannot exceed the allocated buffer).
+    if (f.entry.uncompressed_size > limits::kMaxEntryUncompressedBytes) {
+        throw VerificationError(
+            "package: entry \"" + entry_path + "\" declares " +
+            std::to_string(f.entry.uncompressed_size) +
+            " uncompressed bytes, exceeds the per-entry limit of " +
+            std::to_string(limits::kMaxEntryUncompressedBytes));
+    }
     if (f.entry.uncompressed_size == 0) return {};
     std::size_t size = 0;
     void* p = mz_zip_reader_extract_to_heap(&impl_->zip, f.index, &size, 0);
@@ -292,6 +335,12 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
     fs::create_directories(dest_dir);
     const fs::path root = fs::weakly_canonical(dest_dir);
     constexpr std::string_view kPrefix = "payload/";
+
+    // Track ACTUAL emitted bytes across the whole extraction (§F): a per-entry
+    // cap alone cannot stop many-entry bombs, and the declared sizes are never
+    // trusted for the aggregate — read_entry returns the real bytes.
+    std::uint64_t total_emitted = 0;
+    const std::uint64_t package_size = impl_->bytes.size();
 
     for (const Impl::File& f : impl_->files) {
         const std::string& path = f.entry.path;
@@ -316,8 +365,30 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
                 "package: entry escapes extraction root: " + path);
         }
 
+        // read_entry enforces the per-entry cap and returns the real bytes.
+        const std::vector<std::uint8_t> data = read_entry(path);
+        // Overflow-safe: each entry <= 1 GiB and entries <= 65535, so the sum
+        // cannot approach UINT64_MAX.
+        total_emitted += data.size();
+        if (total_emitted > limits::kMaxTotalUncompressedBytes) {
+            throw VerificationError(
+                "package: total uncompressed size exceeds the " +
+                std::to_string(limits::kMaxTotalUncompressedBytes) +
+                "-byte limit");
+        }
+        // Expansion-ratio guard: once past the grace size, a package that
+        // expands more than kMaxExpansionRatio× its own size is a bomb.
+        // package_size * ratio cannot overflow (package_size <= 2 GiB).
+        if (total_emitted > limits::kRatioGraceBytes && package_size != 0 &&
+            total_emitted > package_size * limits::kMaxExpansionRatio) {
+            throw VerificationError(
+                "package: expands more than " +
+                std::to_string(limits::kMaxExpansionRatio) +
+                "× its packaged size (decompression-bomb guard)");
+        }
+
         fs::create_directories(resolved.parent_path());
-        util::spit(resolved, read_entry(path));
+        util::spit(resolved, data);
 
 #ifndef _WIN32
         // Preserve executable bits carried in Unix external attributes.
