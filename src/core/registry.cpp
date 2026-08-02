@@ -159,6 +159,18 @@ InstallationRecord InstallationRecord::from_json(std::string_view json_text) {
             r.created_files.push_back(element.get<std::string>());
         }
     }
+    if (const json* perms = find_member(j, "approvedPermissions")) {
+        if (!perms->is_array()) {
+            fail_record("\"approvedPermissions\" must be an array");
+        }
+        for (const auto& element : *perms) {
+            if (!element.is_string()) {
+                fail_record("\"approvedPermissions\" entries must be strings");
+            }
+            r.approved_permissions.push_back(element.get<std::string>());
+        }
+    }
+    r.permissions_digest = optional_string(j, "permissionsDigest", "");
     return r;
 }
 
@@ -178,6 +190,8 @@ std::string InstallationRecord::to_json() const {
                                     {"exitCode", last_exit_code}};
     }
     j["createdFiles"] = created_files;
+    j["approvedPermissions"] = approved_permissions;
+    j["permissionsDigest"] = permissions_digest;
     return j.dump(2) + "\n";
 }
 

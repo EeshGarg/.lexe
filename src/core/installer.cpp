@@ -23,6 +23,7 @@
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
 #include "core/package.hpp"
+#include "core/permissions.hpp"
 #include "core/registry.hpp"
 #include "core/transaction.hpp"
 #include "core/util.hpp"
@@ -284,6 +285,12 @@ InstallResult Installer::install(const fs::path& lexe_file,
         }
     }
 
+    // Runtime-trust WS2: parse + normalize + validate the requested permissions
+    // (reject unknown / duplicate / conflicting) BEFORE anything is installed,
+    // and record the approved set + digest as the consent anchor.
+    const NormalizedPermissions requested_perms =
+        normalize_permissions(manifest.permissions);
+
     const PackageReader reader(lexe_file);
     const std::vector<std::uint8_t> manifest_bytes =
         reader.read_entry("lexe.json");
@@ -306,6 +313,8 @@ InstallResult Installer::install(const fs::path& lexe_file,
         new_record.update_url = manifest.updates_manifest_url;
     }
     new_record.installed_at = util::now_utc_string();
+    new_record.approved_permissions = requested_perms.ids;
+    new_record.permissions_digest = requested_perms.digest;
 
     // Transactional staged install (HARDENING.md §A). Nothing becomes active
     // until the staged tree is validated and atomically promoted; a failure

@@ -28,6 +28,11 @@ struct InstallationRecord {
     /// Absolute paths of files created OUTSIDE the app dir (desktop entries,
     /// icons, MIME XML) — exactly what uninstall must remove (§9).
     std::vector<std::string> created_files;
+    /// The normalized permission ids the user approved for this version, and a
+    /// digest over them (runtime-trust WS2/WS5). The digest is the consent
+    /// anchor an update's permission-delta gate compares against.
+    std::vector<std::string> approved_permissions;
+    std::string permissions_digest;
 
     /// Parse installation.json text. Throws Error on malformed contents.
     static InstallationRecord from_json(std::string_view json_text);
