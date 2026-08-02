@@ -129,6 +129,35 @@ fs::path utf8_segment_to_path(const std::string& segment) {
 #endif
 }
 
+/// The archive must occupy EXACTLY the whole file (HARDENING.md §B): the
+/// End-Of-Central-Directory record must be the final 22 bytes (no archive
+/// comment — FORMAT §1), and the central directory must end exactly where the
+/// EOCD begins (no prepended data, no gap, no ZIP64 sentinel). This rejects
+/// trailing data, prepended data, and archive comments that miniz would
+/// otherwise tolerate — none of which is covered by the signatures.
+bool archive_spans_whole_file(const std::vector<std::uint8_t>& b) {
+    if (b.size() < 22) return false;
+    const std::size_t eocd = b.size() - 22;
+    if (!(b[eocd] == 0x50 && b[eocd + 1] == 0x4b && b[eocd + 2] == 0x05 &&
+          b[eocd + 3] == 0x06)) {
+        return false; // EOCD not at the tail → comment or trailing data
+    }
+    auto rd16 = [&](std::size_t o) -> std::uint32_t {
+        return static_cast<std::uint32_t>(b[o]) |
+               (static_cast<std::uint32_t>(b[o + 1]) << 8);
+    };
+    auto rd32 = [&](std::size_t o) -> std::uint32_t {
+        return static_cast<std::uint32_t>(b[o]) |
+               (static_cast<std::uint32_t>(b[o + 1]) << 8) |
+               (static_cast<std::uint32_t>(b[o + 2]) << 16) |
+               (static_cast<std::uint32_t>(b[o + 3]) << 24);
+    };
+    if (rd16(eocd + 20) != 0) return false; // non-empty archive comment
+    const std::uint64_t cd_size = rd32(eocd + 12);
+    const std::uint64_t cd_offset = rd32(eocd + 16);
+    return cd_offset + cd_size == eocd; // CD ends exactly at the EOCD
+}
+
 /// Exact raw entry name bytes (embedded NUL preserved — m_filename would
 /// truncate at the first NUL, hiding a FORMAT §2 violation).
 std::string raw_entry_name(mz_zip_archive& zip, mz_uint index) {
@@ -209,6 +238,15 @@ PackageReader::PackageReader(const fs::path& lexe_file)
     }
     impl_->open = true;
 
+    // Reject trailing/prepended data and archive comments (HARDENING.md §B): a
+    // deterministic .lexe is exactly its ZIP archive, so no unsigned bytes can
+    // ride along before or after the signed content.
+    if (!archive_spans_whole_file(impl_->bytes)) {
+        throw VerificationError(
+            "package: archive does not span the whole file (trailing/prepended "
+            "data or an archive comment)");
+    }
+
     // Bound the entry count before walking the central directory (§F).
     if (mz_zip_reader_get_num_files(&impl_->zip) > limits::kMaxEntryCount) {
         throw VerificationError(
@@ -218,6 +256,7 @@ PackageReader::PackageReader(const fs::path& lexe_file)
 
     // FORMAT-0.1 §2 — validate every entry before anything is trusted.
     std::set<std::string> seen;
+    std::set<std::string> seen_casefold; // case-insensitive collision guard
     const mz_uint count = mz_zip_reader_get_num_files(&impl_->zip);
     for (mz_uint i = 0; i < count; ++i) {
         const std::string name = raw_entry_name(impl_->zip, i);
@@ -242,6 +281,21 @@ PackageReader::PackageReader(const fs::path& lexe_file)
         }
         if (!seen.insert(name).second) {
             throw VerificationError("package: duplicate entry path: " + name);
+        }
+        // Case-insensitive collision (HARDENING.md §B): two entries differing
+        // only by case (e.g. payload/App and payload/app) would alias on a
+        // case-insensitive filesystem, so one could overwrite the other after
+        // extraction. Reject them regardless of the host filesystem.
+        std::string casefold = name;
+        std::transform(casefold.begin(), casefold.end(), casefold.begin(),
+                       [](unsigned char c) {
+                           return static_cast<char>(
+                               (c >= 'A' && c <= 'Z') ? c + 32 : c);
+                       });
+        if (!seen_casefold.insert(casefold).second) {
+            throw VerificationError(
+                "package: entry path collides case-insensitively with another: " +
+                name);
         }
         if (mz_zip_reader_is_file_a_directory(&impl_->zip, i)) continue;
 

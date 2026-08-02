@@ -627,6 +627,33 @@ TEST_CASE("reader rejects duplicate entry paths") {
     CHECK_THROWS_AS((lexe::PackageReader{bad}), lexe::VerificationError);
 }
 
+TEST_CASE("reader rejects case-insensitively colliding entry paths (§B)") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path good = lexe::test::make_test_package(home.path(), key);
+    std::vector<RawEntry> entries = read_raw_entries(good);
+    // payload/data.txt already exists; add payload/DATA.txt (collides on a
+    // case-insensitive filesystem).
+    entries.push_back({"payload/DATA.txt", text_bytes("x")});
+    const fs::path bad = home.path() / "case.lexe";
+    write_raw_zip(bad, entries);
+    CHECK_THROWS_AS((lexe::PackageReader{bad}), lexe::VerificationError);
+}
+
+TEST_CASE("reader rejects an over-long path component (§F path caps)") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path good = lexe::test::make_test_package(home.path(), key);
+    std::vector<RawEntry> entries = read_raw_entries(good);
+    // A 256-byte component exceeds the 255-byte cap; craft it directly (the OS
+    // will not let a real file carry such a name).
+    entries.push_back(
+        {"payload/" + std::string(256, 'a'), text_bytes("x")});
+    const fs::path bad = home.path() / "longcomp.lexe";
+    write_raw_zip(bad, entries);
+    CHECK_THROWS_AS((lexe::PackageReader{bad}), lexe::VerificationError);
+}
+
 TEST_CASE("reader rejects packages with a required entry missing") {
     TempLexeHome home;
     const lexe::crypto::KeyPair key = lexe::test::make_keypair();
