@@ -218,18 +218,59 @@ Base directory (`LEXE_HOME` environment variable overrides; used by tests):
 
 ```text
 <LEXE_HOME>/apps/<id>/
-├── versions/<version>/           extracted payload/ contents
+├── versions/<version>/           immutable extracted payload/ contents
+├── meta/<version>/               exact lexe.json + hashes.json bytes for that
+│                                 version (repair hash source; rollback restore)
 ├── current                       symlink to versions/<version>; where symlinks are
 │                                 unavailable, a text file `current.txt` containing
 │                                 the version string is written instead
 ├── manifest.json                 copy of lexe.json of the active version
+├── hashes.json                   copy of the active version's hashes
 ├── installation.json             install record: source path/url, publisher key,
 │                                 UTC timestamp, files created outside the app dir
 │                                 (desktop entries, icons, MIME xml), channel
+├── txn.json / .txn-staging/      transaction journal + staging (see HARDENING §A)
 └── icons are copied to the XDG hicolor theme; the .desktop entry Exec line is
     `lexe run <id>` (never a version-specific path)
+
+<LEXE_HOME>/data/<id>/            PERSISTENT application data (see below)
+├── .lexe-data-owner              the publisher key that owns this data
+└── …                             app-managed contents (installer never reads them)
+<LEXE_HOME>/cache/apps/<id>/      disposable per-app cache
+<LEXE_HOME>/cache/runtime-tmp/    per-launch private temp roots (recovered after a crash)
+<LEXE_HOME>/locks/                OS-backed operation locks (see docs/CONCURRENCY.md)
+├── <id>.lock                     per-app exclusive mutation lock
+├── <id>.v.<version>.lease        per-version launch lease (shared while running)
+└── global.recovery.lock          global recovery coordination
 ```
 
-Uninstall removes everything recorded in `installation.json`, then the app
-directory. Application data under `<LEXE_HOME>/data/<id>/` is removed only with
-`--purge-data`.
+**Storage taxonomy (paths are constructed and validated in ONE place — the
+registry — never assembled ad hoc by callers).**
+
+* **Persistent data** (`data/<id>/`) belongs to the App ID, not a version. It
+  survives ordinary update, rollback and app-only uninstall; a package cannot
+  redirect its location. The `.lexe-data-owner` marker pins the publisher key
+  that owns the data: a reinstall by the same key reuses it, but a DIFFERENT
+  key claiming the same id over retained data is refused (`RetainedDataConflict`,
+  exit 6) until the data is purged. The installer never parses or executes app
+  data. A binary rollback is not a data-format rollback.
+* **Cache** (`cache/apps/<id>/`) is disposable and removed independently of data.
+* **Runtime temp** (`cache/runtime-tmp/`) holds per-launch private directories
+  under an installer-controlled root; the sandbox maps them to `/tmp`.
+
+**Uninstall has three explicit modes:**
+
+| Command | binaries + integration | cache | persistent data |
+|---|---|---|---|
+| `lexe remove <id>` | removed | preserved | preserved |
+| `lexe remove <id> --remove-cache` | removed | removed | preserved |
+| `lexe remove <id> --purge-data` | removed | removed | **removed** |
+
+Full data removal requires the explicit `--purge-data` flag — `--yes` confirms
+a prompt but never widens the scope to include persistent data. Uninstall refuses
+(exit 6) while the application is running (a launch holds a version lease).
+
+`lexe gc <id> [--keep <n>]` reclaims superseded immutable versions, always
+keeping the active version, everything at or newer than it, the newest `n`
+older versions, any version referenced by a pending transaction, and any version
+a running launch is using.

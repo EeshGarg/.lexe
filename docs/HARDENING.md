@@ -187,6 +187,12 @@ fails if the property regresses.
 | Installer-owned cleanup cannot delete arbitrary paths | every deletion target is an `apps/<id>/…` path with id+version validated by the registry; never a path from package content | `test_invariants` (uninstall spares other apps), `transaction.cpp` review |
 | Package-controlled content is never executed to verify a package | the health check is STATIC (no launch probe); `scripts/` inert | `test_health_check`, design (§D note) |
 | No trailing/prepended data or archive comment rides along | `package.cpp` `archive_spans_whole_file` (EOCD is the tail; CD ends there) | `test_hostile_packages` |
+| Concurrent mutations of one App ID serialize; different App IDs proceed concurrently | OS-backed per-app `flock` mutation lock (`lock.cpp`), wired through every `installer.cpp` mutation | `test_lock`, `test_race_linux` (cross-process) |
+| A lock is released the instant its holder dies — no timestamp staleness, no stale-file reaping | `flock(2)` tied to the open file description (`lock.cpp`); owner metadata is diagnostics-only | `test_race_linux` (SIGKILL a holder, another process acquires at once) |
+| A running application is never deleted or GC'd out from under it | launcher holds a shared version lease; uninstall/GC take an exclusive version hold and refuse/skip when it is held (`launcher.cpp`, `installer.cpp`) | `test_lock` (uninstall busy while leased), `test_storage` (gc skips leased), `test_race_linux`, `ws8_ws9_lifecycle.sh` |
+| A launch runs a stable immutable version despite a concurrent update (TOCTOU) | lease-then-use-`versions/<v>`; `current` never re-read; revalidate after leasing (`launcher.cpp`) | `test_race_linux`, `ws8_ws9_lifecycle.sh` (update/rollback while cycling) |
+| Persistent data is never inherited by a different publisher key | `.lexe-data-owner` marker checked before install (`installer.cpp`); `--purge-data` never implied by `--yes` | `test_storage`, `ws8_ws9_lifecycle.sh` |
+| Garbage collection is conservative and lease-aware | `installer.cpp garbage_collect` keeps active/newer/rollback-window/txn/leased; typed `GcReport`; failures never touch active | `test_storage` (gc cases) |
 
 # A–H Disposition
 
