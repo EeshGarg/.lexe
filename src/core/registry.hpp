@@ -44,6 +44,11 @@ public:
     /// `<LEXE_HOME>/apps/<id>/versions/<version>`.
     std::filesystem::path version_dir(const std::string& id,
                                       const std::string& version) const;
+    /// `<LEXE_HOME>/apps/<id>/meta/<version>` — the per-version store of the
+    /// exact lexe.json/hashes.json bytes (hash source for repair, restore
+    /// source for rollback). Validates id and version like version_dir.
+    std::filesystem::path meta_dir(const std::string& id,
+                                   const std::string& version) const;
 
     /// Ids of all installed applications (directories with installation.json).
     std::vector<std::string> list_installed() const;

@@ -74,6 +74,15 @@ public:
     RepairReport repair(const std::string& id,
                         const std::optional<std::filesystem::path>& package = std::nullopt);
 
+    /// Finish or roll back an interrupted install transaction for `id`
+    /// (HARDENING.md §A/§C): a pre-promotion transaction is rolled back
+    /// (previous version untouched), a promoted one is completed forward (new
+    /// version made active). Idempotent: a no-op when there is no journal.
+    void recover(const std::string& id);
+    /// Run recover() for every application with a pending transaction journal.
+    /// Called at the start of install(); safe to call at process startup.
+    void recover_all();
+
 private:
     Paths paths_;
 };

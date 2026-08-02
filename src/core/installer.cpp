@@ -23,6 +23,7 @@
 #include "core/limits.hpp"
 #include "core/package.hpp"
 #include "core/registry.hpp"
+#include "core/transaction.hpp"
 #include "core/util.hpp"
 #include "core/verify.hpp"
 #include "core/versioncmp.hpp"
@@ -144,6 +145,23 @@ std::vector<std::string> keys_of(const std::vector<PayloadHash>& entries) {
     return keys;
 }
 
+/// Staged validation (HARDENING.md §A step 5): the freshly extracted tree at
+/// `version_dir` must match the signed hashes.json that was staged beside it,
+/// BEFORE it is promoted into place. Throws VerificationError on any mismatch.
+void validate_staged_tree(const fs::path& version_dir,
+                          const fs::path& staged_hashes) {
+    const std::vector<PayloadHash> expected = load_payload_hashes(staged_hashes);
+    const std::vector<PayloadHash> corrupt =
+        corrupt_payload_files(version_dir, expected);
+    if (!corrupt.empty()) {
+        throw VerificationError(
+            "staged installation failed validation (" +
+            std::to_string(corrupt.size()) +
+            " payload file(s) missing or mismatched): " +
+            keys_of(corrupt).front() + (corrupt.size() > 1 ? ", …" : ""));
+    }
+}
+
 /// Extract the package's flat `icons/<name>` entries into `dest` so
 /// desktop::integrate_app can copy them into the hicolor theme. Entry paths
 /// already passed the §2 rules in PackageReader.
@@ -197,6 +215,10 @@ Installer::Installer(const Paths& paths) : paths_(paths) {}
 
 InstallResult Installer::install(const fs::path& lexe_file,
                                  const InstallOptions& opts) {
+    // Finish or roll back any transaction that a previous run left interrupted
+    // BEFORE starting a new one (HARDENING.md §A/§C: "restart the installer").
+    recover_all();
+
     // FORMAT-0.1 §6 stages 1–7 — nothing is trusted or written before this
     // passes. opts.force_arch skips only stage 7 (§6.7).
     const Manifest manifest =
@@ -204,10 +226,10 @@ InstallResult Installer::install(const fs::path& lexe_file,
 
     const Registry registry(paths_);
     const fs::path app_dir = registry.app_dir(manifest.id); // validates id
-    const fs::path version_dir =
-        registry.version_dir(manifest.id, manifest.version); // validates version
+    (void)registry.version_dir(manifest.id, manifest.version); // validates version
 
     InstallationRecord record;
+    std::string previous_version; // active version before this install ("" = fresh)
     if (registry.is_installed(manifest.id)) {
         record = registry.read_record(manifest.id);
         // The pinned publisher key is the update trust anchor (FORMAT-0.1
@@ -222,13 +244,12 @@ InstallResult Installer::install(const fs::path& lexe_file,
                 "0.1 — uninstall the application first to accept the new "
                 "key (SPEC \"Update Ownership\").");
         }
-        std::string current;
         try {
-            current = registry.current_version(manifest.id);
+            previous_version = registry.current_version(manifest.id);
         } catch (const NotFoundError&) {
             // No usable current pointer — allow the install to self-heal.
         }
-        if (current == manifest.version) {
+        if (previous_version == manifest.version) {
             throw Error(manifest.id + " " + manifest.version +
                         " is already installed and current; use `lexe repair " +
                         manifest.id + "` to reinstall its files");
@@ -241,70 +262,190 @@ InstallResult Installer::install(const fs::path& lexe_file,
     const std::vector<std::uint8_t> hashes_bytes =
         reader.read_entry("metadata/hashes.json");
 
-    // Extract payload/ into a staging dir first, then move into place, so a
-    // failed extraction never leaves a half-written versions/<v>/ behind.
-    // (Staging lives outside versions/, so rollback never sees it.)
-    const fs::path staging = app_dir / (".staging-" + manifest.version);
-    util::remove_recursive(staging);
+    // The installation record we intend to commit (created_files are added
+    // after desktop integration). It is stored in the transaction journal so a
+    // crash-recovered promotion can write a faithful record (HARDENING.md §A).
+    InstallationRecord new_record = record; // carries prior update_url/createdFiles
+    new_record.id = manifest.id;
+    new_record.version = manifest.version;
+    new_record.source = opts.source.value_or(lexe_file.string());
+    new_record.publisher_key = manifest.publisher_public_key; // trust anchor §7.1
+    new_record.channel = opts.channel;
+    if (new_record.update_url.empty() && manifest.updates_enabled) {
+        // First install: the manifest's update source becomes the default. A
+        // source the user already configured is never silently replaced
+        // (SPEC "Update Ownership").
+        new_record.update_url = manifest.updates_manifest_url;
+    }
+    new_record.installed_at = util::now_utc_string();
+
+    // Transactional staged install (HARDENING.md §A). Nothing becomes active
+    // until the staged tree is validated and atomically promoted; a failure
+    // before promotion leaves the previous version untouched.
+    InstallTransaction txn(paths_, manifest.id, manifest.version);
     try {
-        reader.extract_payload(staging); // zip-slip safe (package module)
-        util::remove_recursive(version_dir);
-        fs::create_directories(version_dir.parent_path());
-        fs::rename(staging, version_dir);
+        txn.begin(previous_version, new_record.to_json());
+
+        // (3) Extract payload and (4) write meta INTO staging — never the live
+        // version directory.
+        reader.extract_payload(txn.staging_version_dir());
+#ifndef _WIN32
+        ensure_entrypoint_executable(txn.staging_version_dir(),
+                                     manifest.entrypoint_executable);
+#endif
+        util::spit(txn.staging_meta_dir() / "lexe.json", manifest_bytes);
+        util::spit(txn.staging_meta_dir() / "hashes.json", hashes_bytes);
+        txn.mark_staged();
+
+        // (5) Staged validation: the extracted tree must match its own signed
+        // hashes before anything is promoted.
+        validate_staged_tree(txn.staging_version_dir(),
+                             txn.staging_meta_dir() / "hashes.json");
+        txn.mark_verified();
+
+        // (6) Atomic promotion of versions/<v> + meta/<v>.
+        txn.promote();
+
+        // (7) Activation — idempotently redone by recovery if interrupted:
+        // active copies, desktop integration, record, then the atomic `current`
+        // flip last.
+        registry.write_manifest_bytes(manifest.id, manifest_bytes);
+        util::spit(app_dir / "hashes.json", hashes_bytes);
+
+        std::vector<std::string> created_files = record.created_files;
+        if (opts.desktop_integration) {
+            const fs::path icons_staging = app_dir / ".staging-icons";
+            util::remove_recursive(icons_staging);
+            try {
+                extract_icons(reader, icons_staging);
+                const desktop::IntegrationResult integration =
+                    desktop::integrate_app(paths_, manifest, icons_staging);
+                merge_created_files(created_files, integration.created_files);
+            } catch (...) {
+                util::remove_recursive(icons_staging);
+                throw;
+            }
+            util::remove_recursive(icons_staging);
+        }
+        new_record.created_files = std::move(created_files);
+        registry.write_record(new_record);
+
+        registry.set_current_version(manifest.id, manifest.version); // atomic
+        txn.mark_record_updated();
+
+        // (8) Done: drop staging and clear the journal.
+        txn.commit();
     } catch (...) {
-        util::remove_recursive(staging);
+        // Drive the app back to a consistent state per the journal, then
+        // propagate. Pre-promotion → rolled back (previous untouched);
+        // post-promotion → completed forward (new version active).
+        try {
+            recover(manifest.id);
+        } catch (...) {
+        }
         throw;
     }
-#ifndef _WIN32
-    ensure_entrypoint_executable(version_dir, manifest.entrypoint_executable);
-#endif
-
-    // Per-version copies of the exact lexe.json / hashes.json bytes: the
-    // hash source for repair and the restore source for rollback.
-    const fs::path meta = meta_dir(app_dir, manifest.version);
-    util::spit(meta / "lexe.json", manifest_bytes);
-    util::spit(meta / "hashes.json", hashes_bytes);
-
-    // Active-version copies (FORMAT-0.1 §9).
-    registry.write_manifest_bytes(manifest.id, manifest_bytes);
-    util::spit(app_dir / "hashes.json", hashes_bytes);
-
-    // Desktop integration (recorded no-op on Windows). Previously recorded
-    // files are kept: an update re-integrates over them.
-    std::vector<std::string> created_files = record.created_files;
-    if (opts.desktop_integration) {
-        const fs::path icons_staging = app_dir / ".staging-icons";
-        util::remove_recursive(icons_staging);
-        try {
-            extract_icons(reader, icons_staging);
-            const desktop::IntegrationResult integration =
-                desktop::integrate_app(paths_, manifest, icons_staging);
-            merge_created_files(created_files, integration.created_files);
-        } catch (...) {
-            util::remove_recursive(icons_staging);
-            throw;
-        }
-        util::remove_recursive(icons_staging);
-    }
-
-    registry.set_current_version(manifest.id, manifest.version);
-
-    record.id = manifest.id;
-    record.version = manifest.version;
-    record.source = opts.source.value_or(lexe_file.string());
-    record.publisher_key = manifest.publisher_public_key; // trust anchor (§7.1)
-    record.channel = opts.channel;
-    if (record.update_url.empty() && manifest.updates_enabled) {
-        // First install: the manifest's update source becomes the default.
-        // A source the user already configured is never silently replaced
-        // (SPEC "Update Ownership").
-        record.update_url = manifest.updates_manifest_url;
-    }
-    record.installed_at = util::now_utc_string();
-    record.created_files = std::move(created_files);
-    registry.write_record(record);
 
     return InstallResult{manifest.id, manifest.version, app_dir};
+}
+
+void Installer::recover(const std::string& id) {
+    const Registry registry(paths_);
+    TransactionJournal journal;
+    try {
+        journal = read_journal(paths_, id);
+    } catch (const Error&) {
+        // An unreadable/corrupt journal: leave the app as-is rather than guess.
+        return;
+    }
+    if (journal.phase == TxnPhase::None) return;
+
+    InstallTransaction txn(paths_, id, journal.target_version);
+
+    // Pre-promotion → roll back. The previous version and `current` were never
+    // touched, so removing staging (and any orphan target dirs) restores the
+    // app to "previous active" or "safely absent".
+    if (journal.phase == TxnPhase::Preparing ||
+        journal.phase == TxnPhase::Staged ||
+        journal.phase == TxnPhase::Verified) {
+        txn.abort();
+        return;
+    }
+
+    // Promoted / RecordUpdated → complete forward. The version + meta are in
+    // place and were validated before promotion; make them active idempotently.
+    const fs::path app_dir = registry.app_dir(id);
+    const fs::path meta = registry.meta_dir(id, journal.target_version);
+    std::error_code ec;
+    if (!fs::is_regular_file(meta / "lexe.json", ec) ||
+        !fs::is_regular_file(meta / "hashes.json", ec)) {
+        // Promotion metadata is gone — cannot complete; fall back to rollback.
+        txn.abort();
+        return;
+    }
+    const std::vector<std::uint8_t> manifest_bytes =
+        util::slurp(meta / "lexe.json");
+    const std::vector<std::uint8_t> hashes_bytes =
+        util::slurp(meta / "hashes.json");
+    const Manifest manifest = Manifest::parse(manifest_bytes);
+
+    registry.write_manifest_bytes(id, manifest_bytes);
+    util::spit(app_dir / "hashes.json", hashes_bytes);
+#ifndef _WIN32
+    ensure_entrypoint_executable(registry.version_dir(id, journal.target_version),
+                                 manifest.entrypoint_executable);
+#endif
+
+    // Rebuild the record from the journal's pending record (falling back to a
+    // minimal record from the manifest), then refresh the desktop entry + MIME
+    // best-effort (no icons on the recovery path — the package may be gone).
+    InstallationRecord rec;
+    try {
+        rec = InstallationRecord::from_json(journal.pending_record);
+    } catch (const Error&) {
+        rec.id = id;
+        rec.publisher_key = manifest.publisher_public_key;
+        rec.installed_at = util::now_utc_string();
+    }
+    rec.id = id;
+    rec.version = journal.target_version;
+    std::vector<std::string> created = rec.created_files;
+    try {
+        const desktop::IntegrationResult integration = desktop::integrate_app(
+            paths_, manifest, app_dir / ".txn-staging" / "no-icons");
+        merge_created_files(created, integration.created_files);
+    } catch (...) {
+        // Desktop integration is best-effort; a recovered install still works
+        // from the CLI and a later `lexe repair` restores full integration.
+    }
+    rec.created_files = std::move(created);
+    registry.write_record(rec);
+
+    registry.set_current_version(id, journal.target_version); // atomic activation
+    txn.commit();
+}
+
+void Installer::recover_all() {
+    std::error_code ec;
+    const fs::path apps = paths_.apps_dir();
+    if (!fs::is_directory(apps, ec)) return;
+    // A crashed FRESH install has a txn.json but no installation.json, so we
+    // cannot use list_installed(); scan every app dir for a journal.
+    std::vector<std::string> ids;
+    for (const auto& entry : fs::directory_iterator(apps, ec)) {
+        std::error_code e2;
+        if (!entry.is_directory(e2)) continue;
+        if (fs::is_regular_file(entry.path() / "txn.json", e2)) {
+            ids.push_back(entry.path().filename().string());
+        }
+    }
+    for (const std::string& id : ids) {
+        try {
+            recover(id);
+        } catch (...) {
+            // One app's recovery failure must not block the others.
+        }
+    }
 }
 
 void Installer::uninstall(const std::string& id, bool purge_data) {

@@ -196,6 +196,12 @@ fs::path Registry::version_dir(const std::string& id,
     return app_dir(id) / "versions" / version;
 }
 
+fs::path Registry::meta_dir(const std::string& id,
+                            const std::string& version) const {
+    validate_version(version);
+    return app_dir(id) / "meta" / version;
+}
+
 std::vector<std::string> Registry::list_installed() const {
     std::vector<std::string> ids;
     std::error_code ec;
