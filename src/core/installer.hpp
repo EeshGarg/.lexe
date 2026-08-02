@@ -27,6 +27,12 @@ struct InstallOptions {
     /// explicit "install anyway" flows). Every other verification stage
     /// (FORMAT-0.1 §6.1–§6.6) always runs.
     bool force_arch = false;
+    /// Explicit consent to grant NEW permissions on an update (runtime-trust
+    /// WS5). Without it, an update whose normalized permission set expands
+    /// beyond the installed approved set is refused with PermissionError. A
+    /// bare "--yes" never sets this — approving new authority is a separate,
+    /// deliberate act.
+    bool allow_permission_expansion = false;
 };
 
 /// What an install/update produced.

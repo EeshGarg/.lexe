@@ -291,6 +291,27 @@ InstallResult Installer::install(const fs::path& lexe_file,
     const NormalizedPermissions requested_perms =
         normalize_permissions(manifest.permissions);
 
+    // Runtime-trust WS5: on an UPGRADE, an update that expands the approved
+    // permission set requires explicit consent — a bare confirmation never
+    // grants new authority. Removals and reordering are not an expansion.
+    if (registry.is_installed(manifest.id) && !previous_version.empty()) {
+        const NormalizedPermissions approved =
+            normalized_from_ids(record.approved_permissions);
+        const PermissionDelta delta =
+            permission_delta(approved, requested_perms);
+        if (delta.expands() && !opts.allow_permission_expansion) {
+            std::string added;
+            for (const std::string& id : delta.added) {
+                if (!added.empty()) added += ", ";
+                added += id;
+            }
+            throw PermissionError(
+                "update to " + manifest.id + " " + manifest.version +
+                " requests new permissions not previously approved: " + added +
+                ". Re-run with explicit permission approval to grant them.");
+        }
+    }
+
     const PackageReader reader(lexe_file);
     const std::vector<std::uint8_t> manifest_bytes =
         reader.read_entry("lexe.json");

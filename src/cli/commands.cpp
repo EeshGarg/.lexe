@@ -303,8 +303,9 @@ ordered_json manifest_json(const Manifest& manifest) {
 // ------------------------------------------------------------- commands
 
 int cmd_install(const std::vector<std::string>& args) {
-    const Parsed parsed =
-        parse_arguments(args, {"--yes"}, {"--channel"}, false, kInstallUsage);
+    const Parsed parsed = parse_arguments(
+        args, {"--yes", "--accept-permissions"}, {"--channel"}, false,
+        kInstallUsage);
     require_positionals(parsed, 1, kInstallUsage);
     const fs::path package(parsed.positionals[0]);
 
@@ -334,6 +335,10 @@ int cmd_install(const std::vector<std::string>& args) {
     InstallOptions opts;
     const auto channel = parsed.options.find("--channel");
     if (channel != parsed.options.end()) opts.channel = channel->second;
+    // Approving new permissions on an update is a separate, explicit act
+    // (runtime-trust WS5) — never implied by --yes.
+    opts.allow_permission_expansion =
+        parsed.flags.count("--accept-permissions") != 0;
     const InstallResult result = installer.install(package, opts);
 
     std::cout << "Installed " << manifest.name << " " << result.version << " ("
@@ -351,10 +356,12 @@ int cmd_run(const std::vector<std::string>& args) {
 }
 
 int cmd_update(const std::vector<std::string>& args) {
-    const Parsed parsed =
-        parse_arguments(args, {"--all", "--check"}, {}, false, kUpdateUsage);
+    const Parsed parsed = parse_arguments(
+        args, {"--all", "--check", "--accept-permissions"}, {}, false,
+        kUpdateUsage);
     const bool all = parsed.flags.count("--all") != 0;
     const bool check_only = parsed.flags.count("--check") != 0;
+    const bool accept_perms = parsed.flags.count("--accept-permissions") != 0;
     if (all) {
         require_positionals(parsed, 0, kUpdateUsage);
     } else {
@@ -383,7 +390,7 @@ int cmd_update(const std::vector<std::string>& args) {
                       << ")\n";
             return;
         }
-        const InstallResult result = updater.apply(id);
+        const InstallResult result = updater.apply(id, accept_perms);
         std::cout << id << ": updated " << chk.installed_version << " -> "
                   << result.version << "\n";
     };

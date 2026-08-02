@@ -205,7 +205,8 @@ UpdateCheck Updater::check(const std::string& id) {
     return out;
 }
 
-InstallResult Updater::apply(const std::string& id) {
+InstallResult Updater::apply(const std::string& id,
+                             bool allow_permission_expansion) {
     const Registry registry(paths_);
 
     // §7 checks 1–3 (and no side effects yet).
@@ -275,6 +276,9 @@ InstallResult Updater::apply(const std::string& id) {
     InstallOptions install_opts;
     install_opts.source = chk.package_url; // where this version came from
     install_opts.channel = record.channel; // preserve the installed channel
+    // Permission-expansion consent is carried through to the install-time gate
+    // (runtime-trust WS5); a plain `lexe update` never grants new authority.
+    install_opts.allow_permission_expansion = allow_permission_expansion;
     Installer installer(paths_);
     return installer.install(package_path, install_opts);
 }

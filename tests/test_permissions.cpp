@@ -27,11 +27,14 @@ namespace {
 // Pack a package for `id` requesting `perms`, signed with `key`.
 fs::path pack_with_perms(const fs::path& work, const crypto::KeyPair& key,
                          const std::string& id,
-                         const std::vector<std::string>& perms) {
+                         const std::vector<std::string>& perms,
+                         const std::string& version = "1.0.0") {
     test::TestAppSpec spec;
     spec.id = id;
+    spec.version = version;
     spec.public_key = test::encode_public_key_str(key.public_key);
-    test::TestAppTree tree = test::make_test_app_tree(work / ("t-" + id), spec);
+    test::TestAppTree tree =
+        test::make_test_app_tree(work / ("t-" + id + "-" + version), spec);
     nlohmann::json m =
         nlohmann::json::parse(util::slurp_text(tree.manifest_file));
     m["permissions"] = perms;
@@ -39,7 +42,7 @@ fs::path pack_with_perms(const fs::path& work, const crypto::KeyPair& key,
     PackageWriter::Inputs in;
     in.payload_dir = tree.payload_dir;
     in.manifest_file = tree.manifest_file;
-    const fs::path out = work / (id + ".lexe");
+    const fs::path out = work / (id + "-" + version + ".lexe");
     PackageWriter::write(in, key, out);
     return out;
 }
@@ -161,6 +164,60 @@ TEST_CASE("install refuses a package requesting an unknown permission") {
                          doctest::Contains("unknown permission"),
                          lexe::VerificationError);
     CHECK_FALSE(Registry(paths).is_installed("com.example.bad"));
+}
+
+TEST_CASE("an update that EXPANDS permissions is refused without consent (WS5)") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const std::string id = "com.example.grow";
+
+    // Install 1.0.0 approving only {network}.
+    Installer(paths).install(pack_with_perms(work, key, id, {"network"}, "1.0.0"),
+                             InstallOptions{});
+
+    // 2.0.0 adds user-files-selected — refused with PermissionError (exit 5),
+    // and the previous version stays active.
+    const fs::path v2 =
+        pack_with_perms(work, key, id, {"network", "user-files-selected"}, "2.0.0");
+    CHECK_THROWS_WITH_AS(Installer(paths).install(v2, InstallOptions{}),
+                         doctest::Contains("new permissions"),
+                         lexe::PermissionError);
+    CHECK(exit_code_for(lexe::PermissionError("x")) == 5);
+    CHECK(Registry(paths).current_version(id) == "1.0.0");
+    CHECK(Registry(paths).read_record(id).approved_permissions ==
+          std::vector<std::string>{"network"});
+
+    // With explicit consent it proceeds and the approved set is updated.
+    InstallOptions opts;
+    opts.allow_permission_expansion = true;
+    Installer(paths).install(v2, opts);
+    CHECK(Registry(paths).current_version(id) == "2.0.0");
+    CHECK(Registry(paths).read_record(id).approved_permissions ==
+          std::vector<std::string>{"network", "user-files-selected"});
+}
+
+TEST_CASE("updates that REMOVE or keep permissions need no extra consent (WS5)") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const std::string id = "com.example.same";
+
+    Installer(paths).install(
+        pack_with_perms(work, key, id, {"network", "user-files-selected"}, "1.0.0"),
+        InstallOptions{});
+    // 2.0.0 drops user-files-selected — a reduction, allowed without consent.
+    Installer(paths).install(
+        pack_with_perms(work, key, id, {"network"}, "2.0.0"), InstallOptions{});
+    CHECK(Registry(paths).current_version(id) == "2.0.0");
+    // 3.0.0 keeps the same single permission — no delta, allowed.
+    Installer(paths).install(
+        pack_with_perms(work, key, id, {"network"}, "3.0.0"), InstallOptions{});
+    CHECK(Registry(paths).current_version(id) == "3.0.0");
 }
 
 } // TEST_SUITE("permissions")

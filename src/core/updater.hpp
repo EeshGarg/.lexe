@@ -38,7 +38,11 @@ public:
     /// its SHA-256 (§7.4) and the full §6 pipeline (§7.5), require matching
     /// id + publisher key (§7.6) and a strictly greater version (§7.7), then
     /// install. Throws Error("already up to date")-style when nothing newer.
-    InstallResult apply(const std::string& id);
+    /// Apply the available update. `allow_permission_expansion` grants any new
+    /// permissions the update requests (runtime-trust WS5); without it an
+    /// expanding update is refused with PermissionError.
+    InstallResult apply(const std::string& id,
+                        bool allow_permission_expansion = false);
 
     /// `lexe source set <id> <url>`: record a new update source in
     /// installation.json (SPEC "Update Ownership": explicit user action).
