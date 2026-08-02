@@ -153,18 +153,27 @@ expect_exit 0 remove "$ID" --yes
 assert_absent "$LEXE_HOME/apps/$ID"
 assert_file   "$LEXE_HOME/data/$ID/profile.db"
 
-step "install with a DIFFERENT key over retained data — refused (exit 6)"
+step "install with a DIFFERENT key — refused as a changed key (exit 7)"
+# The local TRUST record (bound to key k1) persists across the app-only
+# uninstall, so a different key is now a changed-key rejection (WS4) — the
+# strongest form of "must not silently take over".
 make_pkg 1.0.0 "$KEYDIR/k2.json" "$WORK/v1-k2.lexe"
-expect_exit 6 install "$WORK/v1-k2.lexe" --yes
+expect_exit 7 install "$WORK/v1-k2.lexe" --yes
 assert_file "$LEXE_HOME/data/$ID/profile.db"          # unchanged by the refusal
 
-step "remove --purge-data — all application data deleted"
+step "remove --purge-data — data deleted, but local trust history preserved"
 "$LEXE" install "$WORK/v1.lexe" --yes >/dev/null 2>&1  # reinstall (same key) to remove
 expect_exit 0 remove "$ID" --purge-data --yes
 assert_absent "$LEXE_HOME/data/$ID"                   # data gone
 assert_absent "$LEXE_HOME/apps/$ID"
+assert_file   "$LEXE_HOME/trust/$ID.json"             # trust history preserved
 
-step "after purge, a DIFFERENT publisher may claim the id cleanly"
+step "a DIFFERENT publisher is STILL refused after purge (trust persists)"
+expect_exit 7 install "$WORK/v1-k2.lexe" --yes
+
+step "forget local trust, THEN a different publisher may claim the id"
+expect_exit 0 trust forget "$ID"
+assert_absent "$LEXE_HOME/trust/$ID.json"
 expect_exit 0 install "$WORK/v1-k2.lexe" --yes
 assert_current 1.0.0
 
