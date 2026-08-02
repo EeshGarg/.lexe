@@ -50,6 +50,16 @@ public:
     using Error::Error;
 };
 
+/// A runtime-isolation policy could not be enforced (runtime-trust WS7): the
+/// backend is unavailable, a required control (e.g. network denial) cannot be
+/// established, or backend setup failed. The application is NOT executed and
+/// the launch NEVER falls through to direct execution. A LaunchError, so the
+/// launcher's fail-closed guarantee covers it.
+class IsolationError : public LaunchError {
+public:
+    using LaunchError::LaunchError;
+};
+
 /// Map an exception to the CLI exit code documented above.
 inline int exit_code_for(const std::exception& e) noexcept {
     if (dynamic_cast<const UsageError*>(&e) != nullptr) return 2;
