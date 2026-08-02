@@ -58,11 +58,30 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Crypto provider: prefer a maintained libsodium (canonical S, canonical point
+# and small-order-point rejection per its documented API); fall back to the
+# vendored orlp/ed25519 with our own strict checks where libsodium is not
+# available (currently the MSVC dev host). Selected behind crypto.cpp's seam.
+# ---------------------------------------------------------------------------
+set(LEXE_HAVE_SODIUM OFF)
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(SODIUM QUIET IMPORTED_TARGET libsodium)
+  if(SODIUM_FOUND)
+    set(LEXE_HAVE_SODIUM ON)
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # lexe_core — static library, all portable runtime logic.
 # ---------------------------------------------------------------------------
 file(GLOB LEXE_CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp)
 add_library(lexe_core STATIC ${LEXE_CORE_SOURCES})
 target_include_directories(lexe_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(LEXE_HAVE_SODIUM)
+  target_link_libraries(lexe_core PUBLIC PkgConfig::SODIUM)
+  target_compile_definitions(lexe_core PUBLIC LEXE_HAVE_SODIUM=1)
+endif()
 target_link_libraries(lexe_core PUBLIC lexe_third_party lexe_settings)
 
 # ---------------------------------------------------------------------------

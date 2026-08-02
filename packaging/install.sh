@@ -55,6 +55,15 @@ if [ "$missing" -ne 0 ]; then
     exit 1
 fi
 
+# The runtime links libsodium dynamically (the Ed25519 provider). Warn early if
+# it is missing rather than failing cryptically at first launch.
+if command -v ldconfig >/dev/null 2>&1; then
+    if ! ldconfig -p 2>/dev/null | grep -q 'libsodium\.so'; then
+        echo "warning: libsodium runtime library not found." >&2
+        echo "         install it, e.g.:  sudo apt install libsodium23" >&2
+    fi
+fi
+
 # ------------------------------------------------------------ install binaries
 mkdir -p "$bin_dir"
 for bin in "${binaries[@]}"; do

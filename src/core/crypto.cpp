@@ -13,6 +13,10 @@
 #include <nlohmann/json.hpp>
 #include <picosha2/picosha2.h>
 
+#if defined(LEXE_HAVE_SODIUM)
+#include <sodium.h>
+#endif
+
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -100,6 +104,17 @@ const unsigned char* message_ptr(const std::vector<std::uint8_t>& m) {
     static const unsigned char dummy = 0;
     return m.empty() ? &dummy : m.data();
 }
+
+#if defined(LEXE_HAVE_SODIUM)
+/// libsodium requires one-time initialization before any call. C++11 magic
+/// statics make this thread-safe on first use.
+void ensure_sodium_init() {
+    static const int rc = sodium_init(); // -1 fail, 0 ok, 1 already initialized
+    if (rc < 0) {
+        throw Error("crypto: libsodium initialization failed");
+    }
+}
+#endif
 
 constexpr std::string_view kKeyPrefix = "ed25519:";
 
@@ -210,20 +225,37 @@ KeyPair keypair_from_seed(const Seed& seed) {
     KeyPair kp;
     kp.seed = seed;
     unsigned char private_key[64];
+    // Both providers implement standard Ed25519, so the same seed derives the
+    // same public key — this is what makes packages cross-provider compatible.
+#if defined(LEXE_HAVE_SODIUM)
+    ensure_sodium_init();
+    crypto_sign_ed25519_seed_keypair(kp.public_key.data(), private_key,
+                                     seed.data());
+#else
     ed25519_create_keypair(kp.public_key.data(), private_key, seed.data());
+#endif
     secure_wipe(private_key, sizeof(private_key));
     return kp;
 }
 
 Signature sign(const std::vector<std::uint8_t>& message, const KeyPair& key) {
     // FORMAT-0.1 §4: the keypair is re-derived from the seed on every use;
-    // the 64-byte expanded private key never leaves this function.
-    unsigned char public_key[32];
+    // the 64-byte expanded private key never leaves this function. Detached
+    // signature over the exact message bytes (never a re-serialized structure).
     unsigned char private_key[64];
-    ed25519_create_keypair(public_key, private_key, key.seed.data());
     Signature sig{};
+#if defined(LEXE_HAVE_SODIUM)
+    ensure_sodium_init();
+    unsigned char public_key[32];
+    crypto_sign_ed25519_seed_keypair(public_key, private_key, key.seed.data());
+    crypto_sign_ed25519_detached(sig.data(), nullptr, message_ptr(message),
+                                 message.size(), private_key);
+#else
+    unsigned char public_key[32];
+    ed25519_create_keypair(public_key, private_key, key.seed.data());
     ed25519_sign(sig.data(), message_ptr(message), message.size(), public_key,
                  private_key);
+#endif
     secure_wipe(private_key, sizeof(private_key));
     return sig;
 }
@@ -235,8 +267,19 @@ bool verify_signature(const std::vector<std::uint8_t>& message,
     // degenerate public-key encoding BEFORE the curve check.
     if (!signature_scalar_canonical(signature)) return false;
     if (!public_key_canonical(public_key)) return false;
+#if defined(LEXE_HAVE_SODIUM)
+    // libsodium's detached verify additionally rejects non-canonical S and
+    // small-order / non-canonical point encodings per its documented API; the
+    // checks above are kept as defense-in-depth and for identical negative-
+    // vector behaviour across providers.
+    ensure_sodium_init();
+    return crypto_sign_ed25519_verify_detached(
+               signature.data(), message_ptr(message), message.size(),
+               public_key.data()) == 0;
+#else
     return ed25519_verify(signature.data(), message_ptr(message),
                           message.size(), public_key.data()) != 0;
+#endif
 }
 
 std::string encode_public_key(const PublicKey& key) {

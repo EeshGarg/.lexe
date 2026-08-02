@@ -10,6 +10,9 @@
 
 #include "core/crypto.hpp"
 
+#include <ed25519/ed25519.h> // the PREVIOUS provider, for cross-provider fixtures
+
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -93,6 +96,37 @@ TEST_CASE("flipping any bit of R or S breaks verification") {
         CAPTURE(byte);
         CHECK_FALSE(crypto::verify_signature(msg, tampered, key.public_key));
     }
+}
+
+TEST_CASE("cross-provider compatibility with the previous orlp/ed25519 signer") {
+    lexe::test::TempLexeHome home;
+    // A fixed seed makes this a deterministic known-answer fixture: standard
+    // Ed25519 (RFC 8032) derives one public key and one signature per seed, so
+    // orlp and the migrated provider must agree byte-for-byte.
+    crypto::Seed seed{};
+    for (std::size_t i = 0; i < seed.size(); ++i) {
+        seed[i] = static_cast<std::uint8_t>(i + 1);
+    }
+    const std::vector<std::uint8_t> msg = {'l', 'e', 'x', 'e', '-', 'x'};
+
+    // Sign with the OLD provider (orlp) directly, as the pre-migration builder
+    // did.
+    unsigned char pk[32];
+    unsigned char sk[64];
+    ed25519_create_keypair(pk, sk, seed.data());
+    crypto::Signature orlp_sig{};
+    ed25519_sign(orlp_sig.data(), msg.data(), msg.size(), pk, sk);
+    crypto::PublicKey pubkey{};
+    std::copy(pk, pk + 32, pubkey.begin());
+
+    // The migrated provider derives the SAME public key from the seed...
+    CHECK(crypto::keypair_from_seed(seed).public_key == pubkey);
+    // ...verifies the OLD provider's signature (a package signed by the old
+    // builder still verifies through the new path)...
+    CHECK(crypto::verify_signature(msg, orlp_sig, pubkey));
+    // ...and produces a byte-identical signature (deterministic Ed25519), so a
+    // package signed through the new path verifies everywhere too.
+    CHECK(crypto::sign(msg, crypto::keypair_from_seed(seed)) == orlp_sig);
 }
 
 TEST_CASE("decode_public_key requires exactly 32 decoded bytes") {

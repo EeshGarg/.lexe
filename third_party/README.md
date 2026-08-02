@@ -7,9 +7,25 @@ Pinned, vendored, and never modified (compile-time configuration only, e.g.
 |---|---|---|---|---|
 | nlohmann/json | 3.11.3 | `nlohmann/json.hpp` | MIT | JSON parsing/serialization |
 | miniz | 3.0.2 (amalgamated, `MZ_VERSION` "11.0.2") | `miniz/miniz.h`, `miniz/miniz.c` | MIT | ZIP read/write |
-| orlp/ed25519 | master snapshot (vendored 2026-07-13) | `ed25519/*.h`, `ed25519/*.c` | zlib | Ed25519 signatures |
+| orlp/ed25519 | master snapshot (vendored 2026-07-13) | `ed25519/*.h`, `ed25519/*.c` | zlib | Ed25519 **fallback** signer + test key-derivation |
 | PicoSHA2 | master snapshot (vendored 2026-07-13) | `picosha2/picosha2.h` | MIT | SHA-256 |
 | doctest | 2.4.11 | `doctest/doctest.h` | MIT | unit tests |
+
+## Ed25519 crypto provider
+
+The primary Ed25519 provider is **libsodium** (a maintained library), used for
+all signing and verification when available. It is NOT vendored — it is found
+at build time via `pkg-config` (`libsodium`) and linked dynamically, so it is a
+**runtime dependency** on Linux (`libsodium23` / `libsodium-dev`; present in the
+standard repositories of every supported distribution). When libsodium is not
+found (currently the MSVC dev host, which has no pkg-config/libsodium), the
+build falls back to the vendored `orlp/ed25519` with the runtime's own strict
+canonical-`S` and canonical/degenerate-key checks. Both providers implement
+standard Ed25519 (RFC 8032), so packages are byte-for-byte compatible across
+them (proven by cross-provider fixtures in `tests/test_ed25519_strict.cpp`).
+libsodium's `crypto_sign_ed25519_verify_detached` additionally rejects
+non-canonical `S` and small-order / non-canonical point encodings per its
+documented API.
 
 ## Exact upstream sources
 
