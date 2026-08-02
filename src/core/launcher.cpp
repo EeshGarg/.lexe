@@ -12,15 +12,19 @@
 
 #include "core/crypto.hpp"
 #include "core/error.hpp"
+#include "core/isolation.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
 #include "core/manifest.hpp"
+#include "core/permissions.hpp"
 #include "core/registry.hpp"
 #include "core/util.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -142,28 +146,76 @@ int run_app(const Paths& paths, const std::string& id,
     }
 #endif
 
-    // argv = entrypoint, manifest arguments, then caller arguments — an argv
-    // array end to end, never a shell (security invariant #3).
-    std::vector<std::string> argv;
-    argv.reserve(1 + manifest.entrypoint_arguments.size() + args.size());
-    argv.push_back(entry.string());
-    argv.insert(argv.end(), manifest.entrypoint_arguments.begin(),
-                manifest.entrypoint_arguments.end());
-    argv.insert(argv.end(), args.begin(), args.end());
+    // App arguments (manifest arguments then caller arguments) — argv elements
+    // end to end, never a shell (security invariant #3).
+    std::vector<std::string> app_args;
+    app_args.reserve(manifest.entrypoint_arguments.size() + args.size());
+    app_args.insert(app_args.end(), manifest.entrypoint_arguments.begin(),
+                    manifest.entrypoint_arguments.end());
+    app_args.insert(app_args.end(), args.begin(), args.end());
 
-    util::RunOptions opts;
-    opts.cwd = root;
-    opts.capture_stdout = false; // the child owns our stdout (normal launch)
+    // Runtime isolation (WS7): construct the request from trusted installed
+    // state and launch THROUGH the isolation backend. The approved permission
+    // set decides network access; everything else is the baseline sandbox.
+    const NormalizedPermissions approved =
+        normalized_from_ids(record.approved_permissions);
+    const bool network_allowed =
+        std::find(approved.ids.begin(), approved.ids.end(),
+                  std::string("network")) != approved.ids.end();
 
-    // Throws lexe::Error when the process cannot be started (unlaunchable).
-    const util::ProcessResult result = util::run_process(argv, opts);
+    const fs::path data_root = paths.data_dir() / id;
+    const fs::path cache_root = paths.cache_dir() / "apps" / id;
+    std::error_code mkec;
+    fs::create_directories(data_root, mkec);
+    fs::create_directories(cache_root, mkec);
+
+    IsolationRequest req;
+    req.app_id = id;
+    req.app_root = root;
+    req.entrypoint = entry;
+    req.args = app_args;
+    req.data_root = data_root;
+    req.cache_root = cache_root;
+    req.network_allowed = network_allowed;
+    req.gui = false; // 0.1: headless/terminal isolation only (see isolation docs)
+
+    const std::unique_ptr<IsolationBackend> backend =
+        make_isolation_backend(paths);
+    const IsolationCapabilities caps = backend->capabilities();
+
+    int exit_code = 0;
+    if (caps.status == CapabilityStatus::PolicyUnsupported) {
+        // No isolation backend on this platform (e.g. the Windows dev host):
+        // run directly. This is NOT a fail-closed failure — the platform has no
+        // isolation to establish; the capability is reported truthfully.
+        std::vector<std::string> argv;
+        argv.push_back(entry.string());
+        argv.insert(argv.end(), app_args.begin(), app_args.end());
+        util::RunOptions opts;
+        opts.cwd = root;
+        opts.capture_stdout = false;
+        exit_code = util::run_process(argv, opts).exit_code;
+    } else if (caps.status == CapabilityStatus::Unavailable ||
+               caps.status == CapabilityStatus::SetupFailed) {
+        // Isolation is expected here but the backend does not work — FAIL
+        // CLOSED. Never execute the application unconfined.
+        throw IsolationError(
+            "launcher: runtime isolation backend is unavailable (" +
+            caps.detail + "); refusing to launch " + id + " unconfined");
+    } else {
+        // Available / PartiallyAvailable: build the plan (throws IsolationError
+        // if a required control cannot be enforced) and launch through the
+        // backend (throws on setup failure — never falls back to direct exec).
+        const IsolationPlan plan = build_plan(req, caps);
+        exit_code = backend->run(plan).exit_code;
+    }
 
     // Record lastRun {at, exitCode} in installation.json (FORMAT-0.1 §9).
     record.last_run_at = util::now_utc_string();
-    record.last_exit_code = result.exit_code;
+    record.last_exit_code = exit_code;
     registry.write_record(record);
 
-    return result.exit_code;
+    return exit_code;
 }
 
 } // namespace lexe

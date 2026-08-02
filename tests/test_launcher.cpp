@@ -244,7 +244,7 @@ TEST_CASE("records lastRun timestamp and exit code in installation.json") {
     CHECK(record.publisher_key == std::string(kZeroKey));
 }
 
-TEST_CASE("appends caller args after manifest arguments, cwd = version dir") {
+TEST_CASE("appends caller args after manifest arguments; cwd is a safe dir") {
     lexe::test::TempLexeHome home;
     const lexe::Paths paths = lexe::Paths::detect();
 
@@ -255,9 +255,14 @@ TEST_CASE("appends caller args after manifest arguments, cwd = version dir") {
 
     CHECK(lexe::run_app(paths, app.id, {"alpha", "bravo"}) == 5);
 
-    // args.txt lands in the child's CWD — its presence in the version dir
-    // proves the launcher spawned with cwd = version dir.
+    // args.txt lands in the child's CWD, which is NOT the caller's cwd: on
+    // Linux the launcher isolates the app and the cwd is its private data root;
+    // on a platform without an isolation backend it is the version dir.
+#ifdef _WIN32
     const fs::path args_file = version_dir / "args.txt";
+#else
+    const fs::path args_file = paths.data_dir() / app.id / "args.txt";
+#endif
     REQUIRE(fs::is_regular_file(args_file));
     CHECK(trimmed(lexe::util::slurp_text(args_file)) ==
           "--from-manifest alpha bravo");
