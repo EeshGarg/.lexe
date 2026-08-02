@@ -31,8 +31,11 @@
 #endif
 #endif
 
+#include "core/isolation.hpp"
 #include "core/manifest.hpp"
 #include "core/paths.hpp"
+#include "core/presentation.hpp"
+#include "core/trust.hpp"
 #include "core/verify.hpp"
 
 #include <algorithm>
@@ -91,14 +94,28 @@ inline std::string describe_permission(const std::string& permission) {
     return permission;
 }
 
-/// The "Permissions:" block: one description per line, or an explicit
-/// "None requested" (permissions are informational in 0.1).
-inline std::string format_permissions(const std::vector<std::string>& permissions) {
+/// The "Permissions:" block: one description per line with its TRUTHFUL
+/// enforcement state on this platform, or an explicit "None requested".
+inline std::string format_permissions(const std::vector<std::string>& permissions,
+                                      const IsolationCapabilities& caps) {
     if (permissions.empty()) return "None requested";
     std::string text;
     for (const auto& p : permissions) {
         if (!text.empty()) text += '\n';
-        text += describe_permission(p);
+        text += describe_permission(p) + "  [" +
+                presentation::permission_enforcement(p, caps) + "]";
+    }
+    return text;
+}
+
+/// The permission CHANGE on an update, kept separate from any key-change or
+/// trust decision (empty when there is nothing new).
+inline std::string format_permission_delta(const PermissionDelta& delta) {
+    if (!delta.expands()) return "";
+    std::string text = "New permissions this update requests (separate approval "
+                       "required):";
+    for (const std::string& id : delta.added) {
+        text += "\n  + " + describe_permission(id);
     }
     return text;
 }
@@ -166,20 +183,48 @@ inline std::string format_updates(bool enabled, const std::string& manifest_url,
     return "Automatically check " + manifest_url + "\nChannel: " + channel;
 }
 
-/// The verification status banner. A failure names the FORMAT-0.1 §6 stage
-/// and its reason, and states that installation is disabled.
-inline std::string format_verification_status(const VerificationReport& report) {
-    if (report.stages.empty()) {
-        return "Verification could not be performed on this package.";
+/// The two-dimensional authenticity + local-trust lines for the banner and the
+/// trust section. Derived from a trust evaluation (nullopt when the package is
+/// too broken to expose a key). `severity` is a styling hint — "ok" / "caution"
+/// / "danger" — NEVER a claim of external verification; first-seen is "caution".
+struct TrustLines {
+    std::string headline;
+    std::string signature;
+    std::string key;
+    std::string fingerprint;
+    std::string caveat;
+    std::string severity = "danger";
+    bool allowed = false;
+};
+inline TrustLines format_trust(const std::optional<TrustEvaluation>& eval) {
+    TrustLines t;
+    if (!eval.has_value()) {
+        t.headline = "This package could not be read — authenticity cannot be "
+                     "established. Installation is disabled.";
+        t.severity = "danger";
+        return t;
     }
-    if (report.ok()) {
-        return "Verified — structure, manifest, publisher signature and "
-               "content hashes all check out.";
+    const presentation::AuthenticityView v =
+        presentation::present_authenticity(*eval, "");
+    t.headline = v.headline;
+    t.signature = v.signature_text;
+    t.key = v.key_text;
+    t.fingerprint = v.fingerprint_grouped;
+    t.caveat = v.identity_caveat;
+    t.severity = presentation::to_string(v.severity);
+    t.allowed = v.can_proceed;
+    return t;
+}
+
+/// The "Isolation on this platform" block: headline + per-control truthful
+/// states + the platform caveat.
+inline std::string format_isolation(const IsolationCapabilities& caps) {
+    const presentation::IsolationView v = presentation::present_isolation(caps);
+    std::string text = v.headline;
+    for (const std::pair<std::string, std::string>& c : v.controls) {
+        text += "\n  " + c.first + ": " + c.second;
     }
-    const VerificationStage* failure = report.first_failure();
-    std::string text = "Verification FAILED at the \"" + failure->name + "\" stage";
-    if (!failure->detail.empty()) text += ": " + failure->detail;
-    text += ". Installation is disabled.";
+    text += "\n" + v.platform_caveat;
     return text;
 }
 
@@ -219,48 +264,70 @@ inline std::string format_advanced_directories(const Paths& paths,
 struct ViewModel {
     std::string app_name;
     std::string app_id;
-    std::string publisher_line;   // "Published by …"
+    std::string publisher_line;   // "Published by … (not independently verified)"
     std::string version_line;     // "Version …"
     std::string source_text;      // "Source:" block
     std::string type_text;        // "Application Type:" block
-    std::string permissions_text; // "Permissions:" block
+    std::string permissions_text; // "Permissions:" block (with enforcement)
+    std::string permission_delta_text; // new-permissions-on-update ("" when none)
     std::string install_text;     // "Installation:" block (scope + size)
     std::string updates_text;     // "Updates:" block
-    std::string status_text;      // verification banner
-    bool verified = false;        // the §6 report passed
-    bool can_install = false;     // verified AND the manifest is readable
+    std::string isolation_text;   // "Isolation on this platform" block
+    // Authenticity + local trust (two dimensions, never one "verified" bit):
+    std::string status_text;      // banner headline (the trust headline)
+    std::string signature_text;   // "Signature: valid (Ed25519)" etc.
+    std::string key_text;         // the local key-state sentence
+    std::string fingerprint_text; // grouped signing-key fingerprint
+    std::string identity_caveat;  // TOFU caveat (always present when readable)
+    std::string trust_severity;   // "ok" | "caution" | "danger" (banner color)
+    bool verified = false;        // the §6 report passed (authenticity only)
+    bool can_install = false;     // §6 passed AND trust allows AND manifest read
     std::vector<std::string> channels;  // Advanced Options channel combo
     int active_channel = 0;             // preselected combo index
     std::string advanced_dirs_text;     // Advanced Options directory summary
 };
 
-/// Build the primary-screen view model from the verification report and the
-/// (possibly unreadable) manifest. `manifest` is nullopt when the package is
-/// too broken to read `lexe.json` — the screen still renders, with the
-/// banner explaining the failure and Install disabled.
+/// Build the primary-screen view model. `eval` is the local trust evaluation
+/// (nullopt when the manifest is unreadable), `caps` the probed isolation
+/// capability, `delta` the permission change on an update (empty for a fresh
+/// install). Pure: all effectful inputs are passed in, so the GTK-free layer is
+/// unit-testable on every platform.
 inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                   const VerificationReport& report,
                                   const std::filesystem::path& package_path,
                                   const Paths& paths,
-                                  const std::string& host_arch) {
+                                  const std::string& host_arch,
+                                  const std::optional<TrustEvaluation>& eval,
+                                  const IsolationCapabilities& caps,
+                                  const PermissionDelta& delta = {}) {
     ViewModel vm;
     const std::string filename = package_path.filename().string();
     vm.verified = report.ok();
-    vm.status_text = format_verification_status(report);
+
+    const TrustLines trust = format_trust(eval);
+    vm.status_text = trust.headline;
+    vm.signature_text = trust.signature;
+    vm.key_text = trust.key;
+    vm.fingerprint_text = trust.fingerprint;
+    vm.identity_caveat = trust.caveat;
+    vm.trust_severity = trust.severity;
+    vm.isolation_text = format_isolation(caps);
 
     if (manifest.has_value()) {
         const Manifest& m = *manifest;
         vm.app_id = m.id;
         vm.app_name = m.name;
-        vm.publisher_line = "Published by " + m.publisher_name;
+        vm.publisher_line = "Published by " + m.publisher_name +
+                            " (publisher identity not independently verified)";
         if (!m.publisher_website.empty()) {
-            vm.publisher_line += " (" + m.publisher_website + ")";
+            vm.publisher_line += " — " + m.publisher_website;
         }
         vm.version_line = "Version " + m.version;
         vm.source_text = format_source(m.install_mode, filename);
         vm.type_text = format_application_type(m.application_type,
                                                m.architectures, host_arch);
-        vm.permissions_text = format_permissions(m.permissions);
+        vm.permissions_text = format_permissions(m.permissions, caps);
+        vm.permission_delta_text = format_permission_delta(delta);
         vm.install_text = format_install(m.install_scope, m.install_estimated_size);
         vm.updates_text = format_updates(m.updates_enabled, m.updates_manifest_url,
                                          m.updates_channel);
@@ -282,7 +349,10 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
         vm.advanced_dirs_text =
             format_advanced_directories(paths, "<application-id>");
     }
-    vm.can_install = vm.verified && manifest.has_value();
+    // Install is permitted only when the signature verified AND local trust
+    // allows it (a valid-but-first-seen key is allowed, but a changed/blocked/
+    // corrupt key disables Install even though the signature is valid).
+    vm.can_install = vm.verified && manifest.has_value() && trust.allowed;
     return vm;
 }
 
@@ -296,12 +366,18 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
 
 #include "core/error.hpp"
 #include "core/installer.hpp"
+#include "core/isolation.hpp"
 #include "core/launcher.hpp"
 #include "core/package.hpp"
+#include "core/permissions.hpp"
+#include "core/registry.hpp"
+#include "core/trust.hpp"
+#include "core/util.hpp"
 
 #include <gtk/gtk.h>
 
 #include <exception>
+#include <system_error>
 
 namespace {
 
@@ -338,12 +414,18 @@ struct AppState {
     int launch_exit_code = 0;
 };
 
-/// Set the verification/status banner (bold, green on ok / red on failure).
-void set_banner(AppState* st, bool ok, const std::string& text) {
+/// Set the authenticity/trust banner. The colour reflects the trust SEVERITY,
+/// never a plain "verified": green only for a known/trusted key ("ok"), amber
+/// for a valid-but-first-seen key ("caution" — NOT styled as verified), red for
+/// a refusal ("danger"). Any other value is treated as danger.
+void set_banner(AppState* st, const std::string& severity,
+                const std::string& text) {
+    const char* colour = severity == "ok"        ? "#1a7f37"   // green
+                         : severity == "caution" ? "#9a6700"   // amber
+                                                 : "#b00020";  // red
     gchar* escaped = g_markup_escape_text(text.c_str(), -1);
     gchar* markup = g_strdup_printf(
-        "<span weight=\"bold\" foreground=\"%s\">%s</span>",
-        ok ? "#1a7f37" : "#b00020", escaped);
+        "<span weight=\"bold\" foreground=\"%s\">%s</span>", colour, escaped);
     gtk_label_set_markup(GTK_LABEL(st->banner_label), markup);
     g_free(markup);
     g_free(escaped);
@@ -409,7 +491,7 @@ gboolean on_install_finished(gpointer user_data) {
     if (!st->install_error.empty()) {
         // Back to the details screen with the failure in the banner; the
         // user may retry (verification state is unchanged).
-        set_banner(st, false, "Installation failed: " + st->install_error);
+        set_banner(st, "danger", "Installation failed: " + st->install_error);
         gtk_widget_set_sensitive(st->install_button, TRUE);
         gtk_widget_set_sensitive(st->details_close_button, TRUE);
         gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "details");
@@ -491,12 +573,13 @@ GtkWidget* build_details_page(AppState* st) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(box), 16);
 
-    // Verification status banner.
+    // Authenticity + local-trust banner (severity-coloured, never a plain green
+    // "verified" for a first-seen key).
     st->banner_label = gtk_label_new(nullptr);
     gtk_label_set_xalign(GTK_LABEL(st->banner_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(st->banner_label), TRUE);
     gtk_box_pack_start(GTK_BOX(box), st->banner_label, FALSE, FALSE, 0);
-    set_banner(st, vm.verified, vm.status_text);
+    set_banner(st, vm.trust_severity, vm.status_text);
 
     // Application name (user-controlled: escape before markup).
     GtkWidget* name_label = gtk_label_new(nullptr);
@@ -514,11 +597,28 @@ GtkWidget* build_details_page(AppState* st) {
 
     add_body_label(box, vm.publisher_line);
     add_body_label(box, vm.version_line);
+
+    // Authenticity & local trust: two dimensions, the fingerprint, and the
+    // always-present "not real-world identity" caveat.
+    {
+        std::string trust_body = vm.signature_text;
+        if (!vm.key_text.empty()) trust_body += "\n" + vm.key_text;
+        if (!vm.fingerprint_text.empty()) {
+            trust_body += "\nSigning key fingerprint: " + vm.fingerprint_text;
+        }
+        if (!vm.identity_caveat.empty()) trust_body += "\n" + vm.identity_caveat;
+        add_section(box, "Authenticity & local trust:", trust_body);
+    }
+
     add_section(box, "Source:", vm.source_text);
     add_section(box, "Application Type:", vm.type_text);
     add_section(box, "Permissions:", vm.permissions_text);
+    if (!vm.permission_delta_text.empty()) {
+        add_section(box, "Permission changes:", vm.permission_delta_text);
+    }
     add_section(box, "Installation:", vm.install_text);
     add_section(box, "Updates:", vm.updates_text);
+    add_section(box, "Isolation on this platform:", vm.isolation_text);
 
     // [Advanced Options] — directories used + update channel.
     GtkWidget* expander = gtk_expander_new("Advanced Options");
@@ -692,8 +792,52 @@ int main(int argc, char** argv) {
         manifest.reset();
     }
 
+    // Local trust evaluation + isolation capability + permission delta for the
+    // truthful two-dimensional view (WS10). All effectful; the pure view-model
+    // builder just formats them.
+    std::optional<lexe::TrustEvaluation> eval;
+    lexe::PermissionDelta delta;
+    if (manifest.has_value()) {
+        try {
+            const lexe::SignatureState sig =
+                lexe::signature_state_from_report(report);
+            const lexe::Registry registry(st->paths);
+            std::optional<std::string> retained;
+            const std::filesystem::path owner =
+                registry.data_owner_marker(manifest->id);
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(owner, ec)) {
+                std::string prior = lexe::util::slurp_text(owner);
+                while (!prior.empty() &&
+                       (prior.back() == '\n' || prior.back() == '\r' ||
+                        prior.back() == ' ')) {
+                    prior.pop_back();
+                }
+                if (!prior.empty()) retained = prior;
+            }
+            eval = lexe::TrustStore(st->paths).evaluate(
+                manifest->id, manifest->decoded_public_key(), sig, retained);
+            if (registry.is_installed(manifest->id)) {
+                const lexe::InstallationRecord rec =
+                    registry.read_record(manifest->id);
+                delta = lexe::permission_delta(
+                    lexe::normalized_from_ids(rec.approved_permissions),
+                    lexe::normalize_permissions(manifest->permissions));
+            }
+        } catch (const std::exception&) {
+            // Leave eval empty (banner shows a danger "cannot establish
+            // authenticity"); the isolation probe below still runs.
+        }
+    }
+    lexe::IsolationCapabilities caps;
+    try {
+        caps = lexe::make_isolation_backend(st->paths)->capabilities();
+    } catch (const std::exception&) {
+    }
+
     st->vm = lexe::gui::build_view_model(manifest, report, st->package_path,
-                                         st->paths, lexe::host_architecture());
+                                         st->paths, lexe::host_architecture(),
+                                         eval, caps, delta);
     if (!st->vm.channels.empty()) {
         st->selected_channel =
             st->vm.channels[static_cast<std::size_t>(st->vm.active_channel)];
