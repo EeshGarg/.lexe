@@ -274,6 +274,33 @@ InstallResult Installer::install(const fs::path& lexe_file,
     const fs::path app_dir = registry.app_dir(manifest.id); // validates id
     (void)registry.version_dir(manifest.id, manifest.version); // validates version
 
+    // Runtime-trust WS3/WS4: evaluate LOCAL publisher trust BEFORE anything else
+    // (even before the "already installed" check) so a locally blocked App ID is
+    // refused unconditionally. Authenticity (§6) already passed, so the signature
+    // is valid; this gate decides key CONTINUITY. A first-seen key is allowed
+    // (the separate --yes/confirm is the install consent); a known matching key
+    // is allowed; a changed key, a locally blocked App ID, a corrupt trust
+    // record, or data retained under a different key are all rejected with typed
+    // errors. No --yes / --force / --accept-permissions bypasses this.
+    {
+        std::optional<std::string> retained_owner;
+        const fs::path owner = registry.data_owner_marker(manifest.id);
+        std::error_code ec;
+        if (fs::is_regular_file(owner, ec)) {
+            std::string prior = util::slurp_text(owner);
+            while (!prior.empty() &&
+                   (prior.back() == '\n' || prior.back() == '\r' ||
+                    prior.back() == ' ')) {
+                prior.pop_back();
+            }
+            if (!prior.empty()) retained_owner = prior;
+        }
+        const TrustEvaluation eval = TrustStore(paths_).evaluate(
+            manifest.id, manifest.decoded_public_key(), SignatureState::Valid,
+            retained_owner);
+        eval.throw_if_rejected();
+    }
+
     InstallationRecord record;
     std::string previous_version; // active version before this install ("" = fresh)
     if (registry.is_installed(manifest.id)) {
@@ -309,33 +336,6 @@ InstallResult Installer::install(const fs::path& lexe_file,
     // and record the approved set + digest as the consent anchor.
     const NormalizedPermissions requested_perms =
         normalize_permissions(manifest.permissions);
-
-    // Runtime-trust WS3/WS4: evaluate LOCAL publisher trust before staging.
-    // Authenticity (§6) already passed, so the signature is valid; this gate
-    // decides key CONTINUITY. A first-seen key is allowed (the separate
-    // --yes/confirm is the install consent); a known matching key is allowed;
-    // a changed key, a locally blocked App ID, a corrupt trust record, or data
-    // retained under a different key are all rejected with typed errors. No
-    // --yes / --force / --accept-permissions bypasses this.
-    {
-        std::optional<std::string> retained_owner;
-        const fs::path owner = registry.data_owner_marker(manifest.id);
-        std::error_code ec;
-        if (fs::is_regular_file(owner, ec)) {
-            std::string prior = util::slurp_text(owner);
-            while (!prior.empty() &&
-                   (prior.back() == '\n' || prior.back() == '\r' ||
-                    prior.back() == ' ')) {
-                prior.pop_back();
-            }
-            if (!prior.empty()) retained_owner = prior;
-        }
-        const TrustStore trust(paths_);
-        const TrustEvaluation eval =
-            trust.evaluate(manifest.id, manifest.decoded_public_key(),
-                           SignatureState::Valid, retained_owner);
-        eval.throw_if_rejected();
-    }
 
     // Runtime-trust WS5: on an UPGRADE, an update that expands the approved
     // permission set requires explicit consent — a bare confirmation never

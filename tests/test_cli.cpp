@@ -862,4 +862,47 @@ TEST_CASE("integrate runs and reports what it did") {
 #endif
 }
 
+TEST_CASE("trust commands: show / block / unblock / forget over the CLI") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path pkg = make_versioned_package(work.dir, key, "1.0.0");
+    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
+
+    // show: a known key, never presented as externally verified.
+    const auto show = run_cli({"trust", "show", kId});
+    CHECK(show.exit_code == 0);
+    CHECK(contains(show.stdout_text, "Local trust"));
+    CHECK(contains(show.stdout_text, "known key"));
+    CHECK(contains(show.stdout_text, "real-world identity"));
+
+    const auto show_json = run_cli({"trust", "show", kId, "--json"});
+    CHECK(show_json.exit_code == 0);
+    const json j = json::parse(show_json.stdout_text);
+    CHECK(j.at("appId") == kId);
+    CHECK(j.at("localKeyState") == "known");
+    CHECK(j.at("identityVerified") == false);
+    CHECK(j.at("fingerprint").at("full").get<std::string>().size() == 64);
+
+    // block: install, update and launch are all refused (exit 7).
+    CHECK(run_cli({"trust", "block", kId}).exit_code == 0);
+    CHECK(run_cli({"run", kId}).exit_code == 7);
+    CHECK(run_cli({"install", pkg.string(), "--yes"}).exit_code == 7);
+
+    // unblock restores normal operation.
+    CHECK(run_cli({"trust", "unblock", kId}).exit_code == 0);
+    CHECK(run_cli({"run", kId}).exit_code == 0);
+
+    // forget is refused while the app is installed (usage error), unless forced.
+    CHECK(run_cli({"trust", "forget", kId}).exit_code == 2);
+    CHECK(run_cli({"trust", "forget", kId, "--force"}).exit_code == 0);
+    // After forget, show reports there is no record (a package would be first-seen).
+    CHECK(contains(run_cli({"trust", "show", kId}).stdout_text, "no record"));
+
+    // unblock with nothing to unblock is a not-found (exit 4).
+    CHECK(run_cli({"trust", "unblock", "com.example.nobody"}).exit_code == 4);
+    // an unknown subcommand is a usage error.
+    CHECK(run_cli({"trust", "frobnicate", kId}).exit_code == 2);
+}
+
 } // TEST_SUITE("cli")

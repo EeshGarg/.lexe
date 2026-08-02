@@ -13,10 +13,12 @@
 #include "core/json_strict.hpp"
 #include "core/launcher.hpp"
 #include "core/limits.hpp"
+#include "core/lock.hpp"
 #include "core/manifest.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
 #include "core/registry.hpp"
+#include "core/trust.hpp"
 #include "core/updater.hpp"
 #include "core/util.hpp"
 #include "core/verify.hpp"
@@ -25,6 +27,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -60,6 +63,11 @@ constexpr const char* kVerifyUsage = "usage: lexe verify <file.lexe> [--json]";
 constexpr const char* kSourceUsage = "usage: lexe source set <id> <url>";
 constexpr const char* kRollbackUsage = "usage: lexe rollback <id>";
 constexpr const char* kGcUsage = "usage: lexe gc <id> [--keep <n>]";
+constexpr const char* kTrustUsage =
+    "usage: lexe trust show <id> [--json]\n"
+    "       lexe trust block <id>\n"
+    "       lexe trust unblock <id>\n"
+    "       lexe trust forget <id> [--force]";
 constexpr const char* kListUsage = "usage: lexe list [--json]";
 constexpr const char* kKeygenUsage = "usage: lexe keygen <keyfile.json>";
 constexpr const char* kPackUsage =
@@ -713,6 +721,161 @@ int cmd_gc(const std::vector<std::string>& args) {
     return report.failed.empty() ? 0 : 1;
 }
 
+// Acquire the per-app mutation lock for a trust mutation (runtime-trust WS9):
+// trust writes serialize with install/update/rollback/remove of the same id.
+// The returned AppLock owns the OS lock independently of the temporary manager.
+AppLock trust_mutation_lock(const Paths& paths, const std::string& id) {
+    return make_lock_manager(paths)->lock_app_mutation(
+        id, "trust", WaitPolicy::bounded(std::chrono::seconds(10)));
+}
+
+/// A short label for the local key state of a trust record (query view — no
+/// package/signature is involved, so this is the record's own standing).
+std::string local_key_state_label(const std::optional<TrustRecord>& rec) {
+    if (!rec.has_value()) return "no-record";
+    if (rec->blocked) return "blocked";
+    if (rec->explicitly_trusted) return "explicitly-trusted";
+    return "known";
+}
+
+int cmd_trust_show(const std::string& id, bool as_json) {
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const bool installed = registry.is_installed(id);
+
+    std::optional<TrustRecord> rec;
+    std::string corrupt_reason;
+    try {
+        rec = TrustStore(paths).read(id);
+    } catch (const CorruptTrustError& e) {
+        corrupt_reason = e.what();
+    }
+
+    const char* kNote =
+        "Local trust-on-first-use: a valid signature proves the package is "
+        "consistent with this key, NOT the publisher's real-world identity.";
+
+    if (as_json) {
+        ordered_json j;
+        j["appId"] = id;
+        j["installed"] = installed;
+        if (!corrupt_reason.empty()) {
+            j["localKeyState"] = "corrupt";
+            j["detail"] = corrupt_reason;
+        } else if (!rec.has_value()) {
+            j["localKeyState"] = "first-seen"; // nothing recorded yet
+        } else {
+            j["localKeyState"] = local_key_state_label(rec);
+            j["blocked"] = rec->blocked;
+            j["explicitlyTrusted"] = rec->explicitly_trusted;
+            if (!rec->public_key.empty()) {
+                const Fingerprint fp = key_fingerprint(rec->public_key);
+                j["signingKey"] = rec->public_key;
+                j["fingerprint"] = {{"full", fp.full},
+                                    {"grouped", fp.grouped},
+                                    {"short", fp.short_id}};
+            }
+            j["firstSeen"] = rec->first_seen;
+            j["lastSeen"] = rec->last_seen;
+            if (rec->blocked) j["blockedAt"] = rec->blocked_at;
+            if (rec->explicitly_trusted) j["trustProvenance"] = rec->trust_provenance;
+        }
+        j["identityVerified"] = false; // never externally verified
+        j["note"] = kNote;
+        std::cout << j.dump(2) << "\n";
+        return 0;
+    }
+
+    std::cout << "Application: " << id << "\n";
+    std::cout << "Installed:   " << (installed ? "yes" : "no") << "\n";
+    if (!corrupt_reason.empty()) {
+        std::cout << "Local trust: CORRUPT — refusing to use it (fail closed)\n"
+                  << "  " << corrupt_reason << "\n";
+        return 0;
+    }
+    if (!rec.has_value()) {
+        std::cout << "Local trust: no record — a package would be FIRST-SEEN "
+                     "(publisher identity not independently verified)\n";
+        return 0;
+    }
+    if (rec->blocked) {
+        std::cout << "Local trust: BLOCKED locally"
+                  << (rec->blocked_at.empty() ? "" : " since " + rec->blocked_at)
+                  << " — install, update and launch are refused\n";
+    } else if (rec->explicitly_trusted) {
+        std::cout << "Local trust: explicitly trusted locally (a local decision, "
+                     "not external identity verification)\n";
+    } else {
+        std::cout << "Local trust: known key, accepted for this App ID\n";
+    }
+    if (!rec->public_key.empty()) {
+        const Fingerprint fp = key_fingerprint(rec->public_key);
+        std::cout << "Signing key fingerprint:\n  " << fp.grouped << "\n";
+    }
+    if (!rec->first_seen.empty()) std::cout << "First seen:  " << rec->first_seen << "\n";
+    if (!rec->last_seen.empty()) std::cout << "Last seen:   " << rec->last_seen << "\n";
+    std::cout << kNote << "\n";
+    return 0;
+}
+
+int cmd_trust(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        throw UsageError(std::string("missing trust subcommand\n") + kTrustUsage);
+    }
+    const std::string sub = args[0];
+    const std::vector<std::string> rest(args.begin() + 1, args.end());
+    const Paths paths = Paths::detect();
+
+    if (sub == "show") {
+        const Parsed p = parse_arguments(rest, {"--json"}, {}, false, kTrustUsage);
+        require_positionals(p, 1, kTrustUsage);
+        return cmd_trust_show(p.positionals[0], p.flags.count("--json") != 0);
+    }
+    if (sub == "block") {
+        const Parsed p = parse_arguments(rest, {}, {}, false, kTrustUsage);
+        require_positionals(p, 1, kTrustUsage);
+        const std::string& id = p.positionals[0];
+        const AppLock lock = trust_mutation_lock(paths, id);
+        TrustStore(paths).block(id);
+        std::cout << "Blocked " << id
+                  << " locally — install, update and launch are now refused "
+                     "(this is a LOCAL block, not a global revocation)\n";
+        return 0;
+    }
+    if (sub == "unblock") {
+        const Parsed p = parse_arguments(rest, {}, {}, false, kTrustUsage);
+        require_positionals(p, 1, kTrustUsage);
+        const std::string& id = p.positionals[0];
+        const AppLock lock = trust_mutation_lock(paths, id);
+        TrustStore(paths).unblock(id); // NotFoundError when nothing to unblock
+        std::cout << "Unblocked " << id << " locally\n";
+        return 0;
+    }
+    if (sub == "forget") {
+        const Parsed p =
+            parse_arguments(rest, {"--force"}, {}, false, kTrustUsage);
+        require_positionals(p, 1, kTrustUsage);
+        const std::string& id = p.positionals[0];
+        const bool force = p.flags.count("--force") != 0;
+        const AppLock lock = trust_mutation_lock(paths, id);
+        const Registry registry(paths);
+        const bool installed = registry.is_installed(id);
+        const bool retained = registry.has_retained_data(id);
+        if ((installed || retained) && !force) {
+            throw UsageError(
+                "refusing to forget local trust for " + id + " while it is " +
+                (installed ? "still installed" : "holding retained data") +
+                ". Remove it first (`lexe remove " + id +
+                (retained ? " --purge-data" : "") +
+                "`), or pass --force to forget trust anyway.");
+        }
+        TrustStore(paths).forget(id);
+        std::cout << "Forgot local trust history for " << id << "\n";
+        return 0;
+    }
+    throw UsageError("unknown trust subcommand: " + sub + "\n" + kTrustUsage);
+}
+
 int cmd_list(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {"--json"}, {}, false, kListUsage);
@@ -1031,6 +1194,8 @@ std::string usage_text() {
            "previous version\n"
            "  gc <id> [--keep <n>]                         reclaim old "
            "versions (keeps active + n)\n"
+           "  trust show|block|unblock|forget <id>         inspect or set "
+           "local publisher trust\n"
            "  list [--json]                                list installed "
            "applications\n"
            "  keygen <keyfile.json>                        generate a signing "
@@ -1071,6 +1236,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "source") return cmd_source(rest);
     if (command == "rollback") return cmd_rollback(rest);
     if (command == "gc") return cmd_gc(rest);
+    if (command == "trust") return cmd_trust(rest);
     if (command == "list") return cmd_list(rest);
     if (command == "keygen") return cmd_keygen(rest);
     if (command == "pack") return cmd_pack(rest);
