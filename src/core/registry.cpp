@@ -216,6 +216,45 @@ fs::path Registry::meta_dir(const std::string& id,
     return app_dir(id) / "meta" / version;
 }
 
+fs::path Registry::app_data_dir(const std::string& id) const {
+    validate_id(id);
+    return paths_.data_dir() / id;
+}
+
+fs::path Registry::app_cache_dir(const std::string& id) const {
+    validate_id(id);
+    return paths_.cache_dir() / "apps" / id;
+}
+
+fs::path Registry::runtime_temp_root() const {
+    return paths_.cache_dir() / "runtime-tmp";
+}
+
+fs::path Registry::locks_dir() const { return paths_.home() / "locks"; }
+
+fs::path Registry::mutation_lock_file(const std::string& id) const {
+    validate_id(id);
+    return locks_dir() / (id + ".lock");
+}
+
+fs::path Registry::version_lease_file(const std::string& id,
+                                      const std::string& version) const {
+    validate_id(id);
+    validate_version(version);
+    return locks_dir() / (id + ".v." + version + ".lease");
+}
+
+fs::path Registry::data_owner_marker(const std::string& id) const {
+    return app_data_dir(id) / ".lexe-data-owner";
+}
+
+bool Registry::has_retained_data(const std::string& id) const {
+    const fs::path d = app_data_dir(id);
+    std::error_code ec;
+    if (!fs::is_directory(d, ec)) return false;
+    return fs::directory_iterator(d, ec) != fs::directory_iterator();
+}
+
 std::vector<std::string> Registry::list_installed() const {
     std::vector<std::string> ids;
     std::error_code ec;

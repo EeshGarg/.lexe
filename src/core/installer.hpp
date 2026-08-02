@@ -71,10 +71,19 @@ public:
     InstallResult install(const std::filesystem::path& lexe_file,
                           const InstallOptions& opts = {});
 
-    /// Remove everything recorded in installation.json, then the app dir
-    /// (FORMAT-0.1 §9). `<LEXE_HOME>/data/<id>` is removed only when
-    /// purge_data is true. Throws NotFoundError when not installed.
-    void uninstall(const std::string& id, bool purge_data = false);
+    /// The three explicit uninstall modes (runtime-trust WS8).
+    enum class UninstallMode {
+        AppOnly,     // remove binaries + integration; PRESERVE data and cache
+        AppAndCache, // remove binaries + integration + cache; PRESERVE data
+        PurgeData,   // remove binaries + integration + cache + persistent data
+    };
+
+    /// Remove the application per `mode`. Application-only removal preserves
+    /// persistent data (and cache); PurgeData removes every application-owned
+    /// root. Throws NotFoundError when not installed. Full data removal must be
+    /// an explicit choice (PurgeData) — never a side effect of a bare confirm.
+    void uninstall(const std::string& id,
+                   UninstallMode mode = UninstallMode::AppOnly);
 
     /// Flip `current` back to the most recent retained previous version and
     /// update the records (SPEC "Rollback"). Throws NotFoundError when there

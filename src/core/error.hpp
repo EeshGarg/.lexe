@@ -1,7 +1,8 @@
 #pragma once
 // error — exception hierarchy and CLI exit-code mapping (ARCHITECTURE.md
 // #Conventions). Exit codes: 0 ok, 1 runtime error, 2 usage, 3 verification
-// failure, 4 not installed/found, 5 permission/consent required.
+// failure, 4 not installed/found, 5 permission/consent required,
+// 6 busy / operation conflict.
 
 #include <stdexcept>
 #include <string>
@@ -60,12 +61,30 @@ public:
     using LaunchError::LaunchError;
 };
 
+/// An App ID is busy: another exclusive mutation (install/update/rollback/
+/// remove/recovery) holds the per-app lock, or a launch lease blocks a
+/// destructive operation (runtime-trust WS9). CLI exit code 6.
+class BusyError : public Error {
+public:
+    using Error::Error;
+};
+
+/// Persistent data is retained for an App ID under a DIFFERENT publisher key,
+/// so a reinstall/install must not inherit it (runtime-trust WS8). The user
+/// must purge the retained data first. CLI exit code 6.
+class RetainedDataConflict : public Error {
+public:
+    using Error::Error;
+};
+
 /// Map an exception to the CLI exit code documented above.
 inline int exit_code_for(const std::exception& e) noexcept {
     if (dynamic_cast<const UsageError*>(&e) != nullptr) return 2;
     if (dynamic_cast<const VerificationError*>(&e) != nullptr) return 3;
     if (dynamic_cast<const NotFoundError*>(&e) != nullptr) return 4;
     if (dynamic_cast<const PermissionError*>(&e) != nullptr) return 5;
+    if (dynamic_cast<const BusyError*>(&e) != nullptr) return 6;
+    if (dynamic_cast<const RetainedDataConflict*>(&e) != nullptr) return 6;
     return 1;
 }
 

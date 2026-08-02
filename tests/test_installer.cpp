@@ -313,8 +313,8 @@ TEST_CASE("uninstall: removes exactly the recorded files and the app dir") {
     const fs::path data_file = paths.data_dir() / kId / "settings.ini";
     util::spit(data_file, std::string_view("user data"));
 
-    SUBCASE("without purge_data: data survives") {
-        installer.uninstall(kId, /*purge_data=*/false);
+    SUBCASE("AppOnly: data survives") {
+        installer.uninstall(kId, Installer::UninstallMode::AppOnly);
 
         CHECK(!fs::exists(paths.apps_dir() / kId));
         CHECK(!registry.is_installed(kId));
@@ -322,11 +322,11 @@ TEST_CASE("uninstall: removes exactly the recorded files and the app dir") {
             CHECK(!fs::exists(fs::path(file)));
         }
         CHECK(fs::exists(neighbour));            // exactly the recorded files
-        CHECK(fs::exists(data_file));            // data only with purge (§9)
+        CHECK(fs::exists(data_file));            // data survives app-only removal
     }
 
-    SUBCASE("with purge_data: data dir removed too") {
-        installer.uninstall(kId, /*purge_data=*/true);
+    SUBCASE("PurgeData: data dir removed too") {
+        installer.uninstall(kId, Installer::UninstallMode::PurgeData);
 
         CHECK(!fs::exists(paths.apps_dir() / kId));
         for (const std::string& file : record.created_files) {
@@ -341,7 +341,8 @@ TEST_CASE("uninstall: unknown application is NotFoundError") {
     test::TempLexeHome home;
     const Paths paths = Paths::detect();
     Installer installer(paths);
-    CHECK_THROWS_AS(installer.uninstall("com.example.nope", false),
+    CHECK_THROWS_AS(installer.uninstall("com.example.nope",
+                                        Installer::UninstallMode::AppOnly),
                     NotFoundError);
 }
 

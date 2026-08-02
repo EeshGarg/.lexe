@@ -55,6 +55,33 @@ public:
     std::filesystem::path meta_dir(const std::string& id,
                                    const std::string& version) const;
 
+    // --- application storage taxonomy (WS8): one canonical API for every
+    // per-app path. All validate the id (and version) before joining. ---
+
+    /// Per-app PERSISTENT data root (`<home>/data/<id>`). Belongs to the App
+    /// ID, not a version; survives ordinary update, rollback and app-only
+    /// uninstall; removed only on an explicit purge.
+    std::filesystem::path app_data_dir(const std::string& id) const;
+    /// Per-app CACHE root (`<cache>/apps/<id>`). Removable independently of
+    /// persistent data.
+    std::filesystem::path app_cache_dir(const std::string& id) const;
+    /// Root under which per-launch private temp directories are created
+    /// (`<cache>/runtime-tmp`).
+    std::filesystem::path runtime_temp_root() const;
+    /// Directory holding operation lock files (`<home>/locks`).
+    std::filesystem::path locks_dir() const;
+    /// The per-app exclusive-mutation lock file (`<home>/locks/<id>.lock`).
+    std::filesystem::path mutation_lock_file(const std::string& id) const;
+    /// A per-(id,version) launch-lease lock file.
+    std::filesystem::path version_lease_file(const std::string& id,
+                                             const std::string& version) const;
+    /// The data-owner marker inside app_data_dir(id): records the publisher key
+    /// that owns the retained data (WS8 key-continuity for retained data).
+    std::filesystem::path data_owner_marker(const std::string& id) const;
+    /// True when persistent data is retained for `id` (its data dir exists and
+    /// is non-empty), regardless of whether the app is currently installed.
+    bool has_retained_data(const std::string& id) const;
+
     /// Ids of all installed applications (directories with installation.json).
     std::vector<std::string> list_installed() const;
     bool is_installed(const std::string& id) const;

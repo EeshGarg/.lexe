@@ -291,6 +291,30 @@ InstallResult Installer::install(const fs::path& lexe_file,
     const NormalizedPermissions requested_perms =
         normalize_permissions(manifest.permissions);
 
+    // Runtime-trust WS8: retained-data key continuity. If persistent data is
+    // retained for this id under a DIFFERENT publisher key (e.g. after an
+    // app-only uninstall), a new publisher must NOT inherit it — refuse until
+    // the user explicitly purges. The same publisher reinstalling inherits it.
+    {
+        const fs::path owner = registry.data_owner_marker(manifest.id);
+        std::error_code ec;
+        if (fs::is_regular_file(owner, ec)) {
+            std::string prior = util::slurp_text(owner);
+            while (!prior.empty() &&
+                   (prior.back() == '\n' || prior.back() == '\r' ||
+                    prior.back() == ' ')) {
+                prior.pop_back();
+            }
+            if (!prior.empty() && prior != manifest.publisher_public_key) {
+                throw RetainedDataConflict(
+                    "persistent data for " + manifest.id +
+                    " belongs to a different publisher key; purge it first "
+                    "(`lexe remove " + manifest.id +
+                    " --purge-data`) to install under the new key");
+            }
+        }
+    }
+
     // Runtime-trust WS5: on an UPGRADE, an update that expands the approved
     // permission set requires explicit consent — a bare confirmation never
     // grants new authority. Removals and reordering are not an expansion.
@@ -426,6 +450,19 @@ InstallResult Installer::install(const fs::path& lexe_file,
         } catch (...) {
         }
         throw;
+    }
+
+    // Runtime-trust WS8: record the data owner. Persistent data belongs to the
+    // App ID, and this marker pins the publisher key that owns it so a later
+    // reinstall under a DIFFERENT key cannot inherit retained data. Written
+    // only after a fully committed install; a pre-existing marker (same key)
+    // is left as-is. Never touched: the installer does not read or execute the
+    // app's own data — this is a sibling metadata file it owns.
+    {
+        std::error_code ec;
+        fs::create_directories(registry.app_data_dir(manifest.id), ec);
+        util::spit(registry.data_owner_marker(manifest.id),
+                   std::string_view(manifest.publisher_public_key));
     }
 
     return InstallResult{manifest.id, manifest.version, app_dir};
@@ -568,10 +605,11 @@ HealthReport Installer::check_health(const std::string& id) const {
     return report;
 }
 
-void Installer::uninstall(const std::string& id, bool purge_data) {
+void Installer::uninstall(const std::string& id, UninstallMode mode) {
     const Registry registry(paths_);
     const InstallationRecord record = registry.read_record(id); // NotFoundError
 
+    // Application binaries + integration are removed in EVERY mode.
     // Desktop-side removal first (refreshes the databases on Linux) …
     desktop::remove_integration(paths_, record.created_files);
     // … then a portable sweep so every recorded file is gone even where the
@@ -582,9 +620,14 @@ void Installer::uninstall(const std::string& id, bool purge_data) {
     }
     util::remove_recursive(registry.app_dir(id));
 
-    if (purge_data) {
-        // Application data is removed ONLY with --purge-data (FORMAT-0.1 §9).
-        util::remove_recursive(paths_.data_dir() / id);
+    // Cache is removed by AppAndCache and PurgeData; independently of data.
+    if (mode == UninstallMode::AppAndCache || mode == UninstallMode::PurgeData) {
+        util::remove_recursive(registry.app_cache_dir(id));
+    }
+    // Persistent data is removed ONLY by an explicit PurgeData. Application-only
+    // removal leaves it (and its owner marker) intact for a later reinstall.
+    if (mode == UninstallMode::PurgeData) {
+        util::remove_recursive(registry.app_data_dir(id));
     }
 }
 

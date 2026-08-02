@@ -163,8 +163,11 @@ int run_app(const Paths& paths, const std::string& id,
         std::find(approved.ids.begin(), approved.ids.end(),
                   std::string("network")) != approved.ids.end();
 
-    const fs::path data_root = paths.data_dir() / id;
-    const fs::path cache_root = paths.cache_dir() / "apps" / id;
+    // Canonical per-app storage paths (WS8): the registry is the single place
+    // these are constructed and validated — the launcher never joins them by
+    // hand. Persistent data belongs to the App ID; cache is disposable.
+    const fs::path data_root = registry.app_data_dir(id);
+    const fs::path cache_root = registry.app_cache_dir(id);
     std::error_code mkec;
     fs::create_directories(data_root, mkec);
     fs::create_directories(cache_root, mkec);

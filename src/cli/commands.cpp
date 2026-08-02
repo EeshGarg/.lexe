@@ -53,7 +53,7 @@ constexpr const char* kRunUsage = "usage: lexe run <id> [-- <args...>]";
 constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
 constexpr const char* kRemoveUsage =
-    "usage: lexe remove <id> [--purge-data] [--yes]";
+    "usage: lexe remove <id> [--remove-cache] [--purge-data] [--yes]";
 constexpr const char* kRepairUsage = "usage: lexe repair <id>";
 constexpr const char* kInfoUsage = "usage: lexe info <file.lexe | id> [--json]";
 constexpr const char* kVerifyUsage = "usage: lexe verify <file.lexe> [--json]";
@@ -423,11 +423,21 @@ int cmd_update(const std::vector<std::string>& args) {
 }
 
 int cmd_remove(const std::vector<std::string>& args) {
-    const Parsed parsed = parse_arguments(args, {"--purge-data", "--yes"}, {},
-                                          false, kRemoveUsage);
+    const Parsed parsed = parse_arguments(
+        args, {"--remove-cache", "--purge-data", "--yes"}, {}, false,
+        kRemoveUsage);
     require_positionals(parsed, 1, kRemoveUsage);
     const std::string& id = parsed.positionals[0];
     const bool purge = parsed.flags.count("--purge-data") != 0;
+    const bool remove_cache = parsed.flags.count("--remove-cache") != 0;
+
+    // Purge is a superset of remove-cache. Data removal happens ONLY on the
+    // explicit --purge-data flag; --yes confirms the prompt but never widens
+    // the scope to include persistent data (runtime-trust WS8).
+    using Mode = Installer::UninstallMode;
+    const Mode mode = purge          ? Mode::PurgeData
+                      : remove_cache ? Mode::AppAndCache
+                                     : Mode::AppOnly;
 
     const Paths paths = Paths::detect();
     const Registry registry(paths);
@@ -435,18 +445,43 @@ int cmd_remove(const std::vector<std::string>& args) {
         throw NotFoundError("application not installed: " + id);
     }
     if (parsed.flags.count("--yes") == 0) {
-        const std::string question =
-            purge ? "Remove " + id + " and delete its application data?"
-                  : "Remove " + id + "?";
+        std::string question;
+        switch (mode) {
+        case Mode::PurgeData:
+            question = "Remove " + id + " and permanently delete its data?";
+            break;
+        case Mode::AppAndCache:
+            question = "Remove " + id + " and its cache (data preserved)?";
+            break;
+        case Mode::AppOnly:
+            question = "Remove " + id + "?";
+            break;
+        }
         if (!confirm(question)) {
             // Declining the prompt is a valid user choice, not an error.
             std::cerr << "removal cancelled\n";
             return 0;
         }
     }
-    Installer(paths).uninstall(id, purge);
-    std::cout << "Removed " << id
-              << (purge ? " (application data purged)" : "") << "\n";
+    Installer(paths).uninstall(id, mode);
+    switch (mode) {
+    case Mode::PurgeData:
+        std::cout << "Removed " << id << " (application data purged)\n";
+        break;
+    case Mode::AppAndCache:
+        std::cout << "Removed " << id << " (cache cleared; data preserved)\n";
+        break;
+    case Mode::AppOnly:
+        std::cout << "Removed " << id << "\n";
+        // Report retained data so the user knows a later reinstall inherits it,
+        // and how to reclaim the space (WS8 reinstall/orphaned-data behavior).
+        if (registry.has_retained_data(id)) {
+            std::cout << "  Application data retained; reinstalling " << id
+                      << " will reuse it. Use `lexe remove " << id
+                      << " --purge-data` to delete it.\n";
+        }
+        break;
+    }
     return 0;
 }
 
