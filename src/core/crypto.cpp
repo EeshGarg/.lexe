@@ -103,6 +103,61 @@ const unsigned char* message_ptr(const std::vector<std::uint8_t>& m) {
 
 constexpr std::string_view kKeyPrefix = "ed25519:";
 
+// --------------------------------------------------- strict Ed25519 checks
+// The vendored orlp/ed25519 verifier does NOT reject non-canonical signatures
+// or point encodings (HARDENING.md §G). We enforce those before calling it:
+//   * the signature scalar S (bytes 32..63) must be < L (the group order) —
+//     otherwise S and S+L are two signatures for the same message (malleability);
+//   * the public key must be a canonically-encoded point (y < p) and not the
+//     all-zero small-order point.
+// Comprehensive small-order-point rejection is a property of the intended
+// libsodium backend (docs/TRUST.md) and is documented as such; these checks are
+// the strict guarantees the current backend can be given without curve
+// arithmetic, and they never reject a legitimately generated random key.
+
+/// Little-endian 32-byte unsigned comparison: is a < b?
+bool le_less_than(const std::uint8_t* a, const std::uint8_t* b) {
+    for (int i = 31; i >= 0; --i) {
+        if (a[i] != b[i]) return a[i] < b[i];
+    }
+    return false; // equal
+}
+
+/// Ed25519 group order L = 2^252 + 27742317777372353535851937790883648493,
+/// little-endian.
+constexpr std::uint8_t kL[32] = {
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7,
+    0xa2, 0xde, 0xf9, 0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
+
+/// Field prime p = 2^255 - 19, little-endian.
+constexpr std::uint8_t kP[32] = {
+    0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f};
+
+/// The signature scalar S (the high 32 bytes) is canonical iff S < L.
+bool signature_scalar_canonical(const Signature& signature) {
+    return le_less_than(signature.data() + 32, kL);
+}
+
+/// The public key is a canonical point encoding (y < p) and not the all-zero
+/// degenerate small-order point.
+bool public_key_canonical(const PublicKey& public_key) {
+    bool all_zero = true;
+    for (std::size_t i = 0; i < public_key.size(); ++i) {
+        if (public_key[i] != 0) {
+            all_zero = false;
+            break;
+        }
+    }
+    if (all_zero) return false;
+    std::uint8_t y[32];
+    std::memcpy(y, public_key.data(), 32);
+    y[31] &= 0x7f; // strip the x-coordinate sign bit before the y < p compare
+    return le_less_than(y, kP);
+}
+
 } // namespace
 
 std::string sha256_hex(const std::uint8_t* data, std::size_t len) {
@@ -175,6 +230,11 @@ Signature sign(const std::vector<std::uint8_t>& message, const KeyPair& key) {
 
 bool verify_signature(const std::vector<std::uint8_t>& message,
                       const Signature& signature, const PublicKey& public_key) {
+    // Strict pre-checks (HARDENING.md §G) the vendored verifier omits: reject a
+    // non-canonical signature scalar (malleability) and a non-canonical or
+    // degenerate public-key encoding BEFORE the curve check.
+    if (!signature_scalar_canonical(signature)) return false;
+    if (!public_key_canonical(public_key)) return false;
     return ed25519_verify(signature.data(), message_ptr(message),
                           message.size(), public_key.data()) != 0;
 }
