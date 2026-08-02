@@ -35,6 +35,10 @@ std::string slurp_text(const std::filesystem::path& file);
 void spit(const std::filesystem::path& file, const std::uint8_t* data, std::size_t len);
 void spit(const std::filesystem::path& file, const std::vector<std::uint8_t>& data);
 void spit(const std::filesystem::path& file, std::string_view text);
+/// Write `text` to `file` atomically: a sibling temp file then rename over the
+/// destination, so a crash never leaves a half-written file (falls back to
+/// remove+rename where rename-over-existing is unsupported). Creates parents.
+void write_atomic(const std::filesystem::path& file, std::string_view text);
 
 // --- directory operations ---
 /// Recursively copy `from` (file or directory) to `to`, overwriting.

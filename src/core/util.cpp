@@ -224,6 +224,24 @@ void spit(const fs::path& file, std::string_view text) {
     spit(file, reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
 }
 
+void write_atomic(const fs::path& file, std::string_view text) {
+    const fs::path tmp = file.string() + ".tmp";
+    spit(tmp, text);
+    std::error_code ec;
+    fs::rename(tmp, file, ec);
+    if (ec) {
+        // Fall back to remove+rename for filesystems where rename over an
+        // existing file fails.
+        fs::remove(file, ec);
+        std::error_code ec2;
+        fs::rename(tmp, file, ec2);
+        if (ec2) {
+            remove_recursive(tmp);
+            throw Error("cannot write file atomically: " + file.string());
+        }
+    }
+}
+
 // ---------------------------------------------------------------- dir ops
 
 void copy_recursive(const fs::path& from, const fs::path& to) {

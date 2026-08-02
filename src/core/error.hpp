@@ -2,7 +2,8 @@
 // error — exception hierarchy and CLI exit-code mapping (ARCHITECTURE.md
 // #Conventions). Exit codes: 0 ok, 1 runtime error, 2 usage, 3 verification
 // failure, 4 not installed/found, 5 permission/consent required,
-// 6 busy / operation conflict.
+// 6 busy / operation conflict, 7 local publisher-trust rejection
+// (changed signing key / locally blocked / corrupt trust record).
 
 #include <stdexcept>
 #include <string>
@@ -87,6 +88,42 @@ public:
     using Error::Error;
 };
 
+/// Base class for a LOCAL publisher-trust rejection (runtime-trust WS3/WS4). A
+/// valid signature proves the package is consistent with a key — NOT the
+/// publisher's real-world identity — so these are trust-continuity decisions,
+/// distinct from a cryptographic verification failure (VerificationError, exit
+/// 3). CLI exit code 7. Never bypassed by --yes / --force / --accept-permissions.
+class TrustError : public Error {
+public:
+    using Error::Error;
+};
+
+/// An install/update is signed by a DIFFERENT key than the one bound to this
+/// App ID locally. Refused before staging; the installed version and retained
+/// data stay bound to the original key. FORMAT 0.1 has no authenticated key
+/// rotation, so there is no generic "continue anyway". CLI exit code 7.
+class ChangedKeyError : public TrustError {
+public:
+    using TrustError::TrustError;
+};
+
+/// The App ID / signing key has been locally blocked. Install, update and
+/// launch are refused until it is explicitly unblocked. This is a LOCAL block,
+/// not a global or real-world revocation. CLI exit code 7.
+class BlockedKeyError : public TrustError {
+public:
+    using TrustError::TrustError;
+};
+
+/// The local trust record for this App ID is present but corrupt / unparseable /
+/// internally inconsistent. The runtime fails CLOSED (it never silently
+/// recreates or overwrites it); recovery is a deliberate administrative action.
+/// CLI exit code 7.
+class CorruptTrustError : public TrustError {
+public:
+    using TrustError::TrustError;
+};
+
 /// Map an exception to the CLI exit code documented above.
 inline int exit_code_for(const std::exception& e) noexcept {
     if (dynamic_cast<const UsageError*>(&e) != nullptr) return 2;
@@ -95,6 +132,7 @@ inline int exit_code_for(const std::exception& e) noexcept {
     if (dynamic_cast<const PermissionError*>(&e) != nullptr) return 5;
     if (dynamic_cast<const BusyError*>(&e) != nullptr) return 6;
     if (dynamic_cast<const RetainedDataConflict*>(&e) != nullptr) return 6;
+    if (dynamic_cast<const TrustError*>(&e) != nullptr) return 7;
     return 1;
 }
 

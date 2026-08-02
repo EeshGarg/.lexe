@@ -81,6 +81,11 @@ public:
     /// The data-owner marker inside app_data_dir(id): records the publisher key
     /// that owns the retained data (WS8 key-continuity for retained data).
     std::filesystem::path data_owner_marker(const std::string& id) const;
+    /// Directory holding local publisher-trust records (`<home>/trust`). Outside
+    /// every package-controlled path and never bound into the sandbox (WS3).
+    std::filesystem::path trust_dir() const;
+    /// The local trust record for `id` (`<home>/trust/<id>.json`).
+    std::filesystem::path trust_record_file(const std::string& id) const;
     /// True when persistent data is retained for `id` (its data dir exists and
     /// is non-empty), regardless of whether the app is currently installed.
     bool has_retained_data(const std::string& id) const;

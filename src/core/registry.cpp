@@ -252,6 +252,13 @@ fs::path Registry::data_owner_marker(const std::string& id) const {
     return app_data_dir(id) / ".lexe-data-owner";
 }
 
+fs::path Registry::trust_dir() const { return paths_.home() / "trust"; }
+
+fs::path Registry::trust_record_file(const std::string& id) const {
+    validate_id(id);
+    return trust_dir() / (id + ".json");
+}
+
 bool Registry::has_retained_data(const std::string& id) const {
     const fs::path d = app_data_dir(id);
     std::error_code ec;

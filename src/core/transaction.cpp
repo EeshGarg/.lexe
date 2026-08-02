@@ -80,24 +80,10 @@ TransactionJournal TransactionJournal::from_json(std::string_view text) {
 
 namespace {
 
-/// Write `text` to `file` atomically: a sibling temp file then rename over the
-/// destination, so a crash never leaves a half-written journal.
+/// Write `text` to `file` atomically (the canonical helper is util::write_atomic;
+/// this thin wrapper keeps the call sites below readable).
 void atomic_write(const fs::path& file, const std::string& text) {
-    const fs::path tmp = file.string() + ".tmp";
-    util::spit(tmp, std::string_view(text));
-    std::error_code ec;
-    fs::rename(tmp, file, ec);
-    if (ec) {
-        // Fall back to remove+rename for platforms/filesystems where rename
-        // over an existing file fails.
-        fs::remove(file, ec);
-        std::error_code ec2;
-        fs::rename(tmp, file, ec2);
-        if (ec2) {
-            util::remove_recursive(tmp);
-            throw Error("transaction: cannot write journal: " + file.string());
-        }
-    }
+    util::write_atomic(file, text);
 }
 
 } // namespace
