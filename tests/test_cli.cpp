@@ -601,7 +601,13 @@ TEST_CASE("install without --yes shows the SPEC primary screen and honors "
     CHECK(contains(yes.stdout_text, "Installation:"));
     CHECK(contains(yes.stdout_text, "Updates:"));
     CHECK(contains(yes.stdout_text, update_json.string()));
-    CHECK(contains(yes.stdout_text, "Verification:"));
+    // Truthful trust presentation (WS10): two-dimensional authenticity + local
+    // trust with the fingerprint and identity caveat, never a single "verified".
+    CHECK(contains(yes.stdout_text, "Authenticity & local trust:"));
+    CHECK(contains(yes.stdout_text, "Signing key fingerprint:"));
+    CHECK(contains(yes.stdout_text, "not independently verified"));
+    CHECK(contains(yes.stdout_text, "first seen"));      // this key is new here
+    CHECK(contains(yes.stdout_text, "Isolation on this platform:"));
     CHECK(contains(yes.stdout_text, "[y/N]"));
     CHECK(Registry(Paths::detect()).is_installed(kId));
 
@@ -903,6 +909,35 @@ TEST_CASE("trust commands: show / block / unblock / forget over the CLI") {
     CHECK(run_cli({"trust", "unblock", "com.example.nobody"}).exit_code == 4);
     // an unknown subcommand is a usage error.
     CHECK(run_cli({"trust", "frobnicate", kId}).exit_code == 2);
+}
+
+TEST_CASE("info and verify expose the signing-key fingerprint and trust state") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path pkg = make_versioned_package(work.dir, key, "1.0.0");
+
+    // verify --json: authenticity dimension + fingerprint, identity NOT verified.
+    const auto vj = run_cli({"verify", pkg.string(), "--json"});
+    CHECK(vj.exit_code == 0);
+    const json v = json::parse(vj.stdout_text);
+    CHECK(v.at("signatureState") == "valid");
+    CHECK(v.at("identityVerified") == false);
+    CHECK(v.at("fingerprint").at("full").get<std::string>().size() == 64);
+    CHECK(contains(run_cli({"verify", pkg.string()}).stdout_text,
+                   "real-world identity"));
+
+    // info on a package file exposes the fingerprint.
+    const json pj = json::parse(run_cli({"info", pkg.string(), "--json"}).stdout_text);
+    CHECK(pj.at("identityVerified") == false);
+    CHECK(pj.at("fingerprint").at("full").get<std::string>().size() == 64);
+
+    // installed info exposes the local trust state.
+    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
+    const json ins = json::parse(run_cli({"info", kId, "--json"}).stdout_text);
+    CHECK(ins.at("localTrust").at("state") == "known");
+    CHECK(ins.at("localTrust").at("identityVerified") == false);
+    CHECK(ins.at("localTrust").at("blocked") == false);
 }
 
 } // TEST_SUITE("cli")

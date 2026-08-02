@@ -10,6 +10,7 @@
 #include "core/desktop.hpp"
 #include "core/error.hpp"
 #include "core/installer.hpp"
+#include "core/isolation.hpp"
 #include "core/json_strict.hpp"
 #include "core/launcher.hpp"
 #include "core/limits.hpp"
@@ -17,6 +18,8 @@
 #include "core/manifest.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
+#include "core/permissions.hpp"
+#include "core/presentation.hpp"
 #include "core/registry.hpp"
 #include "core/trust.hpp"
 #include "core/updater.hpp"
@@ -51,7 +54,8 @@ using nlohmann::ordered_json;
 // ------------------------------------------------------------ usage strings
 
 constexpr const char* kInstallUsage =
-    "usage: lexe install <file.lexe> [--yes] [--channel <c>]";
+    "usage: lexe install <file.lexe> [--yes] [--trust] [--accept-permissions] "
+    "[--channel <c>]";
 constexpr const char* kRunUsage = "usage: lexe run <id> [-- <args...>]";
 constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
@@ -241,39 +245,95 @@ bool confirm(const std::string& question) {
     return answer == "y" || answer == "yes";
 }
 
-/// The SPEC #User Interface primary screen: name, publisher, version,
-/// type/arch, source, permissions, size, update policy, verification result.
+/// A short label for the local key state of a trust record (query view — no
+/// package/signature is involved, so this is the record's own standing).
+std::string local_key_state_label(const std::optional<TrustRecord>& rec) {
+    if (!rec.has_value()) return "no-record";
+    if (rec->blocked) return "blocked";
+    if (rec->explicitly_trusted) return "explicitly-trusted";
+    return "known";
+}
+
+/// The data-owner marker's key for `id`, if persistent data is retained.
+std::optional<std::string> retained_data_owner(const Registry& registry,
+                                               const std::string& id) {
+    const fs::path owner = registry.data_owner_marker(id);
+    std::error_code ec;
+    if (!fs::is_regular_file(owner, ec)) return std::nullopt;
+    std::string prior = util::slurp_text(owner);
+    while (!prior.empty() && (prior.back() == '\n' || prior.back() == '\r' ||
+                              prior.back() == ' ')) {
+        prior.pop_back();
+    }
+    if (prior.empty()) return std::nullopt;
+    return prior;
+}
+
+/// The install confirmation screen — a TRUTHFUL two-dimensional authenticity +
+/// local-trust view (never a single "verified" line), truthful per-permission
+/// enforcement, and the real isolation state for this platform. The signature
+/// has already been validated by the caller, so it is presented as Valid.
 void print_primary_screen(const Manifest& manifest, const fs::path& package,
-                          std::uint64_t size_bytes) {
+                          std::uint64_t size_bytes, const Paths& paths) {
+    const Registry registry(paths);
+    const TrustEvaluation eval = TrustStore(paths).evaluate(
+        manifest.id, manifest.decoded_public_key(), SignatureState::Valid,
+        retained_data_owner(registry, manifest.id));
+    const presentation::AuthenticityView auth =
+        presentation::present_authenticity(eval, manifest.publisher_name);
+
+    const std::unique_ptr<IsolationBackend> backend =
+        make_isolation_backend(paths);
+    const IsolationCapabilities caps = backend->capabilities();
+    const presentation::IsolationView iso = presentation::present_isolation(caps);
+    const NormalizedPermissions perms = normalize_permissions(manifest.permissions);
+
     std::cout << manifest.name << "\n"
-              << "Published by " << manifest.publisher_name << "\n"
-              << "Version " << manifest.version << "\n"
-              << "\n"
-              << "Source:\n"
-              << "  " << package.string() << "\n"
-              << "\n"
-              << "Application Type:\n"
-              << "  Native Linux - " << join(manifest.architectures, ", ")
-              << "\n"
-              << "\n"
+              << "Published by " << manifest.publisher_name
+              << " (publisher identity not independently verified)\n"
+              << "Version " << manifest.version << "\n\n"
+              << "Authenticity & local trust:\n"
+              << "  " << auth.headline << "\n"
+              << "  " << auth.signature_text << "\n"
+              << "  " << auth.key_text << "\n"
+              << "  Signing key fingerprint: " << auth.fingerprint_grouped << "\n"
+              << "  " << auth.identity_caveat << "\n\n"
+              << "Source:\n  " << package.string() << "\n\n"
+              << "Application Type:\n  Native Linux - "
+              << join(manifest.architectures, ", ") << "\n\n"
               << "Permissions:\n";
-    if (manifest.permissions.empty()) {
+    if (perms.ids.empty()) {
         std::cout << "  (none requested)\n";
     } else {
-        for (const std::string& permission : manifest.permissions) {
-            std::cout << "  " << permission << "\n";
+        for (const presentation::PermissionView& row :
+             presentation::present_permissions(perms.ids, caps)) {
+            std::cout << "  - " << row.title << "  [" << row.enforcement << "]\n";
         }
     }
-    std::cout << "\n"
-              << "Installation:\n"
-              << "  " << install_scope_text(manifest) << "\n"
-              << "  " << format_size(size_bytes) << "\n"
-              << "\n"
-              << "Updates:\n"
-              << "  " << update_policy_text(manifest) << "\n"
-              << "\n"
-              << "Verification:\n"
-              << "  passed: signatures and hashes verified\n";
+    if (registry.is_installed(manifest.id)) {
+        try {
+            const InstallationRecord rec = registry.read_record(manifest.id);
+            const presentation::PermissionDeltaView dv =
+                presentation::present_permission_delta(permission_delta(
+                    normalized_from_ids(rec.approved_permissions), perms));
+            if (dv.expands) {
+                std::cout << "  New permissions this update requests (separate "
+                             "approval required):\n";
+                for (const std::string& a : dv.added) {
+                    std::cout << "    + " << a << "\n";
+                }
+            }
+        } catch (const Error&) {
+        }
+    }
+    std::cout << "\nInstallation:\n  " << install_scope_text(manifest) << "\n  "
+              << format_size(size_bytes) << "\n\n"
+              << "Updates:\n  " << update_policy_text(manifest) << "\n\n"
+              << "Isolation on this platform:\n  " << iso.headline << "\n";
+    for (const std::pair<std::string, std::string>& c : iso.controls) {
+        std::cout << "    " << c.first << ": " << c.second << "\n";
+    }
+    std::cout << "  " << iso.platform_caveat << "\n";
 }
 
 constexpr int kLabelWidth = 15;
@@ -313,10 +373,11 @@ ordered_json manifest_json(const Manifest& manifest) {
 
 int cmd_install(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(
-        args, {"--yes", "--accept-permissions"}, {"--channel"}, false,
+        args, {"--yes", "--accept-permissions", "--trust"}, {"--channel"}, false,
         kInstallUsage);
     require_positionals(parsed, 1, kInstallUsage);
     const fs::path package(parsed.positionals[0]);
+    const Paths paths = Paths::detect();
 
     // FORMAT-0.1 §6 pipeline including the architecture stage; a failing
     // package throws VerificationError (exit 3) before anything else happens.
@@ -329,7 +390,7 @@ int cmd_install(const std::vector<std::string>& args) {
             const PackageReader reader(package);
             size = payload_size(reader);
         }
-        print_primary_screen(manifest, package, size);
+        print_primary_screen(manifest, package, size, paths);
         std::cout << "\n";
         if (!confirm("Install " + manifest.name + " " + manifest.version +
                      "?")) {
@@ -339,7 +400,6 @@ int cmd_install(const std::vector<std::string>& args) {
         }
     }
 
-    const Paths paths = Paths::detect();
     Installer installer(paths);
     InstallOptions opts;
     const auto channel = parsed.options.find("--channel");
@@ -348,6 +408,10 @@ int cmd_install(const std::vector<std::string>& args) {
     // (runtime-trust WS5) — never implied by --yes.
     opts.allow_permission_expansion =
         parsed.flags.count("--accept-permissions") != 0;
+    // Explicitly TRUSTING the signing key locally is a separate act from
+    // consenting to this install (runtime-trust WS4) — also never implied by
+    // --yes. A plain install still records the App-ID/key binding as accepted.
+    opts.explicit_trust = parsed.flags.count("--trust") != 0;
     const InstallResult result = installer.install(package, opts);
 
     std::cout << "Installed " << manifest.name << " " << result.version << " ("
@@ -535,6 +599,7 @@ int cmd_info(const std::vector<std::string>& args) {
             Manifest::parse(reader.read_entry("lexe.json"));
         const std::uint64_t size = display_size(manifest, reader);
 
+        const Fingerprint fp = key_fingerprint(manifest.decoded_public_key());
         if (as_json) {
             ordered_json j;
             j["source"] = "package";
@@ -543,6 +608,10 @@ int cmd_info(const std::vector<std::string>& args) {
                 {"fileSize", static_cast<std::uint64_t>(fs::file_size(target))},
                 {"payloadSize", payload_size(reader)},
             };
+            j["signingKey"] = manifest.publisher_public_key;
+            j["fingerprint"] = {
+                {"full", fp.full}, {"grouped", fp.grouped}, {"short", fp.short_id}};
+            j["identityVerified"] = false;
             j["manifest"] = manifest_json(manifest);
             std::cout << j.dump(2) << "\n";
         } else {
@@ -551,6 +620,9 @@ int cmd_info(const std::vector<std::string>& args) {
                              static_cast<std::uint64_t>(fs::file_size(target)))
                       << ")\n";
             print_manifest_info(manifest, size);
+            print_kv("Signing key:", fp.grouped);
+            std::cout << "  (a valid signature proves consistency with this key, "
+                         "not the publisher's real-world identity)\n";
         }
         return 0;
     }
@@ -571,6 +643,18 @@ int cmd_info(const std::vector<std::string>& args) {
                   return version_less(a, b);
               });
 
+    // Local trust state (never presented as external identity verification).
+    std::optional<TrustRecord> trust;
+    std::string trust_state = "first-seen";
+    try {
+        trust = TrustStore(paths).read(target);
+        trust_state = local_key_state_label(trust);
+        if (trust_state == "no-record") trust_state = "first-seen";
+    } catch (const CorruptTrustError&) {
+        trust_state = "corrupt";
+    }
+    const Fingerprint fp = key_fingerprint(manifest.decoded_public_key());
+
     if (as_json) {
         ordered_json j;
         j["source"] = "installed";
@@ -585,6 +669,15 @@ int cmd_info(const std::vector<std::string>& args) {
             {"lastRunAt", record.last_run_at},
             {"lastExitCode", record.last_exit_code},
         };
+        j["signingKey"] = record.publisher_key;
+        j["fingerprint"] = {
+            {"full", fp.full}, {"grouped", fp.grouped}, {"short", fp.short_id}};
+        j["localTrust"] = {
+            {"state", trust_state},
+            {"blocked", trust.has_value() && trust->blocked},
+            {"explicitlyTrusted", trust.has_value() && trust->explicitly_trusted},
+            {"identityVerified", false},
+        };
         j["manifest"] = manifest_json(manifest);
         std::cout << j.dump(2) << "\n";
     } else {
@@ -592,6 +685,17 @@ int cmd_info(const std::vector<std::string>& args) {
         print_manifest_info(manifest, manifest.install_estimated_size);
         print_kv("Current:", current);
         print_kv("Versions:", join(versions, ", "));
+        print_kv("Signing key:", fp.grouped);
+        print_kv("Local trust:",
+                 trust_state == "blocked"
+                     ? "BLOCKED locally"
+                     : trust_state == "explicitly-trusted"
+                           ? "explicitly trusted locally (not external identity)"
+                           : trust_state == "corrupt"
+                                 ? "CORRUPT (fail closed)"
+                                 : trust_state == "known"
+                                       ? "known key, accepted for this App ID"
+                                       : "first-seen (identity not verified)");
         print_kv("Channel:", record.channel);
         print_kv("Source:", record.source);
         print_kv("Update source:",
@@ -614,11 +718,37 @@ int cmd_verify(const std::vector<std::string>& args) {
 
     const VerificationReport report =
         verify_package(file, /*check_architecture=*/false);
+    const SignatureState sig = signature_state_from_report(report);
+
+    // The signing key + fingerprint, when the package parsed far enough to
+    // expose it. This is AUTHENTICITY only — it says nothing about the
+    // publisher's real-world identity or local trust for any App ID.
+    std::optional<Fingerprint> fp;
+    std::string signing_key;
+    std::error_code fec;
+    if (fs::is_regular_file(file, fec)) {
+        try {
+            const Manifest m = Manifest::parse(PackageReader(file).read_entry("lexe.json"));
+            signing_key = m.publisher_public_key;
+            fp = key_fingerprint(m.decoded_public_key());
+        } catch (const Error&) {
+        }
+    }
 
     if (parsed.flags.count("--json") != 0) {
         ordered_json j;
         j["file"] = file;
         j["ok"] = report.ok();
+        j["signatureState"] = to_string(sig);
+        if (fp.has_value()) {
+            j["signingKey"] = signing_key;
+            j["fingerprint"] = {{"full", fp->full},
+                                {"grouped", fp->grouped},
+                                {"short", fp->short_id}};
+        }
+        j["identityVerified"] = false;
+        j["note"] = "Verification checks package integrity and signature "
+                    "(authenticity), NOT the publisher's real-world identity.";
         ordered_json stages = ordered_json::array();
         for (const VerificationStage& stage : report.stages) {
             stages.push_back({{"name", stage.name},
@@ -635,7 +765,12 @@ int cmd_verify(const std::vector<std::string>& args) {
                       << stage.detail << "\n";
         }
         if (report.ok()) {
-            std::cout << "verification: OK\n";
+            std::cout << "verification: OK (signature valid, Ed25519)\n";
+            if (fp.has_value()) {
+                std::cout << "signing key fingerprint: " << fp->grouped << "\n";
+            }
+            std::cout << "note: this proves package integrity + signature, NOT "
+                         "the publisher's real-world identity.\n";
         } else {
             const VerificationStage* failure = report.first_failure();
             std::cout << "verification: FAILED ("
@@ -727,15 +862,6 @@ int cmd_gc(const std::vector<std::string>& args) {
 AppLock trust_mutation_lock(const Paths& paths, const std::string& id) {
     return make_lock_manager(paths)->lock_app_mutation(
         id, "trust", WaitPolicy::bounded(std::chrono::seconds(10)));
-}
-
-/// A short label for the local key state of a trust record (query view — no
-/// package/signature is involved, so this is the record's own standing).
-std::string local_key_state_label(const std::optional<TrustRecord>& rec) {
-    if (!rec.has_value()) return "no-record";
-    if (rec->blocked) return "blocked";
-    if (rec->explicitly_trusted) return "explicitly-trusted";
-    return "known";
 }
 
 int cmd_trust_show(const std::string& id, bool as_json) {
