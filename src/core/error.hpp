@@ -77,6 +77,16 @@ public:
     using Error::Error;
 };
 
+/// A lock-system failure (runtime-trust WS9): a lock file could not be opened,
+/// an OS lock/stat call failed, or recorded lock metadata is corrupt. Distinct
+/// from BusyError — that is a healthy lock simply held by someone else, whereas
+/// this is the locking machinery itself failing. CLI exit code 1 (the caller
+/// fails closed rather than proceeding without the lock).
+class LockError : public Error {
+public:
+    using Error::Error;
+};
+
 /// Map an exception to the CLI exit code documented above.
 inline int exit_code_for(const std::exception& e) noexcept {
     if (dynamic_cast<const UsageError*>(&e) != nullptr) return 2;

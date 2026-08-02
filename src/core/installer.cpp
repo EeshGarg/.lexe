@@ -240,18 +240,32 @@ void merge_created_files(std::vector<std::string>& into,
 
 } // namespace
 
-Installer::Installer(const Paths& paths) : paths_(paths) {}
+Installer::Installer(const Paths& paths)
+    : paths_(paths), locks_(make_lock_manager(paths)) {}
+
+Installer::Installer(const Paths& paths,
+                     std::shared_ptr<OperationLockManager> locks)
+    : paths_(paths), locks_(std::move(locks)) {}
 
 InstallResult Installer::install(const fs::path& lexe_file,
                                  const InstallOptions& opts) {
-    // Finish or roll back any transaction that a previous run left interrupted
-    // BEFORE starting a new one (HARDENING.md §A/§C: "restart the installer").
-    recover_all();
-
     // FORMAT-0.1 §6 stages 1–7 — nothing is trusted or written before this
-    // passes. opts.force_arch skips only stage 7 (§6.7).
+    // passes. opts.force_arch skips only stage 7 (§6.7). Verification is
+    // read-only on the package, so it runs before we take any lock.
     const Manifest manifest =
         verify_package_or_throw(lexe_file, /*check_architecture=*/!opts.force_arch);
+
+    // Runtime-trust WS9: serialize every mutation of this App ID. A concurrent
+    // install/update/rollback/remove/recovery of the SAME id waits (bounded)
+    // or fails with BusyError; DIFFERENT ids take different locks and proceed
+    // concurrently. Held (RAII) for the rest of this call.
+    const AppLock app_lock =
+        locks_->lock_app_mutation(manifest.id, "install", mutation_wait_);
+
+    // Finish or roll back any transaction a previous run left interrupted for
+    // THIS app before starting a new one (HARDENING.md §A/§C). Done UNDER the
+    // mutation lock, so recovery never races another operation.
+    recover_locked(manifest.id);
 
     const Registry registry(paths_);
     const fs::path app_dir = registry.app_dir(manifest.id); // validates id
@@ -469,6 +483,15 @@ InstallResult Installer::install(const fs::path& lexe_file,
 }
 
 void Installer::recover(const std::string& id) {
+    // Recovery mutates the app, so it takes the per-app mutation lock — this is
+    // what makes recovery serialize with a same-App install/update/rollback
+    // (runtime-trust WS9).
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "recover", mutation_wait_);
+    recover_locked(id);
+}
+
+void Installer::recover_locked(const std::string& id) {
     const Registry registry(paths_);
     TransactionJournal journal;
     try {
@@ -545,6 +568,13 @@ void Installer::recover(const std::string& id) {
 }
 
 void Installer::recover_all() {
+    // Serialize recovery passes with one another (runtime-trust WS9). Per-app
+    // recovery still takes each app's own mutation lock underneath this, so a
+    // busy app is skipped rather than blocked (unrelated apps are not
+    // serialized by this global lock — they only wait to be enumerated).
+    const GlobalRecoveryLock recovery_lock =
+        locks_->lock_global_recovery(mutation_wait_);
+
     std::error_code ec;
     const fs::path apps = paths_.apps_dir();
     if (!fs::is_directory(apps, ec)) return;
@@ -606,6 +636,8 @@ HealthReport Installer::check_health(const std::string& id) const {
 }
 
 void Installer::uninstall(const std::string& id, UninstallMode mode) {
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "remove", mutation_wait_);
     const Registry registry(paths_);
     const InstallationRecord record = registry.read_record(id); // NotFoundError
 
@@ -632,6 +664,8 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
 }
 
 void Installer::rollback(const std::string& id) {
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "rollback", mutation_wait_);
     const Registry registry(paths_);
     InstallationRecord record = registry.read_record(id); // NotFoundError
     const std::string current = registry.current_version(id);
@@ -670,6 +704,8 @@ void Installer::rollback(const std::string& id) {
 
 RepairReport Installer::repair(const std::string& id,
                                const std::optional<fs::path>& package) {
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "repair", mutation_wait_);
     const Registry registry(paths_);
     const InstallationRecord record = registry.read_record(id); // NotFoundError
     const std::string current = registry.current_version(id);

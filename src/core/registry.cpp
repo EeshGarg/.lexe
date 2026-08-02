@@ -237,6 +237,10 @@ fs::path Registry::mutation_lock_file(const std::string& id) const {
     return locks_dir() / (id + ".lock");
 }
 
+fs::path Registry::global_recovery_lock_file() const {
+    return locks_dir() / "global.recovery.lock";
+}
+
 fs::path Registry::version_lease_file(const std::string& id,
                                       const std::string& version) const {
     validate_id(id);

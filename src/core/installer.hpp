@@ -3,10 +3,12 @@
 // User Flow", FORMAT-0.1 §9 installed layout, §6 verification before any
 // byte of payload is trusted).
 
+#include "core/lock.hpp"
 #include "core/manifest.hpp"
 #include "core/paths.hpp"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -62,6 +64,17 @@ struct HealthReport {
 class Installer {
 public:
     explicit Installer(const Paths& paths);
+    /// Test/embedding seam: inject a lock manager (e.g. an in-process fake) so
+    /// concurrency behavior can be exercised deterministically (runtime-trust
+    /// WS9). Production code uses the single-argument constructor.
+    Installer(const Paths& paths,
+              std::shared_ptr<OperationLockManager> locks);
+
+    /// How long an operation waits for a conflicting same-App mutation before
+    /// giving up with BusyError. Default: a bounded wait (a brief overlap waits;
+    /// a long-held lock eventually yields busy). Tests set WaitPolicy::none()
+    /// for deterministic contention checks.
+    void set_mutation_wait(const WaitPolicy& wait) { mutation_wait_ = wait; }
 
     /// Full §6 pipeline (with architecture check), then extract payload/ to
     /// versions/<version>/, write manifest.json + installation.json, flip
@@ -107,13 +120,21 @@ public:
     /// (HARDENING.md §A/§C): a pre-promotion transaction is rolled back
     /// (previous version untouched), a promoted one is completed forward (new
     /// version made active). Idempotent: a no-op when there is no journal.
+    /// Takes the per-app mutation lock so recovery serializes with any
+    /// concurrent mutation of the same App ID (runtime-trust WS9).
     void recover(const std::string& id);
-    /// Run recover() for every application with a pending transaction journal.
-    /// Called at the start of install(); safe to call at process startup.
+    /// Run recover() for every application with a pending transaction journal,
+    /// under the global recovery lock. Safe to call at process startup.
     void recover_all();
 
 private:
+    /// recover()'s body, assuming the per-app mutation lock is already held —
+    /// used by install() (which holds the lock) and by recover()/recover_all().
+    void recover_locked(const std::string& id);
+
     Paths paths_;
+    std::shared_ptr<OperationLockManager> locks_;
+    WaitPolicy mutation_wait_ = WaitPolicy::bounded(std::chrono::seconds(10));
 };
 
 } // namespace lexe

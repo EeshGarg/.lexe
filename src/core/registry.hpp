@@ -72,6 +72,9 @@ public:
     std::filesystem::path locks_dir() const;
     /// The per-app exclusive-mutation lock file (`<home>/locks/<id>.lock`).
     std::filesystem::path mutation_lock_file(const std::string& id) const;
+    /// The single global recovery-coordination lock file
+    /// (`<home>/locks/global.recovery.lock`).
+    std::filesystem::path global_recovery_lock_file() const;
     /// A per-(id,version) launch-lease lock file.
     std::filesystem::path version_lease_file(const std::string& id,
                                              const std::string& version) const;
