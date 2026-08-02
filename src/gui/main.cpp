@@ -441,14 +441,17 @@ GtkWidget* add_body_label(GtkWidget* box, const std::string& text) {
     return label;
 }
 
-/// Bold heading + body block, mirroring the SPEC mock's sections. `heading`
-/// is a fixed program literal (never user-controlled) so it is safe to embed
-/// in markup unescaped.
+/// Bold heading + body block, mirroring the SPEC mock's sections. The heading
+/// is ESCAPED before being embedded in Pango markup — a heading may legitimately
+/// contain markup metacharacters (e.g. the "&" in "Authenticity & local trust"),
+/// which would otherwise fail to parse and render the heading blank.
 void add_section(GtkWidget* box, const char* heading, const std::string& body) {
     GtkWidget* head = gtk_label_new(nullptr);
-    gchar* markup = g_strdup_printf("<b>%s</b>", heading);
+    gchar* escaped = g_markup_escape_text(heading, -1);
+    gchar* markup = g_strdup_printf("<b>%s</b>", escaped);
     gtk_label_set_markup(GTK_LABEL(head), markup);
     g_free(markup);
+    g_free(escaped);
     gtk_label_set_xalign(GTK_LABEL(head), 0.0f);
     gtk_box_pack_start(GTK_BOX(box), head, FALSE, FALSE, 0);
     add_body_label(box, body);

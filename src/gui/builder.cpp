@@ -536,9 +536,13 @@ void set_banner(BuilderState* st, bool ok, const std::string& text) {
 
 GtkWidget* section_heading(const char* text) {
     GtkWidget* label = gtk_label_new(nullptr);
-    gchar* markup = g_strdup_printf("<b>%s</b>", text);
+    // Escape the heading: a "&" or "<" would otherwise break Pango markup and
+    // render the heading blank (see the installer's add_section for the same fix).
+    gchar* escaped = g_markup_escape_text(text, -1);
+    gchar* markup = g_strdup_printf("<b>%s</b>", escaped);
     gtk_label_set_markup(GTK_LABEL(label), markup);
     g_free(markup);
+    g_free(escaped);
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     return label;
 }
