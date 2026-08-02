@@ -185,6 +185,8 @@ New here? Start with [CONTRIBUTING.md](CONTRIBUTING.md), then
 
 ## Documentation
 
+Full index with reading order: **[docs/README.md](docs/README.md)**.
+
 | Document | What it covers |
 |---|---|
 | [SPEC.md](SPEC.md) | The overall specification and the 0.1 → 0.3 vision. |
