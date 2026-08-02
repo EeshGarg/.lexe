@@ -193,6 +193,13 @@ fails if the property regresses.
 | A launch runs a stable immutable version despite a concurrent update (TOCTOU) | lease-then-use-`versions/<v>`; `current` never re-read; revalidate after leasing (`launcher.cpp`) | `test_race_linux`, `ws8_ws9_lifecycle.sh` (update/rollback while cycling) |
 | Persistent data is never inherited by a different publisher key | `.lexe-data-owner` marker checked before install (`installer.cpp`); `--purge-data` never implied by `--yes` | `test_storage`, `ws8_ws9_lifecycle.sh` |
 | Garbage collection is conservative and lease-aware | `installer.cpp garbage_collect` keeps active/newer/rollback-window/txn/leased; typed `GcReport`; failures never touch active | `test_storage` (gc cases) |
+| Authenticity and local publisher trust are distinct typed states, never one "verified" bit | `trust.{hpp,cpp}` (`SignatureState` vs `PublisherKeyState`/`TrustDecision`); presented uniformly by `presentation.cpp` | `test_trust`, `test_presentation`, `test_gui`, `test_cli` |
+| A changed signing key never silently takes over an App ID or its data | install/update/rollback trust gate (`installer.cpp`) + installed-record key pin, `ChangedKeyError` (exit 7); no `--yes`/`--force`/`--accept-permissions` bypass | `test_installer`, `test_trust`, `test_trust_adversarial`, `ws3_ws4_trust_lifecycle.sh` |
+| Trust is recorded only after a committed install; recovery is idempotent | `installer.cpp` records the binding post-commit; `recover_locked` completes it forward, never for a rollback | `test_trust_lifecycle`, `test_trust_adversarial` |
+| A locally blocked App ID cannot install, update or launch | trust gate in `installer.cpp` + launcher gate in `launcher.cpp`, `BlockedKeyError` (exit 7) | `test_trust_lifecycle`, `test_cli`, `ws3_ws4_trust_lifecycle.sh` |
+| A corrupt trust record fails closed and is never silently overwritten | strict `TrustRecord::from_json` + `TrustStore::read` (dup-key/canonical-key/fingerprint/App-ID/symlink checks), `CorruptTrustError` | `test_trust`, `test_trust_adversarial` |
+| Permission consent stays independent of publisher trust | permission-delta gate (`installer.cpp` WS5) separate from the trust gate | `test_permissions`, `ws3_ws4_trust_lifecycle.sh` |
+| Publisher display text is never presented as cryptographic identity; the key fingerprint is shown | `presentation.cpp` + CLI/GTK surfaces label the publisher unverified and show the fingerprint | `test_presentation`, `test_gui`, `test_cli` |
 
 # A–H Disposition
 

@@ -1,5 +1,12 @@
 # Lexe Trust & Signing Infrastructure — Design (targeting 0.2)
 
+> **Implementation status.** Tier 1 (self-signed, TOFU-pinned) is **implemented**
+> today — see [TRUST-MODEL.md](TRUST-MODEL.md) for the local trust model the
+> runtime actually enforces (authenticity vs identity, first-seen, App-ID/key
+> continuity, changed-key refusal, local blocking, the trust-record format).
+> Tiers 2 and 3 below (repository endorsement, root accreditation) are **design
+> only, not implemented**, and no part of the runtime or UI claims them.
+
 Three trust tiers, one fixed chain shape, no X.509. This layers **on top of**
 the FORMAT-0.1 integrity model (which stays exactly as specified: publisher
 Ed25519 over exact entry bytes). Integrity answers "is this package intact and
