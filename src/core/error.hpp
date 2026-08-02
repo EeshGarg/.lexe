@@ -41,6 +41,15 @@ public:
     using Error::Error;
 };
 
+/// A launch precondition failed — entrypoint containment, integrity, or
+/// isolation-policy construction (runtime-trust WS6/WS7). The application is
+/// NOT executed. Exit code 1 (a distinct type for programmatic handling; the
+/// launch never falls through to direct execution).
+class LaunchError : public Error {
+public:
+    using Error::Error;
+};
+
 /// Map an exception to the CLI exit code documented above.
 inline int exit_code_for(const std::exception& e) noexcept {
     if (dynamic_cast<const UsageError*>(&e) != nullptr) return 2;

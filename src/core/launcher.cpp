@@ -10,10 +10,15 @@
 
 #include "core/launcher.hpp"
 
+#include "core/crypto.hpp"
 #include "core/error.hpp"
+#include "core/json_strict.hpp"
+#include "core/limits.hpp"
 #include "core/manifest.hpp"
 #include "core/registry.hpp"
 #include "core/util.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <system_error>
@@ -79,6 +84,37 @@ int run_app(const Paths& paths, const std::string& id,
     if (!fs::is_regular_file(entry, ec)) {
         throw Error("launcher: entrypoint missing for " + id + ": " +
                     entry.string());
+    }
+
+    // Runtime-trust WS6: revalidate the entrypoint's integrity against the
+    // hash recorded at install time, so a binary tampered with AFTER
+    // installation is never executed. Enforced whenever a recorded hash for the
+    // entrypoint is present (every real install writes one); the launch is
+    // refused on mismatch — it never falls through to direct execution.
+    {
+        fs::path hashes_file = registry.meta_dir(id, version) / "hashes.json";
+        if (!fs::is_regular_file(hashes_file, ec)) {
+            hashes_file = registry.app_dir(id) / "hashes.json";
+        }
+        if (fs::is_regular_file(hashes_file, ec)) {
+            const nlohmann::json doc =
+                json_strict::parse(util::slurp_text(hashes_file),
+                                   "installed hashes.json", limits::kMaxHashesBytes);
+            const auto files = doc.find("files");
+            if (files != doc.end() && files->is_object()) {
+                const std::string key =
+                    "payload/" + manifest.entrypoint_executable;
+                const auto it = files->find(key);
+                if (it != files->end() && it->is_string() &&
+                    crypto::sha256_file_hex(entry) != it->get<std::string>()) {
+                    throw LaunchError(
+                        "launcher: entrypoint of " + id +
+                        " fails its recorded integrity check (modified after "
+                        "install); refusing to launch. Run `lexe repair " + id +
+                        "`.");
+                }
+            }
+        }
     }
 
 #ifndef _WIN32

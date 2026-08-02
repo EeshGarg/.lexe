@@ -16,9 +16,11 @@
 #include "helpers.hpp"
 
 #include "core/installer.hpp"
+#include "core/launcher.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
 #include "core/registry.hpp"
+#include "core/util.hpp"
 #include "core/verify.hpp"
 
 #include <filesystem>
@@ -134,6 +136,27 @@ TEST_CASE("uninstall removes only the app's own directory") {
     CHECK_FALSE(fs::exists(registry.app_dir("com.example.one")));
     CHECK(registry.is_installed("com.example.two")); // untouched
     CHECK(registry.current_version("com.example.two") == "1.0.0");
+}
+
+// Invariant: installed integrity is revalidated at launch — a binary tampered
+// with after installation is not executed (runtime-trust WS6).
+TEST_CASE("the launcher refuses an entrypoint tampered after install") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    Installer(paths).install(build_pkg(work, key, kId, "1.0.0"), InstallOptions{});
+
+    const Registry registry(paths);
+    const Manifest m = registry.read_manifest(kId);
+    const fs::path entry =
+        registry.version_dir(kId, "1.0.0") / fs::path(m.entrypoint_executable);
+    // Overwrite the installed entrypoint with different bytes.
+    util::spit(entry, std::string_view("#!/bin/sh\necho pwned\n"));
+
+    CHECK_THROWS_WITH_AS(run_app(paths, kId, {}),
+                         doctest::Contains("integrity"), lexe::LaunchError);
 }
 
 } // TEST_SUITE("invariants")
