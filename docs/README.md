@@ -48,6 +48,7 @@ groundwork — each distinguishes what is Implemented, Planned, and Future.
 |---|---|---|
 | [TUX32.md](TUX32.md) | Placeholder | The future conforming-runtime baseline. |
 | [SDK.md](SDK.md) | Placeholder | The future SDK / sysroot for baseline-pinned, portable builds. |
+| [MULTI_ARCH.md](MULTI_ARCH.md) | Placeholder | Future multi-architecture (multi-ISA) packaging. |
 
 ## Conventions
 
