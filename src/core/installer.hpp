@@ -7,6 +7,7 @@
 #include "core/manifest.hpp"
 #include "core/paths.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -61,6 +62,16 @@ struct HealthReport {
     std::vector<std::string> issues; // human-readable health problems
 };
 
+/// Result of Installer::garbage_collect (runtime-trust WS8). Deterministic and
+/// typed — never a free-form string. Every installed version appears in exactly
+/// one bucket.
+struct GcReport {
+    std::vector<std::string> removed;        // version dirs reclaimed
+    std::vector<std::string> retained;       // active / newer / rollback / txn
+    std::vector<std::string> skipped_in_use; // a launch lease is held: kept
+    std::vector<std::string> failed;         // removal failed; active untouched
+};
+
 class Installer {
 public:
     explicit Installer(const Paths& paths);
@@ -102,6 +113,18 @@ public:
     /// update the records (SPEC "Rollback"). Throws NotFoundError when there
     /// is no previous version.
     void rollback(const std::string& id);
+
+    /// Reclaim superseded immutable versions of `id` (runtime-trust WS8),
+    /// keeping ALWAYS: the active version, every version at or newer than it,
+    /// the newest `keep_previous` versions older than active (rollback-
+    /// reachable), any version referenced by a pending transaction journal, and
+    /// any version a running launch holds a lease on. A version is removed only
+    /// after its exclusive gc-lock is taken (so a running launch is never
+    /// disturbed — it is reported in skipped_in_use instead). A removal failure
+    /// is recorded in `failed` and never invalidates the active install. Takes
+    /// the per-app mutation lock. Throws NotFoundError when not installed.
+    GcReport garbage_collect(const std::string& id,
+                             std::size_t keep_previous = 1);
 
     /// Re-verify installed payload files against the recorded hashes; when
     /// `package` is given, re-extract mismatching/missing files from it after

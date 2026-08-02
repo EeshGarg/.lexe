@@ -5,13 +5,17 @@
 #include <doctest/doctest.h>
 
 #include "helpers.hpp"
+#include "lock_fake.hpp"
 
 #include "core/error.hpp"
 #include "core/installer.hpp"
+#include "core/lock.hpp"
 #include "core/paths.hpp"
 #include "core/registry.hpp"
+#include "core/transaction.hpp"
 #include "core/util.hpp"
 
+#include <memory>
 #include <string>
 #include <system_error>
 
@@ -219,6 +223,109 @@ TEST_CASE("retained data: purge clears the owner marker so any publisher may rei
 
     // With the retained data (and marker) gone, B may take over the id cleanly.
     CHECK_NOTHROW(install_with(paths, work.dir, key_b));
+}
+
+// ------------------------------------------------ lease-aware garbage collect
+
+TEST_CASE("gc: reclaims old versions, always keeps active + rollback window") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const crypto::KeyPair key = test::make_keypair();
+
+    Installer installer(paths);
+    install_with(paths, work.dir, key, "1.0.0");
+    install_with(paths, work.dir, key, "2.0.0");
+    install_with(paths, work.dir, key, "3.0.0");
+    REQUIRE(registry.current_version(kId) == "3.0.0");
+
+    // keep_previous = 1: active (3.0.0) + newest older (2.0.0) survive; 1.0.0 is
+    // beyond the window and reclaimed.
+    const GcReport r = installer.garbage_collect(kId, /*keep_previous=*/1);
+    CHECK(fs::is_directory(registry.version_dir(kId, "3.0.0")));
+    CHECK(fs::is_directory(registry.version_dir(kId, "2.0.0")));
+    CHECK_FALSE(fs::exists(registry.version_dir(kId, "1.0.0")));
+    CHECK_FALSE(fs::exists(registry.meta_dir(kId, "1.0.0")));
+    CHECK(r.removed == std::vector<std::string>{"1.0.0"});
+    CHECK(r.failed.empty());
+    // The active install is fully intact after collection.
+    CHECK(registry.current_version(kId) == "3.0.0");
+    CHECK(installer.check_health(kId).ok);
+}
+
+TEST_CASE("gc: never removes a version at or newer than active") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const crypto::KeyPair key = test::make_keypair();
+
+    Installer installer(paths);
+    install_with(paths, work.dir, key, "1.0.0");
+    install_with(paths, work.dir, key, "2.0.0");
+    install_with(paths, work.dir, key, "3.0.0");
+    installer.rollback(kId); // active is now 2.0.0; 3.0.0 is newer, on disk
+
+    const GcReport r = installer.garbage_collect(kId, /*keep_previous=*/0);
+    CHECK(fs::is_directory(registry.version_dir(kId, "3.0.0"))); // newer: kept
+    CHECK(fs::is_directory(registry.version_dir(kId, "2.0.0"))); // active: kept
+    CHECK_FALSE(fs::exists(registry.version_dir(kId, "1.0.0"))); // older: gone
+    CHECK(r.removed == std::vector<std::string>{"1.0.0"});
+}
+
+TEST_CASE("gc: a leased (running) version is skipped, not removed") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const crypto::KeyPair key = test::make_keypair();
+
+    auto locks = std::make_shared<test::FakeLockManager>();
+    Installer installer(paths, locks);
+    installer.set_mutation_wait(WaitPolicy::none());
+    install_with(paths, work.dir, key, "1.0.0");
+    install_with(paths, work.dir, key, "2.0.0");
+    install_with(paths, work.dir, key, "3.0.0");
+
+    // A process is running 1.0.0: it holds a shared lease.
+    LaunchLease running =
+        locks->acquire_launch_lease(kId, "1.0.0", WaitPolicy::none());
+
+    // keep_previous = 1 keeps active (3.0.0) + 2.0.0, so 1.0.0 is the only
+    // reclaim candidate — but the lease keeps it: reported in-use, not removed.
+    const GcReport r = installer.garbage_collect(kId, /*keep_previous=*/1);
+    CHECK(fs::is_directory(registry.version_dir(kId, "1.0.0")));
+    CHECK(r.skipped_in_use == std::vector<std::string>{"1.0.0"});
+    CHECK(r.removed.empty());
+}
+
+TEST_CASE("gc: a version referenced by a pending transaction is retained") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const crypto::KeyPair key = test::make_keypair();
+
+    Installer installer(paths);
+    install_with(paths, work.dir, key, "1.0.0");
+    install_with(paths, work.dir, key, "2.0.0");
+
+    // Leave a pending journal that targets the oldest version.
+    InstallTransaction txn(paths, kId, "1.0.0");
+    txn.begin("2.0.0", R"({"id":"com.example.hello","version":"1.0.0"})");
+
+    // Even with keep_previous = 0, the txn target must not be reclaimed.
+    const GcReport r = installer.garbage_collect(kId, /*keep_previous=*/0);
+    CHECK(fs::is_directory(registry.version_dir(kId, "1.0.0")));
+    CHECK(r.removed.empty());
+}
+
+TEST_CASE("gc: unknown application is NotFoundError") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    CHECK_THROWS_AS(Installer(paths).garbage_collect("com.example.nope"),
+                    NotFoundError);
 }
 
 // ------------------------------------------------------ exit-code contract

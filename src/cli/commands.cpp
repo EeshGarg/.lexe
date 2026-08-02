@@ -59,6 +59,7 @@ constexpr const char* kInfoUsage = "usage: lexe info <file.lexe | id> [--json]";
 constexpr const char* kVerifyUsage = "usage: lexe verify <file.lexe> [--json]";
 constexpr const char* kSourceUsage = "usage: lexe source set <id> <url>";
 constexpr const char* kRollbackUsage = "usage: lexe rollback <id>";
+constexpr const char* kGcUsage = "usage: lexe gc <id> [--keep <n>]";
 constexpr const char* kListUsage = "usage: lexe list [--json]";
 constexpr const char* kKeygenUsage = "usage: lexe keygen <keyfile.json>";
 constexpr const char* kPackUsage =
@@ -666,6 +667,52 @@ int cmd_rollback(const std::vector<std::string>& args) {
     return 0;
 }
 
+int cmd_gc(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {"--keep"}, false, kGcUsage);
+    require_positionals(parsed, 1, kGcUsage);
+    const std::string& id = parsed.positionals[0];
+
+    std::size_t keep = 1; // keep active + one rollback-reachable version
+    const auto keep_opt = parsed.options.find("--keep");
+    if (keep_opt != parsed.options.end()) {
+        try {
+            keep = static_cast<std::size_t>(std::stoul(keep_opt->second));
+        } catch (const std::exception&) {
+            throw UsageError(std::string("lexe gc: --keep expects a "
+                                         "non-negative integer\n") +
+                             kGcUsage);
+        }
+    }
+
+    const Paths paths = Paths::detect();
+    const GcReport report =
+        Installer(paths).garbage_collect(id, keep); // NotFoundError
+
+    std::cout << "Cleaned up " << id << ": " << report.removed.size()
+              << " version(s) removed, " << report.retained.size()
+              << " retained";
+    if (!report.skipped_in_use.empty()) {
+        std::cout << ", " << report.skipped_in_use.size() << " in use";
+    }
+    if (!report.failed.empty()) {
+        std::cout << ", " << report.failed.size() << " failed";
+    }
+    std::cout << "\n";
+    for (const std::string& v : report.removed) {
+        std::cout << "  removed " << v << "\n";
+    }
+    for (const std::string& v : report.skipped_in_use) {
+        std::cout << "  kept (in use) " << v << "\n";
+    }
+    for (const std::string& v : report.failed) {
+        std::cout << "  could not remove " << v << "\n";
+    }
+    // A removal failure is a soft error: the active install is intact, but the
+    // reclaim did not fully succeed.
+    return report.failed.empty() ? 0 : 1;
+}
+
 int cmd_list(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {"--json"}, {}, false, kListUsage);
@@ -969,7 +1016,8 @@ std::string usage_text() {
            "application\n"
            "  update <id> | --all [--check]                apply (or check "
            "for) updates\n"
-           "  remove <id> [--purge-data] [--yes]           uninstall an "
+           "  remove <id> [--remove-cache] [--purge-data] [--yes]\n"
+           "                                               uninstall an "
            "application\n"
            "  repair <id>                                  verify and repair "
            "installed files\n"
@@ -981,6 +1029,8 @@ std::string usage_text() {
            "source\n"
            "  rollback <id>                                return to the "
            "previous version\n"
+           "  gc <id> [--keep <n>]                         reclaim old "
+           "versions (keeps active + n)\n"
            "  list [--json]                                list installed "
            "applications\n"
            "  keygen <keyfile.json>                        generate a signing "
@@ -1020,6 +1070,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "verify") return cmd_verify(rest);
     if (command == "source") return cmd_source(rest);
     if (command == "rollback") return cmd_rollback(rest);
+    if (command == "gc") return cmd_gc(rest);
     if (command == "list") return cmd_list(rest);
     if (command == "keygen") return cmd_keygen(rest);
     if (command == "pack") return cmd_pack(rest);

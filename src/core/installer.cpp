@@ -33,8 +33,10 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -718,6 +720,84 @@ void Installer::rollback(const std::string& id) {
 
     record.version = *target;
     registry.write_record(record);
+}
+
+GcReport Installer::garbage_collect(const std::string& id,
+                                    std::size_t keep_previous) {
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "cleanup", mutation_wait_);
+    const Registry registry(paths_);
+
+    // NotFoundError when the app is not installed (no active version).
+    const std::string active = registry.current_version(id);
+
+    // Deterministic order over all installed versions (semver-lite, §8).
+    std::vector<std::string> versions = registry.installed_versions(id);
+    std::sort(versions.begin(), versions.end(),
+              [](const std::string& a, const std::string& b) {
+                  return version_less(a, b);
+              });
+
+    // Build the retain set. ALWAYS keep the active version and everything at or
+    // newer than it (a rollback target may be newer; forward re-install stays
+    // possible). Keep the newest `keep_previous` versions OLDER than active
+    // (the rollback-reachable window).
+    std::set<std::string> retain;
+    retain.insert(active);
+    std::vector<std::string> older; // ascending
+    for (const std::string& v : versions) {
+        if (version_less(v, active)) {
+            older.push_back(v);
+        } else {
+            retain.insert(v); // active or newer — never GC'd
+        }
+    }
+    for (std::size_t i = 0; i < older.size(); ++i) {
+        if (older.size() - i <= keep_previous) retain.insert(older[i]);
+    }
+    // A version referenced by an interrupted transaction must survive so
+    // recovery can still complete or roll it back.
+    try {
+        const TransactionJournal journal = read_journal(paths_, id);
+        if (journal.phase != TxnPhase::None && !journal.target_version.empty()) {
+            retain.insert(journal.target_version);
+        }
+    } catch (const Error&) {
+        // Unreadable journal: keep the retain set as-is (active + window are
+        // already protected); never remove a version we are unsure about.
+    }
+
+    GcReport report;
+    for (const std::string& v : versions) {
+        if (retain.count(v) != 0) {
+            report.retained.push_back(v);
+            continue;
+        }
+        // Remove only a version no launch is using. try-exclusive is
+        // non-blocking: a held shared lease means a live process → skip it, and
+        // keep the exclusive lock across the removal so a launch cannot start
+        // on this version mid-delete.
+        std::optional<LaunchLease> vlock =
+            locks_->try_lock_version_for_gc(id, v);
+        if (!vlock.has_value()) {
+            report.skipped_in_use.push_back(v);
+            continue;
+        }
+        bool ok = true;
+        try {
+            util::remove_recursive(registry.version_dir(id, v));
+            util::remove_recursive(registry.meta_dir(id, v));
+        } catch (...) {
+            ok = false; // a failure here never touches the active version
+        }
+        std::error_code ec;
+        if (ok && !fs::exists(registry.version_dir(id, v), ec)) {
+            report.removed.push_back(v);
+        } else {
+            report.failed.push_back(v);
+        }
+    }
+    return report;
 }
 
 RepairReport Installer::repair(const std::string& id,
