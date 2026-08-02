@@ -104,19 +104,37 @@ else
 fi
 
 # ------------------------------------------------------------------ next steps
+cat <<'BANNER'
+
+      __
+     / /__  _  _____
+    / / _ \| |/_/ _ \
+   / /  __/>  </  __/
+  /_/\___/_/|_|\___/
+
+  Linux applications, made simple.
+
+BANNER
+
+echo "Installed:"
+echo "  [ok] Runtime          (lexe)"
+echo "  [ok] Builder          (lexe-builder)"
+echo "  [ok] Installer        (lexe-installer)"
+echo "  [ok] MIME type        (application/x-lexe)"
+echo "  [ok] Desktop handler  (double-click a .lexe file)"
 echo
-echo "Lexe runtime installed."
-echo "  Double-click any .lexe file to open it in the Lexe Installer."
-echo "  'Lexe Builder' is available from your application menu."
-echo "  Command line: lexe --help"
+echo "Welcome to .lexe."
+echo
+echo "  Build applications:    lexe-builder"
+echo "  Install applications:  lexe install App.lexe"
+echo "  Explore the CLI:       lexe help"
 
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *)
         echo
-        echo "warning: $bin_dir is not on your PATH."
-        echo "         Add it so the 'lexe' commands resolve, e.g. add this to"
-        echo "         your ~/.bashrc or ~/.profile:"
-        echo "           export PATH=\"\$HOME/.local/bin:\$PATH\""
+        echo "note: $bin_dir is not on your PATH. Add it so the 'lexe' commands"
+        echo "      resolve, e.g. add to your ~/.bashrc or ~/.profile:"
+        echo "        export PATH=\"\$HOME/.local/bin:\$PATH\""
         ;;
 esac

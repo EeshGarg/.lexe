@@ -49,6 +49,14 @@ if command -v update-desktop-database >/dev/null 2>&1; then
 fi
 
 echo
-echo "Lexe runtime uninstalled."
-echo "  Application data under \${XDG_DATA_HOME:-~/.local/share}/lexe (installed"
-echo "  apps) was left untouched; remove it manually if you no longer need it."
+echo "Lexe runtime uninstalled (binaries, desktop entries and MIME type removed)."
+echo
+echo "Left untouched — on purpose:"
+echo "  * Installed applications and their data under"
+echo "    \${LEXE_HOME:-\${XDG_DATA_HOME:-~/.local/share}/lexe}."
+echo "  * Local publisher-trust records."
+echo
+echo "Nothing you installed or created is removed without your explicit intent."
+echo "To remove an application and its data, use the runtime BEFORE uninstalling:"
+echo "  lexe remove <app-id> --purge-data"
+echo "Or delete the data directory above by hand."

@@ -1414,8 +1414,19 @@ int cmd_integrate(const std::vector<std::string>& args) {
 
 } // namespace
 
+/// The .lexe wordmark, shown atop `lexe help`. Kept tasteful and small.
+const char* banner_text() {
+    return "      __\n"
+           "     / /__  _  _____\n"
+           "    / / _ \\| |/_/ _ \\\n"
+           "   / /  __/>  </  __/\n"
+           "  /_/\\___/_/|_|\\___/   Linux applications, made simple.\n";
+}
+
 std::string usage_text() {
-    return "usage: lexe <command> [arguments]\n"
+    return std::string(banner_text()) +
+           "\n"
+           "usage: lexe <command> [arguments]\n"
            "\n"
            "commands:\n"
            "  install <file.lexe> [--yes] [--channel <c>]  verify and install "

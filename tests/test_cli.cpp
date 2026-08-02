@@ -219,10 +219,12 @@ TEST_CASE("help prints the full command surface and exits 0") {
     test::TempLexeHome home;
     const auto r = run_cli({"help"});
     CHECK(r.exit_code == 0);
+    // The tasteful wordmark + tagline heads the help.
+    CHECK(contains(r.stdout_text, "Linux applications, made simple."));
     for (const char* command :
          {"install", "run", "update", "remove", "repair", "info", "verify",
           "source set", "rollback", "list", "keygen", "pack", "build",
-          "sign-update", "integrate"}) {
+          "sign-update", "integrate", "analyze", "trust"}) {
         CAPTURE(command);
         CHECK(contains(r.stdout_text, command));
     }

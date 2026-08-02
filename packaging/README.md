@@ -26,9 +26,20 @@ cmake --build build
 Then run the installer, optionally pointing it at a non-default build dir:
 
 ```sh
-./packaging/install.sh          # uses ./build
+./packaging/install.sh          # one line: uses ./build
 ./packaging/install.sh out/rel  # uses ./out/rel
 ```
+
+**Inspect first (recommended).** The installer is a short, per-user shell
+script that touches only `$HOME`. Read it before running — nothing here ever
+pipes a remote script straight into a shell:
+
+```sh
+less packaging/install.sh       # review exactly what it does
+./packaging/install.sh          # then run it
+```
+
+One-line uninstall: `./packaging/uninstall.sh`.
 
 This installs:
 
