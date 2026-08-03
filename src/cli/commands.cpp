@@ -28,6 +28,7 @@
 #include "core/runtime_profile.hpp"
 #include "core/trust.hpp"
 #include "core/tux32.hpp"
+#include "core/version.hpp"
 #include "core/updater.hpp"
 #include "core/util.hpp"
 #include "core/verify.hpp"
@@ -843,6 +844,36 @@ int cmd_sdk_verify(const std::vector<std::string>& args) {
     return r.conformant() ? 0 : 3;
 }
 
+constexpr const char* kVersionUsage = "usage: lexe version [--json]";
+
+// Report the platform's DISTINCT version axes: the runtime/CLI build version,
+// the .lexe package-format version, and the Tux32 baseline. They evolve
+// independently and are never conflated (Alpha requirement).
+int cmd_version(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json"}, {}, false, kVersionUsage);
+    require_positionals(parsed, 0, kVersionUsage);
+    const Tux32Profile& t = tux32_core_1();
+
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json j;
+        j["runtime"] = version::runtime_string();
+        j["runtimeVersion"] = version::kRuntime;
+        j["stage"] = version::kStage;
+        j["packageFormat"] = version::kPackageFormat;
+        j["tux32Baseline"] = {{"id", t.id}, {"specVersion", t.spec_version}};
+        std::cout << j.dump(2) << "\n";
+    } else {
+        std::cout << "lexe " << version::runtime_string() << "\n";
+        std::cout << "  runtime:        " << version::runtime_string() << "\n";
+        std::cout << "  package format: " << version::kPackageFormat
+                  << " (.lexe FORMAT-0.1)\n";
+        std::cout << "  Tux32 baseline: " << t.id << " (spec " << t.spec_version
+                  << ")\n";
+    }
+    return 0;
+}
+
 int cmd_sdk(const std::vector<std::string>& args) {
     if (args.empty()) throw UsageError(kSdkUsage);
     const std::string& sub = args[0];
@@ -1621,6 +1652,8 @@ std::string usage_text() {
            "manifest (writes <update.json>.sig)\n"
            "  integrate                                    register .lexe "
            "handling for the runtime\n"
+           "  version [--json]                             show runtime, format "
+           "and Tux32 versions\n"
            "  help                                         show this help\n";
 }
 
@@ -1634,6 +1667,9 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "help" || command == "--help" || command == "-h") {
         std::cout << usage_text();
         return 0;
+    }
+    if (command == "version" || command == "--version" || command == "-V") {
+        return cmd_version(rest);
     }
     if (command == "install") return cmd_install(rest);
     if (command == "run") return cmd_run(rest);

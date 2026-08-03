@@ -10,6 +10,7 @@
 #include "core/error.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
+#include "core/version.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -308,9 +309,10 @@ Manifest Manifest::parse(std::string_view json_text) {
     // --- required fields, in §5 table order ---
     m.lexe_version =
         require_nonempty_string(root, "lexeVersion", "lexeVersion");
-    if (m.lexe_version != "0.1") {
+    if (m.lexe_version != version::kPackageFormat) {
         fail("unsupported lexeVersion \"" + m.lexe_version +
-             "\" (this runtime implements \"0.1\")");
+             "\" (this runtime implements \"" +
+             std::string(version::kPackageFormat) + "\")");
     }
 
     m.id = require_nonempty_string(root, "id", "id");

@@ -39,6 +39,7 @@
 #include "core/elf.hpp"
 #include "core/runtime_profile.hpp"
 #include "core/tux32.hpp"
+#include "core/version.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -1316,7 +1317,8 @@ GtkWidget* build_result_page(BuilderState* st) {
 
 void build_ui(BuilderState* st) {
     st->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(st->window), "Lexe Builder");
+    const std::string title = "Lexe Builder " + lexe::version::runtime_string();
+    gtk_window_set_title(GTK_WINDOW(st->window), title.c_str());
     gtk_window_set_default_size(GTK_WINDOW(st->window), 720, 620);
     gtk_container_set_border_width(GTK_CONTAINER(st->window), 0);
     g_signal_connect(st->window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);

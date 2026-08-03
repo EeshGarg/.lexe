@@ -78,6 +78,8 @@ endif()
 file(GLOB LEXE_CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp)
 add_library(lexe_core STATIC ${LEXE_CORE_SOURCES})
 target_include_directories(lexe_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# Single source of truth for the runtime version (src/core/version.hpp reads it).
+target_compile_definitions(lexe_core PUBLIC LEXE_VERSION="${PROJECT_VERSION}")
 if(LEXE_HAVE_SODIUM)
   target_link_libraries(lexe_core PUBLIC PkgConfig::SODIUM)
   target_compile_definitions(lexe_core PUBLIC LEXE_HAVE_SODIUM=1)

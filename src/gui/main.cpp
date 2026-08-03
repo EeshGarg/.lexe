@@ -373,6 +373,7 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
 #include "core/registry.hpp"
 #include "core/trust.hpp"
 #include "core/util.hpp"
+#include "core/version.hpp"
 
 #include <gtk/gtk.h>
 
@@ -712,7 +713,9 @@ GtkWidget* build_done_page(AppState* st) {
 
 void build_ui(AppState* st) {
     st->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    const std::string title = "Lexe Installer — " + st->vm.app_name;
+    const std::string title = "Lexe Installer " +
+                              lexe::version::runtime_string() + " — " +
+                              st->vm.app_name;
     gtk_window_set_title(GTK_WINDOW(st->window), title.c_str());
     gtk_window_set_default_size(GTK_WINDOW(st->window), 520, 640);
     g_signal_connect(st->window, "destroy", G_CALLBACK(on_window_destroy),
