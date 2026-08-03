@@ -37,8 +37,10 @@
 #include "core/compat.hpp"
 #include "core/depengine.hpp"
 #include "core/elf.hpp"
+#include "core/paths.hpp"
 #include "core/runtime_profile.hpp"
 #include "core/tux32.hpp"
+#include "core/util.hpp"
 #include "core/version.hpp"
 
 #include <nlohmann/json.hpp>
@@ -476,6 +478,58 @@ inline ProfileGate evaluate_profile_gate(RuntimeProfile profile,
     return g;
 }
 
+// --------------------------------------------------- first-run welcome (DX8)
+
+/// The marker whose presence means "the welcome screen has been dismissed".
+inline std::filesystem::path welcome_marker(const Paths& paths) {
+    return paths.home() / "builder-welcome-seen";
+}
+
+/// Show the welcome screen only until the user has dismissed it once.
+inline bool should_show_welcome(const Paths& paths) {
+    std::error_code ec;
+    return !std::filesystem::is_regular_file(welcome_marker(paths), ec);
+}
+
+/// Record that the welcome screen has been seen (best-effort).
+inline void mark_welcome_seen(const Paths& paths) {
+    const std::filesystem::path marker = welcome_marker(paths);
+    std::error_code ec;
+    std::filesystem::create_directories(marker.parent_path(), ec);
+    try {
+        util::spit(marker, std::string_view("1\n"));
+    } catch (const std::exception&) {
+        // Best-effort: the welcome screen simply shows again next time.
+    }
+}
+
+/// The welcome copy (plain text; the GTK layer styles it). Kept here so it is
+/// unit-testable and so the wording stays consistent with the docs.
+inline std::string welcome_body() {
+    return
+        "Lexe Builder turns a folder of compiled files into a single signed "
+        ".lexe package that anyone can install with one click.\n\n"
+        "How it works\n"
+        "  1. Point the builder at your application's folder.\n"
+        "  2. It detects the executable, architecture, icons and dependencies.\n"
+        "  3. You confirm the metadata, permissions and runtime profile.\n"
+        "  4. It signs and verifies the package for you.\n\n"
+        "Core Portable packages are checked against the Tux32 Core 1 contract, "
+        "so a package that verifies here runs unchanged on any conforming host.\n\n"
+        "Learn more in docs/TUTORIAL.md and docs/SDK.md.";
+}
+
+// ------------------------------------------------------- build progress (DX1)
+
+/// The ordered, human-readable build stages shown on the progress screen —
+/// meaningful steps, never raw compiler/packer logs.
+inline const std::vector<std::string>& build_stages() {
+    static const std::vector<std::string> kStages = {
+        "Analyzing", "Collecting", "Packaging",
+        "Signing",   "Verifying",  "Finalizing"};
+    return kStages;
+}
+
 } // namespace lexe::gui
 // ===========================================================================
 // GTK 3 wizard (Phase 2 / DX1). A seven-step "Publish"-style flow: Source →
@@ -517,6 +571,9 @@ struct BuilderState {
     GtkWidget* back_button = nullptr;
     GtkWidget* next_button = nullptr;
     GtkWidget* banner_label = nullptr;
+
+    // First-run welcome (DX8).
+    GtkWidget* welcome_dont_show = nullptr;
 
     // Step 1 — Source.
     GtkWidget* folder_chooser = nullptr;
@@ -1281,6 +1338,16 @@ GtkWidget* build_progress_page(BuilderState* st) {
     st->progress_label = body_label("Building and signing your package…");
     gtk_label_set_xalign(GTK_LABEL(st->progress_label), 0.5f);
     gtk_box_pack_start(GTK_BOX(box), st->progress_label, FALSE, FALSE, 0);
+
+    // The meaningful build stages — never raw compiler/packer logs (DX1).
+    std::string stages;
+    for (const std::string& s : lexe::gui::build_stages()) {
+        stages += (stages.empty() ? "" : "  →  ") + s;
+    }
+    GtkWidget* stage_label = body_label(stages.c_str());
+    gtk_label_set_xalign(GTK_LABEL(stage_label), 0.5f);
+    gtk_widget_set_sensitive(stage_label, FALSE); // rendered as muted caption
+    gtk_box_pack_start(GTK_BOX(box), stage_label, FALSE, FALSE, 0);
     return box;
 }
 
@@ -1313,6 +1380,63 @@ GtkWidget* build_result_page(BuilderState* st) {
     gtk_box_pack_end(GTK_BOX(buttons), another_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), buttons, FALSE, FALSE, 0);
     return box;
+}
+
+// First-run welcome (DX8): dismiss it, remembering the choice if asked.
+void on_welcome_continue(GtkButton*, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    if (st->welcome_dont_show != nullptr &&
+        gtk_toggle_button_get_active(
+            GTK_TOGGLE_BUTTON(st->welcome_dont_show)) == TRUE) {
+        try {
+            lexe::gui::mark_welcome_seen(lexe::Paths::detect());
+        } catch (const std::exception&) {
+            // best-effort persistence
+        }
+    }
+    gtk_widget_show(st->back_button);
+    gtk_widget_show(st->next_button);
+    st->step = 0;
+    update_step(st);
+}
+
+GtkWidget* build_welcome_page(BuilderState* st) {
+    GtkWidget* box = new_page();
+    GtkWidget* heading = gtk_label_new("Welcome to Lexe Builder");
+    {
+        PangoAttrList* a = pango_attr_list_new();
+        pango_attr_list_insert(a, pango_attr_scale_new(PANGO_SCALE_XX_LARGE));
+        pango_attr_list_insert(a, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
+        gtk_label_set_attributes(GTK_LABEL(heading), a);
+        pango_attr_list_unref(a);
+    }
+    gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), heading, FALSE, FALSE, 0);
+
+    GtkWidget* body = body_label(lexe::gui::welcome_body().c_str());
+    gtk_box_pack_start(GTK_BOX(box), page_scroller(body), TRUE, TRUE, 0);
+
+    st->welcome_dont_show =
+        gtk_check_button_new_with_label("Don't show this again");
+    gtk_box_pack_start(GTK_BOX(box), st->welcome_dont_show, FALSE, FALSE, 0);
+
+    GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget* start = gtk_button_new_with_label("Get started");
+    g_signal_connect(start, "clicked", G_CALLBACK(on_welcome_continue), st);
+    gtk_box_pack_end(GTK_BOX(row), start, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+    return box;
+}
+
+// Show the welcome page and hide the wizard chrome until it is dismissed.
+void show_welcome(BuilderState* st) {
+    gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "welcome");
+    gtk_label_set_text(GTK_LABEL(st->step_counter), "");
+    gtk_label_set_text(GTK_LABEL(st->step_title), "");
+    gtk_label_set_text(GTK_LABEL(st->step_subtitle), "");
+    gtk_widget_hide(st->back_button);
+    gtk_widget_hide(st->next_button);
+    set_banner(st, true, "");
 }
 
 void build_ui(BuilderState* st) {
@@ -1362,6 +1486,7 @@ void build_ui(BuilderState* st) {
     gtk_stack_add_named(GTK_STACK(st->stack), build_build_page(st), "step6");
     gtk_stack_add_named(GTK_STACK(st->stack), build_progress_page(st), "progress");
     gtk_stack_add_named(GTK_STACK(st->stack), build_result_page(st), "result");
+    gtk_stack_add_named(GTK_STACK(st->stack), build_welcome_page(st), "welcome");
     gtk_box_pack_start(GTK_BOX(root), st->stack, TRUE, TRUE, 0);
 
     // Footer: banner + Back/Next.
@@ -1391,7 +1516,18 @@ int main(int argc, char** argv) {
     BuilderState* st = new BuilderState();
     build_ui(st);
     gtk_widget_show_all(st->window);
-    update_step(st); // re-apply the initial page after show_all
+    // First run: greet the developer once (DX8); otherwise start the wizard.
+    bool welcome = false;
+    try {
+        welcome = lexe::gui::should_show_welcome(lexe::Paths::detect());
+    } catch (const std::exception&) {
+        welcome = false;
+    }
+    if (welcome) {
+        show_welcome(st);
+    } else {
+        update_step(st); // re-apply the initial page after show_all
+    }
     gtk_main();
     return 0;
 }

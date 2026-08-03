@@ -350,4 +350,30 @@ TEST_CASE("Forward Runtime and Native Capture always build but carry no Core 1 g
     CHECK(contains(nat.headline, "host-locked"));
 }
 
+// ------------------------------------------------- first-run welcome (DX8)
+
+TEST_CASE("the welcome screen shows once, then is remembered") {
+    TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+    CHECK(lexe::gui::should_show_welcome(paths)); // first run
+    lexe::gui::mark_welcome_seen(paths);
+    CHECK_FALSE(lexe::gui::should_show_welcome(paths)); // remembered
+    CHECK(fs::is_regular_file(lexe::gui::welcome_marker(paths)));
+}
+
+TEST_CASE("the welcome copy explains .lexe and points at the docs") {
+    const std::string body = lexe::gui::welcome_body();
+    CHECK(contains(body, ".lexe"));
+    CHECK(contains(body, "docs/"));
+    CHECK(body.size() > 100);
+}
+
+TEST_CASE("the build progress shows meaningful stages, not logs") {
+    const auto& stages = lexe::gui::build_stages();
+    REQUIRE(stages.size() == 6);
+    CHECK(stages.front() == "Analyzing");
+    CHECK(stages[3] == "Signing");
+    CHECK(stages.back() == "Finalizing");
+}
+
 } // TEST_SUITE("builder")
