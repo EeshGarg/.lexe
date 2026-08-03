@@ -530,6 +530,32 @@ inline const std::vector<std::string>& build_stages() {
     return kStages;
 }
 
+// ------------------------------------------------- plain-language explanations
+
+/// A plain-language explanation of the selected Runtime Profile — its name,
+/// portability, and what it means — updated live as the developer chooses. Core
+/// Portable adds the Tux32 Core 1 note so the guarantee is explained in place.
+inline std::string profile_explanation_text(RuntimeProfile p) {
+    const RuntimeProfileInfo& i = runtime_profile_info(p);
+    std::string s = i.name + " — " + i.portability + " portability.\n" +
+                    i.description;
+    if (p == RuntimeProfile::CorePortable) {
+        s += "\n\nVerified against the Tux32 Core 1 contract (a dynamically "
+             "linked x86-64 ELF within the glibc 2.31 symbol ceiling): a package "
+             "that passes runs unchanged on any conforming host. The Build step "
+             "will not let a non-conforming package claim this profile.";
+    }
+    return s;
+}
+
+/// One sentence on what packaging verifies before the result is shown — the
+/// "Verifying" stage, in plain words.
+inline std::string verification_note() {
+    return "Every packaged file is hashed and the whole package is signed with "
+           "your key, then re-verified end to end before you see the result — "
+           "the same checks a user's runtime runs on install.";
+}
+
 } // namespace lexe::gui
 // ===========================================================================
 // GTK 3 wizard (Phase 2 / DX1). A seven-step "Publish"-style flow: Source →
@@ -603,6 +629,7 @@ struct BuilderState {
     // Step 6 — Output.
     GtkWidget* output_entry = nullptr;
     GtkWidget* profile_combo = nullptr;
+    GtkWidget* profile_explanation = nullptr; // updates as the profile changes
     // Step 7 — Build summary + progress.
     GtkWidget* build_summary = nullptr;
     GtkWidget* spinner = nullptr;
@@ -710,6 +737,16 @@ lexe::RuntimeProfile selected_profile(BuilderState* st) {
     case 1: return lexe::RuntimeProfile::ForwardRuntime;
     case 2: return lexe::RuntimeProfile::NativeCapture;
     default: return lexe::RuntimeProfile::CorePortable;
+    }
+}
+
+// Keep the profile explanation in sync with the chosen profile (WS2).
+void on_profile_changed(GtkComboBox*, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    if (st->profile_explanation != nullptr) {
+        gtk_label_set_text(
+            GTK_LABEL(st->profile_explanation),
+            lexe::gui::profile_explanation_text(selected_profile(st)).c_str());
     }
 }
 
@@ -1223,9 +1260,18 @@ GtkWidget* build_metadata_page(BuilderState* st) {
     int row = 0;
     st->name_entry = grid_entry(grid, row++, "Application name", "My Application");
     st->id_entry = grid_entry(grid, row++, "App ID", "com.example.app");
+    gtk_widget_set_tooltip_text(
+        st->id_entry, "A reverse-DNS identifier, e.g. com.example.app. It is the "
+                      "durable identity used for install, update and trust.");
     st->version_entry = grid_entry(grid, row++, "Version", "1.0.0");
     gtk_entry_set_text(GTK_ENTRY(st->version_entry), "1.0.0");
+    gtk_widget_set_tooltip_text(st->version_entry,
+                               "A version like 1.0.0. Higher versions update "
+                               "lower ones (FORMAT-0.1 §8).");
     st->publisher_entry = grid_entry(grid, row++, "Publisher name", "Example Corp");
+    gtk_widget_set_tooltip_text(
+        st->publisher_entry, "A display name. It is NOT verified — a signature "
+                             "proves key continuity, not real-world identity.");
     st->website_entry = grid_entry(grid, row++, "Website (optional)",
                                    "https://example.com");
     st->description_entry =
@@ -1298,20 +1344,32 @@ GtkWidget* build_output_page(BuilderState* st) {
                                        label.c_str());
     }
     gtk_combo_box_set_active(GTK_COMBO_BOX(st->profile_combo), 0);
+    gtk_widget_set_tooltip_text(
+        st->profile_combo,
+        "The portability contract this package targets. Core Portable is the "
+        "default and is verified against Tux32 Core 1.");
     gtk_box_pack_start(GTK_BOX(box), st->profile_combo, FALSE, FALSE, 0);
-    gtk_box_pack_start(
-        GTK_BOX(box),
-        body_label("Core Portable is the default. Native Capture has reduced "
-                   "portability; Forward Runtime warns when a newer runtime is "
-                   "required."),
-        FALSE, FALSE, 0);
+
+    // A plain-language explanation that follows the selected profile (WS2).
+    st->profile_explanation = body_label(
+        lexe::gui::profile_explanation_text(lexe::RuntimeProfile::CorePortable)
+            .c_str());
+    gtk_box_pack_start(GTK_BOX(box), st->profile_explanation, FALSE, FALSE, 0);
+    g_signal_connect(st->profile_combo, "changed",
+                     G_CALLBACK(on_profile_changed), st);
 
     gtk_box_pack_start(GTK_BOX(box), section_heading("Output package"), FALSE,
                        FALSE, 0);
     st->output_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(st->output_entry),
                                    "output .lexe path (default: ~/<id>.lexe)");
+    gtk_widget_set_tooltip_text(st->output_entry,
+                               "Where to write the signed .lexe. Leave blank to "
+                               "use ~/<app-id>.lexe.");
     gtk_box_pack_start(GTK_BOX(box), st->output_entry, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+                       body_label(lexe::gui::verification_note().c_str()), FALSE,
+                       FALSE, 0);
     return page_scroller(box);
 }
 

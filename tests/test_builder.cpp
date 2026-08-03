@@ -368,6 +368,27 @@ TEST_CASE("the welcome copy explains .lexe and points at the docs") {
     CHECK(body.size() > 100);
 }
 
+TEST_CASE("the profile explanation is plain-language and profile-specific") {
+    const std::string core =
+        lexe::gui::profile_explanation_text(lexe::RuntimeProfile::CorePortable);
+    CHECK(contains(core, "Core Portable"));
+    CHECK(contains(core, "Maximum"));
+    CHECK(contains(core, "Tux32 Core 1")); // the guarantee is explained in place
+
+    const std::string native =
+        lexe::gui::profile_explanation_text(lexe::RuntimeProfile::NativeCapture);
+    CHECK(contains(native, "Native Capture"));
+    CHECK(contains(native, "Reduced"));
+    CHECK_FALSE(contains(native, "Tux32 Core 1")); // no portability claim here
+}
+
+TEST_CASE("the verification note explains what packaging checks") {
+    const std::string n = lexe::gui::verification_note();
+    CHECK(contains(n, "signed"));
+    CHECK(contains(n, "verif")); // "re-verified"
+    CHECK(n.size() > 60);
+}
+
 TEST_CASE("the build progress shows meaningful stages, not logs") {
     const auto& stages = lexe::gui::build_stages();
     REQUIRE(stages.size() == 6);
