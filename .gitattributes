@@ -3,6 +3,8 @@
 
 # Files that must always be LF for Linux consumers
 *.sh eol=lf
+Makefile eol=lf
+*.cmake eol=lf
 *.desktop eol=lf
 *.xml eol=lf
 *.yml eol=lf

@@ -1,0 +1,2 @@
+# Build output — the binary is produced by `make` (see Makefile) into payload/.
+payload/

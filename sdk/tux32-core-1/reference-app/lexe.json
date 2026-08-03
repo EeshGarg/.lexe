@@ -1,0 +1,21 @@
+{
+  "lexeVersion": "0.1",
+  "id": "org.lexe.reference.probe",
+  "name": "Tux32 Core 1 Reference Probe",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Lexe SDK Reference",
+    "publicKey": "AUTO"
+  },
+  "applicationType": "native",
+  "architectures": ["x86_64"],
+  "entrypoint": {
+    "executable": "bin/portable-probe",
+    "arguments": []
+  },
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "permissions": []
+}
