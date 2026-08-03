@@ -1,7 +1,8 @@
 # .lexe — Alpha Support Contract
 
-> **Stage: Alpha candidate.** This document is the honest, frozen statement of
-> what the first `.lexe` Alpha is and is not. It is deliberately conservative:
+> **Stage: Developer Alpha (release candidate).** This document is the honest,
+> frozen statement of what the first `.lexe` Alpha is and is not. It is
+> deliberately conservative:
 > an impressive feature set is not a release qualification, and nothing below is
 > claimed that is not backed by an automated test, a CI job, or a reproducible
 > script linked in the [evidence checklist](#evidence-linked-alpha-checklist).
@@ -59,6 +60,10 @@ Each item is backed by evidence in the [checklist](#evidence-linked-alpha-checkl
 - One unchanged, signed, dynamically linked package **proven across the declared
   distribution boundary** — build → verify → package → install → sandboxed launch
   from a newer host to a fresh, older, different distribution.
+- A **developer and consumer experience** around the runtime: `lexe inspect`
+  (full package view), `lexe apps` (installed-application manager), `lexe config`
+  (persisted preferences), grouped help with shell completion, and a first-run
+  Builder welcome — all with typed, `--json`-consistent output.
 
 ## What this Alpha does NOT claim
 
@@ -138,11 +143,12 @@ push (`.github/workflows/ci.yml`).
 | Tux32 Core 1 verification | `tests/test_tux32.cpp`, `tests/test_tux32_verify.cpp`, `tests/test_cli_sdk.cpp` |
 | Builder Core Portable gate + report evidence | `tests/test_builder.cpp`, `tests/test_buildreport.cpp` |
 | Distinct version axes + `lexe version` | `tests/test_version.cpp` |
+| Consumer/developer experience (inspect, apps, config, help) | `tests/test_cli_inspect.cpp`, `tests/test_cli_apps.cpp`, `tests/test_settings.cpp`, `tests/test_cli_ux.cpp` |
 | Warning-clean, markup-safe GUIs | `scripts/gui-smoke.sh` (CI `linux` job) |
 | Cross-distribution portability proof | `scripts/portability-demo.sh` (CI `portability` job) |
 
-**Regression totals (this line):** Linux (GCC) 413 test cases / 6000 assertions;
-Windows (MSVC) 397 test cases / 5893 assertions — both green.
+**Regression totals (this line):** Linux (GCC) 434 test cases / 6110 assertions;
+Windows (MSVC) 418 test cases / 6003 assertions — both green.
 
 See [../CHANGELOG.md](../CHANGELOG.md) for the release history and
 [../README.md#project-status](../README.md#project-status) for the current stage.
