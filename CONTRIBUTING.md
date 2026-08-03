@@ -16,25 +16,36 @@ The reference runtime is modern C++ (C++20). No network access is needed to
 build — all dependencies are either system libraries or vendored under
 `third_party/`.
 
-**Linux** (full build, including the GTK apps):
+**Linux** (full build, including the GTK apps). Prerequisites: a C++20 compiler,
+CMake ≥ 3.22, Ninja, pkg-config, GTK 3, and libsodium — plus bubblewrap to run
+apps locally. The following were each verified by a full source build (runtime +
+both GUIs) in that distribution's container:
 
 ```sh
-sudo apt-get install -y build-essential cmake ninja-build libgtk-3-dev libsodium-dev
-./scripts/build.sh                 # configure + build + run the full test suite
+# Debian / Ubuntu
+sudo apt install build-essential cmake ninja-build pkg-config libgtk-3-dev libsodium-dev bubblewrap
+# Fedora
+sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config gtk3-devel libsodium-devel bubblewrap
+# Arch Linux
+sudo pacman -S --needed base-devel cmake ninja pkgconf gtk3 libsodium bubblewrap
 ```
 
-Or by hand:
+Then build (and run the full test suite):
 
 ```sh
+./scripts/build.sh                 # configure + build + ctest
+# or by hand:
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLEXE_BUILD_GUI=ON
 cmake --build build
 ```
 
-- `libsodium` is the Ed25519 provider on Linux; `libgtk-3-dev` builds
-  `lexe-installer` and `lexe-builder`. Both are optional to *run* the core, but
-  the CI Linux job builds the GUIs.
+- `libsodium` is the preferred Ed25519 provider on Linux (found via pkg-config);
+  without it the build falls back to the vendored `orlp/ed25519`. `gtk3`/
+  `libgtk-3-dev` builds `lexe-installer` and `lexe-builder`.
 - The runtime's isolation uses **bubblewrap** (`bwrap`) at launch time; install
-  it (`sudo apt-get install -y bubblewrap`) to exercise `lexe run` locally.
+  it to exercise `lexe run` locally. On some distributions (e.g. Ubuntu 24.04+)
+  unprivileged user namespaces must be enabled — see
+  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 **Windows** (MSVC, core + CLI; the GTK apps are Linux-only):
 

@@ -10,7 +10,9 @@ Every `lexe` error also prints a one-line hint; this is the longer form.
 The Linux sandbox needs **bubblewrap** and unprivileged **user namespaces**. The
 launcher fails closed on purpose — it never runs an app without isolation.
 
-- Install bubblewrap: `sudo apt install bubblewrap` (or your distro's package).
+- Install bubblewrap — the package is `bubblewrap` on Debian/Ubuntu, Fedora and
+  Arch (`sudo apt install bubblewrap` / `sudo dnf install bubblewrap` /
+  `sudo pacman -S bubblewrap`).
 - If user namespaces are restricted (Ubuntu 24.04+), allow them:
   `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 - Inside a container, run it `--privileged` (nested user namespaces).
@@ -31,7 +33,9 @@ associations.
 ### "libsodium runtime library not found"
 
 The runtime links libsodium for Ed25519. Install it:
-`sudo apt install libsodium23` (Debian/Ubuntu) or the equivalent.
+`sudo apt install libsodium23` (Debian/Ubuntu), `sudo dnf install libsodium`
+(Fedora), or `sudo pacman -S libsodium` (Arch). Rebuilding after installing it
+enables the libsodium provider; otherwise the vendored fallback is used.
 
 ### An update was refused: "requests additional permissions …"
 
