@@ -190,7 +190,11 @@ private:
 void write_owner_record(int fd, const LockOwner& owner) {
     const std::string line = owner.to_line();
     if (::ftruncate(fd, 0) != 0) return;
-    (void)::pwrite(fd, line.data(), line.size(), 0);
+    // Best-effort diagnostics; the lock itself is what matters. Bind the result
+    // to a variable so glibc's warn_unused_result on pwrite is satisfied (a bare
+    // (void) cast of the call does not silence it under GCC).
+    const ssize_t written = ::pwrite(fd, line.data(), line.size(), 0);
+    (void)written;
 }
 
 class FlockLockManager : public OperationLockManager {

@@ -248,8 +248,9 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 
 The reference Runtime is written in modern C++ (C++20) and builds on Linux (GCC,
 with the GTK GUIs) and Windows (MSVC). The full suite is **green on both
-platforms** — 386 tests on Linux and 370 on Windows, over 5,800 assertions,
-exercised in CI on every push.
+platforms** — 410 tests on Linux and 394 on Windows, nearly 6,000 assertions,
+exercised in CI on every push, plus a headless GUI smoke test and a
+cross-distribution portability proof.
 
 **Implemented**
 - Package format, deterministic packing, strict hardened parsing.
