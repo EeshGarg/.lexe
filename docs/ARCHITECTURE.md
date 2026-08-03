@@ -118,6 +118,13 @@ Pango markup is escaped (`g_markup_escape_text`); a headless
 [smoke test](../scripts/gui-smoke.sh) asserts both GUIs render warning-clean,
 including markup-hostile names/headings.
 
+Accessibility rests on GTK 3's defaults, which the code preserves: every control
+is a standard focusable widget (keyboard navigation, Tab order and focus rings
+come for free), windows are resizable, long strings use wrapping labels rather
+than truncation, and the system light/dark theme and font scaling are honored
+because no colors or sizes are hard-coded over the theme. `lexe-builder` opens
+with a first-run welcome screen (shown once).
+
 * **`lexe-installer`** — flow per SPEC §User Interface: open with a `.lexe`
   argument → run verification → primary screen (app, publisher, version, source,
   type/arch, permissions, size, update policy, verification status) → Install /

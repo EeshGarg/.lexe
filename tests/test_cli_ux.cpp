@@ -53,6 +53,14 @@ TEST_CASE("help is grouped into clear sections with examples") {
     CHECK_FALSE(has(r.stdout_text, "\033["));
 }
 
+TEST_CASE("help lists the full command surface, including the new commands") {
+    const std::string h = run({"help"}).stdout_text;
+    for (const char* cmd : {"install", "run", "apps", "inspect", "build",
+                            "sdk verify", "config", "completion", "version"}) {
+        CHECK(has(h, cmd));
+    }
+}
+
 TEST_CASE("completion emits a sourceable bash script") {
     const util::ProcessResult r = run({"completion", "bash"});
     CHECK(r.exit_code == 0);
