@@ -1532,6 +1532,127 @@ int cmd_list(const std::vector<std::string>& args) {
     return 0;
 }
 
+constexpr const char* kAppsUsage = "usage: lexe apps [--json]";
+
+// Total size (bytes) of a directory tree; best-effort, a missing dir is 0.
+std::uint64_t dir_size(const fs::path& dir) {
+    std::error_code ec;
+    std::uint64_t total = 0;
+    for (auto it = fs::recursive_directory_iterator(
+             dir, fs::directory_options::skip_permission_denied, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        std::error_code fec;
+        if (it->is_regular_file(fec) && !fec) {
+            total += static_cast<std::uint64_t>(it->file_size(fec));
+        }
+    }
+    return total;
+}
+
+// A friendly LOCAL-trust label. Never presented as external identity.
+std::string trust_label(const std::string& state) {
+    if (state == "blocked") return "blocked locally";
+    if (state == "explicitly-trusted") return "trusted locally (first-use)";
+    if (state == "corrupt") return "CORRUPT (fail closed)";
+    if (state == "known") return "known key (first-use)";
+    return "first-seen (first-use)";
+}
+
+// The installed-application manager (DX4): a richer `list` — publisher, version,
+// install date, last launch, disk usage, and local trust for every app. Actions
+// are the existing verbs (run / update / repair / verify / remove / trust).
+int cmd_apps(const std::vector<std::string>& args) {
+    const Parsed parsed = parse_arguments(args, {"--json"}, {}, false, kAppsUsage);
+    require_positionals(parsed, 0, kAppsUsage);
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const TrustStore trust_store(paths);
+
+    struct App {
+        std::string id, name, publisher, version, installed_at, last_run, trust;
+        int last_exit = 0;
+        std::uint64_t disk = 0;
+    };
+    std::vector<App> apps;
+    for (const std::string& id : registry.list_installed()) {
+        App a;
+        a.id = id;
+        const InstallationRecord rec = registry.read_record(id);
+        a.version = rec.version;
+        a.installed_at = rec.installed_at;
+        a.last_run = rec.last_run_at;
+        a.last_exit = rec.last_exit_code;
+        try {
+            const Manifest m = registry.read_manifest(id);
+            a.name = m.name;
+            a.publisher = m.publisher_name;
+        } catch (const Error&) {
+            // manifest copy unreadable; still list the app.
+        }
+        a.disk = dir_size(registry.app_dir(id)) +
+                 dir_size(registry.app_data_dir(id)) +
+                 dir_size(registry.app_cache_dir(id));
+        std::string state = "first-seen";
+        try {
+            const std::optional<TrustRecord> t = trust_store.read(id);
+            state = local_key_state_label(t);
+            if (state == "no-record") state = "first-seen";
+        } catch (const CorruptTrustError&) {
+            state = "corrupt";
+        }
+        a.trust = trust_label(state);
+        apps.push_back(std::move(a));
+    }
+
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json j = ordered_json::array();
+        for (const App& a : apps) {
+            j.push_back({{"id", a.id},
+                         {"name", a.name},
+                         {"publisher", a.publisher},
+                         {"version", a.version},
+                         {"installedAt", a.installed_at},
+                         {"lastRunAt", a.last_run},
+                         {"lastExitCode", a.last_exit},
+                         {"diskBytes", a.disk},
+                         {"trust", a.trust}});
+        }
+        std::cout << j.dump(2) << "\n";
+        return 0;
+    }
+
+    if (apps.empty()) {
+        std::cout << "No applications installed.\n\n"
+                     "  Install one with:  lexe install <file.lexe>\n";
+        return 0;
+    }
+
+    const auto row = [](const char* label, const std::string& value) {
+        std::cout << "    " << std::left << std::setw(11) << label << value
+                  << "\n";
+    };
+    std::cout << apps.size()
+              << (apps.size() == 1 ? " application installed:\n\n"
+                                   : " applications installed:\n\n");
+    for (const App& a : apps) {
+        std::cout << "  " << (a.name.empty() ? a.id : a.name) << "  "
+                  << a.version << "\n";
+        if (!a.name.empty()) row("id", a.id);
+        if (!a.publisher.empty()) row("publisher", a.publisher);
+        row("installed", a.installed_at.empty() ? "(unknown)" : a.installed_at);
+        row("last run", a.last_run.empty()
+                            ? "never"
+                            : a.last_run + " (exit " +
+                                  std::to_string(a.last_exit) + ")");
+        row("disk", format_size(a.disk));
+        row("trust", a.trust);
+        std::cout << "\n";
+    }
+    std::cout << "Manage: lexe run|update|repair|verify|remove <id>"
+                 "  ·  lexe info <id>  ·  lexe trust show <id>\n";
+    return 0;
+}
+
 int cmd_keygen(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(args, {}, {}, false, kKeygenUsage);
     require_positionals(parsed, 1, kKeygenUsage);
@@ -1779,8 +1900,10 @@ std::string usage_text() {
            "package\n"
            "  run <id> [-- <args...>]                  launch an installed "
            "application (sandboxed)\n"
+           "  apps [--json]                            manage installed apps "
+           "(version, disk, trust, last run)\n"
            "  list [--json]                            list installed "
-           "applications\n"
+           "applications (compact)\n"
            "  info <file.lexe | id> [--json]           show package or "
            "application details\n"
            "  inspect <file.lexe> [--json|--manifest]  inspect a package in "
@@ -1870,6 +1993,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "gc") return cmd_gc(rest);
     if (command == "trust") return cmd_trust(rest);
     if (command == "list") return cmd_list(rest);
+    if (command == "apps") return cmd_apps(rest);
     if (command == "keygen") return cmd_keygen(rest);
     if (command == "pack") return cmd_pack(rest);
     if (command == "build") return cmd_build(rest);
