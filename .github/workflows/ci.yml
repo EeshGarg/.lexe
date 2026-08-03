@@ -30,3 +30,21 @@ jobs:
         run: cmake --build build-ci --config Release
       - name: Test
         run: ctest --test-dir build-ci -C Release --output-on-failure
+
+  # Cross-distribution portability proof (Tux32 Core 1): builds the runtime and
+  # a dynamically linked reference app in a glibc-2.31 sysroot, shows the
+  # verifier reject a newer-host build (and that build genuinely failing to load
+  # on glibc 2.31), then installs and LAUNCHES the one signed artifact under the
+  # isolation sandbox on a fresh, older, different-distro host. podman runs
+  # --privileged so bubblewrap's nested user namespaces work.
+  portability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+      - name: Prove cross-distribution portability
+        run: CONTAINER=podman ./scripts/portability-demo.sh
