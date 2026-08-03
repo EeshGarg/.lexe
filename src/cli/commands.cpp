@@ -26,6 +26,7 @@
 #include "core/presentation.hpp"
 #include "core/registry.hpp"
 #include "core/runtime_profile.hpp"
+#include "core/settings.hpp"
 #include "core/trust.hpp"
 #include "core/tux32.hpp"
 #include "core/version.hpp"
@@ -902,6 +903,64 @@ int cmd_completion(const std::vector<std::string>& args) {
         "}\n"
         "complete -F _lexe lexe\n";
     return 0;
+}
+
+constexpr const char* kConfigUsage =
+    "usage: lexe config [list] [--json]     show current settings\n"
+    "       lexe config get <key>           print one setting\n"
+    "       lexe config set <key> <value>   change a setting (persisted)\n"
+    "       lexe config reset               restore all defaults\n"
+    "       lexe config path                print the settings file path";
+
+// Runtime settings (DX5). Cosmetic/workflow preferences only — no setting can
+// disable verification, consent, or isolation (those are always enforced).
+int cmd_config(const std::vector<std::string>& args) {
+    const bool as_json =
+        std::find(args.begin(), args.end(), std::string("--json")) != args.end();
+    std::vector<std::string> pos;
+    for (const std::string& a : args) {
+        if (a != "--json") pos.push_back(a);
+    }
+    const std::string sub = pos.empty() ? "list" : pos[0];
+    const Paths paths = Paths::detect();
+
+    if (sub == "list") {
+        const Settings s = Settings::load(paths);
+        if (as_json) {
+            std::cout << s.to_json().dump(2) << "\n";
+        } else {
+            std::cout << "Settings (" << Settings::file(paths).string()
+                      << "):\n";
+            for (const std::string& k : Settings::keys()) {
+                print_kv(k + ":", s.get(k));
+            }
+            std::cout << "\n  Change one with:  lexe config set <key> <value>\n";
+        }
+        return 0;
+    }
+    if (sub == "path") {
+        std::cout << Settings::file(paths).string() << "\n";
+        return 0;
+    }
+    if (sub == "get") {
+        if (pos.size() < 2) throw UsageError(kConfigUsage);
+        std::cout << Settings::load(paths).get(pos[1]) << "\n"; // Error on bad key
+        return 0;
+    }
+    if (sub == "set") {
+        if (pos.size() < 3) throw UsageError(kConfigUsage);
+        Settings s = Settings::load(paths);
+        s.set(pos[1], pos[2]); // validates key + value
+        s.save(paths);
+        std::cout << pos[1] << " = " << s.get(pos[1]) << "\n";
+        return 0;
+    }
+    if (sub == "reset") {
+        Settings{}.save(paths);
+        std::cout << "Settings reset to defaults.\n";
+        return 0;
+    }
+    throw UsageError("unknown config subcommand \"" + sub + "\"\n" + kConfigUsage);
 }
 
 int cmd_sdk(const std::vector<std::string>& args) {
@@ -1945,6 +2004,8 @@ std::string usage_text() {
            "  source set <id> <url>                    set the update source\n"
            "\n"
            "System\n"
+           "  config [get|set|reset] ...               view or change runtime "
+           "settings\n"
            "  integrate                                register .lexe handling "
            "for the runtime\n"
            "  completion [bash]                        print a shell-completion "
@@ -1999,6 +2060,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "build") return cmd_build(rest);
     if (command == "sign-update") return cmd_sign_update(rest);
     if (command == "integrate") return cmd_integrate(rest);
+    if (command == "config") return cmd_config(rest);
     if (command == "completion") return cmd_completion(rest);
 
     throw UsageError("unknown command \"" + command + "\"\n" + usage_text());
