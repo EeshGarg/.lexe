@@ -289,6 +289,11 @@ struct ViewModel {
     std::string after_install_text =
         "Installs under your home directory — no root, nothing system-wide. You "
         "can remove it any time; your data is kept unless you explicitly purge it.";
+    // Plain-language answer to "can I verify this again later?"
+    std::string verify_later_text =
+        "Verified now, and re-checked on every launch — the runtime confirms file "
+        "integrity before the app runs. Re-inspect any package with `lexe inspect`; "
+        "re-verify installed files with `lexe repair <id>`.";
 };
 
 /// Build the primary-screen view model. `eval` is the local trust evaluation
@@ -632,6 +637,7 @@ GtkWidget* build_details_page(AppState* st) {
     add_section(box, "Updates:", vm.updates_text);
     add_section(box, "Isolation on this platform:", vm.isolation_text);
     add_section(box, "After install:", vm.after_install_text);
+    add_section(box, "Verify later:", vm.verify_later_text);
 
     // [Advanced Options] — directories used + update channel.
     GtkWidget* expander = gtk_expander_new("Advanced Options");

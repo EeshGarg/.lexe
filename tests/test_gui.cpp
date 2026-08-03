@@ -305,6 +305,10 @@ TEST_CASE("view model reflects SPEC manifest example fields") {
     CHECK(contains(vm.after_install_text, "home directory"));
     CHECK(contains(vm.after_install_text, "lexe remove com.example.application"));
     CHECK(contains(vm.after_install_text, "purge-data"));
+    // "Verify later:" answers whether trust can be re-checked after install.
+    CHECK(contains(vm.verify_later_text, "every launch"));
+    CHECK(contains(vm.verify_later_text, "lexe inspect"));
+    CHECK(contains(vm.verify_later_text, "lexe repair"));
     CHECK(vm.verified);
     CHECK(vm.can_install); // first-seen but valid → installable
     CHECK(vm.trust_severity == "caution");
