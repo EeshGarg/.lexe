@@ -44,6 +44,24 @@ explicit operator action (see [docs/ALPHA.md](docs/ALPHA.md)).
   unchanged signed package build → verify → install → sandboxed launch across a
   real distribution boundary, plus the above-ceiling negative proof.
 
+### Developer & consumer experience (final Alpha polish)
+- `lexe inspect` — a human-first package inspector (identity, verification,
+  dependencies, checksum; `--json` / `--manifest` for raw).
+- `lexe apps` — the installed-application manager (version, publisher, disk
+  usage, install date, last run, local trust; `--json`).
+- `lexe config` + `src/core/settings` — persisted preferences (theme,
+  update-check, developer mode, diagnostics); cosmetic only, never a security
+  toggle.
+- CLI polish: grouped example-rich help, terminal styling (TTY-only, NO_COLOR
+  aware), friendlier errors with actionable hints, `lexe completion bash`.
+- Builder: a first-run welcome screen (remembered) and staged build progress.
+- Installer: an "After install" plain-language section (where it goes, how to
+  remove it, what happens to data). install.sh / uninstall.sh get a banner,
+  step progress, and an up-front preservation guarantee.
+- Consumer errors read as "what happened / why / how to fix it" (e.g. the
+  permission-expansion prompt).
+- New docs: FAQ, Troubleshooting; new `examples/` (cli-tool, bundled-library).
+
 ### Alpha stabilization
 - Centralized version metadata (`src/core/version.hpp`); `lexe version`
   (`--version` / `-V`), human and `--json`, reporting the runtime, package-format

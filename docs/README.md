@@ -13,6 +13,9 @@ deeper. Each document is marked **Normative** (specifies implemented behavior),
 | [../README.md](../README.md) | — | Platform overview, install, quick start, status. |
 | [ALPHA.md](ALPHA.md) | Normative | The Alpha support contract: claims boundary, known limitations, release artifacts, and the evidence-linked checklist. |
 | [TUTORIAL.md](TUTORIAL.md) | — | One canonical walkthrough: analyze → verify → build → install → launch → remove. |
+| [FAQ.md](FAQ.md) | — | Short, honest answers to common questions. |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | — | Common runtime issues and developer mistakes, with fixes. |
+| [../examples/](../examples/) | — | Small, real sample apps (cli-tool, bundled-library). |
 | [../CHANGELOG.md](../CHANGELOG.md) | — | Release history. |
 | [../SPEC.md](../SPEC.md) | Normative | The overall specification and the 0.1 → 0.3 vision. |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | — | Building, running tests, and finding your way around. |

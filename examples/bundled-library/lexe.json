@@ -1,0 +1,21 @@
+{
+  "lexeVersion": "0.1",
+  "id": "org.lexe.examples.bundled-library",
+  "name": "Lexe Example — Bundled Library",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Lexe Examples",
+    "publicKey": "AUTO"
+  },
+  "applicationType": "native",
+  "architectures": ["x86_64"],
+  "entrypoint": {
+    "executable": "bin/greeter",
+    "arguments": []
+  },
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "permissions": []
+}

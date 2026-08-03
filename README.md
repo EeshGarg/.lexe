@@ -98,8 +98,11 @@ lexe build ./my-project -o my-app.lexe
 ```
 
 Then a user just runs `lexe install my-app.lexe` (or double-clicks it).
-`lexe help` lists the full command surface; `lexe version` reports the runtime,
-package-format, and Tux32 baseline versions.
+
+**Manage and inspect** — `lexe apps` lists what's installed (version, disk,
+trust, last run); `lexe inspect app.lexe` shows a package in full before you
+trust it; `lexe config` adjusts preferences. `lexe help` groups the full command
+surface; `lexe version` reports the runtime, package-format, and Tux32 versions.
 
 ## Cross-distribution portability (Tux32 Core 1)
 
@@ -215,7 +218,9 @@ src/gui/       the GTK 3 apps: lexe-installer and lexe-builder (Linux)
 tests/         doctest unit + integration tests (+ tests/integration/*.sh)
 docs/          format, architecture, security, and developer specifications
 packaging/     per-user install.sh / uninstall.sh + desktop/MIME files
-scripts/       one-shot build helpers (build.sh / build.cmd)
+examples/      small, buildable sample apps (cli-tool, bundled-library)
+sdk/           the minimal Tux32 Core 1 SDK + reference application
+scripts/       one-shot build helpers (build.sh / build.cmd) + demos
 third_party/   vendored dependencies (miniz, PicoSHA2, orlp/ed25519, doctest)
 ```
 
@@ -243,6 +248,9 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 | [docs/SDK.md](docs/SDK.md) | The minimal Core 1 SDK (`lexe sdk verify` + `sdk/tux32-core-1/`). |
 | [docs/ALPHA.md](docs/ALPHA.md) | The Alpha support contract: what is and is not claimed, known limitations, and the evidence-linked checklist. |
 | [docs/TUTORIAL.md](docs/TUTORIAL.md) | One canonical walkthrough: analyze → verify → build → install → launch → remove. |
+| [docs/FAQ.md](docs/FAQ.md) | Short, honest answers to common questions. |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common runtime issues and developer mistakes, with fixes. |
+| [examples/](examples/) | Small, real projects: a CLI tool and a bundled-library app. |
 | [CHANGELOG.md](CHANGELOG.md) | Release history. |
 
 ## Project status
