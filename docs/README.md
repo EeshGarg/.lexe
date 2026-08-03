@@ -66,6 +66,9 @@ implemented).
 | Document | Kind | What it covers |
 |---|---|---|
 | [ALPHA.md](ALPHA.md) | Normative | The Alpha support contract: claims boundary, known limitations, release artifacts, and the evidence-linked checklist. |
+| [RELEASE.md](RELEASE.md) | Informative | The operator's release runbook for `v0.1.0-alpha.1` (notes, artifacts, checklist). |
+| [SBOM.md](SBOM.md) | Informative | Software bill of materials — vendored and runtime dependencies with licenses. |
+| [COMPATIBILITY.md](COMPATIBILITY.md) | Normative | Compatibility promises vs. implementation details across every stable surface. |
 | [../CHANGELOG.md](../CHANGELOG.md) | — | Release history. |
 | [MULTI_ARCH.md](MULTI_ARCH.md) | Placeholder | Future multi-architecture (multi-ISA) packaging. |
 

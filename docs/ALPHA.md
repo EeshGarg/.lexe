@@ -38,6 +38,10 @@ What "Alpha" does **not** commit to:
 - Production use, uptime, data-durability guarantees, or a security audit.
 - Backwards compatibility of the runtime version number across Alphas.
 
+The exact promise-vs-implementation-detail breakdown for every stable surface
+(package format, signatures, IDs, Tux32 profile, on-disk records, CLI exit codes
+and `--json` shapes, builder defaults) is in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 ## What this Alpha claims
 
 Each item is backed by evidence in the [checklist](#evidence-linked-alpha-checklist):
@@ -92,7 +96,8 @@ Stated plainly so the documentation never overreaches:
 - **Static ELF and non-x86-64 binaries are out of Core 1 scope** — Core 1 is a
   dynamically linked x86-64 contract; other shapes get a non-portable verdict.
 - **`dlopen`-ed / runtime plugin dependencies** are not discoverable from static
-  ELF metadata and must be declared/bundled by the developer.
+  ELF metadata and must be declared/bundled by the developer (the
+  [`gtk-app` example](../examples/gtk-app/) illustrates this).
 - **libsodium is the preferred crypto provider** on Linux (found via
   `pkg-config`); the MSVC dev host uses the vendored `orlp/ed25519` fallback with
   the runtime's own strict canonical checks.
@@ -122,6 +127,17 @@ Alpha does not pretend otherwise.
 A future release may add prebuilt binaries via a dedicated release workflow that
 builds and uploads them with checksums; until that workflow exists, publishing
 binaries would be claiming an artifact that does not exist, so it is out of scope.
+
+The operator's step-by-step runbook (tag, notes, checksums, pre-tag checklist) is
+[RELEASE.md](RELEASE.md); the dependency inventory is [SBOM.md](SBOM.md).
+
+## Alpha acceptance review
+
+Every limitation above was re-reviewed for this release candidate and remains
+**accurate** — none is obsolete, and none was quietly implemented. The
+`dlopen`-not-discoverable limitation now has a worked illustration
+([`gtk-app`](../examples/gtk-app/)); the rest stand as written. The regression
+totals and evidence checklist below reflect the current suite.
 
 ## Evidence-linked Alpha checklist
 
