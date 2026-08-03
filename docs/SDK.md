@@ -1,96 +1,93 @@
-# SDK & Sysroot Architecture (design groundwork)
+# SDK & Sysroot
 
-> **Status: design groundwork, not implemented.** This document describes the
-> architecture and interfaces of a future `.lexe` SDK. It introduces **no code
-> and no package-format fields yet**. Sections are marked **Implemented**,
-> **Planned**, or **Future**.
+> **Status: a minimal Core 1 SDK is implemented.** `lexe sdk verify` and the
+> `sdk/tux32-core-1/` reference (a pinned profile, a CMake toolchain, a
+> build-in-sysroot script, and a reference app) ship today. A full,
+> multi-baseline, sysroot-provisioning SDK remains **Future**; sections below are
+> marked accordingly.
 
 ## The problem the SDK solves
 
-`lexe analyze` on the reference runtime itself is instructive:
+`lexe analyze` on a binary built on a current host is instructive:
 
 ```
-Dependencies: 6 total — 4 host, 2 bundle
-glibc floor:  2.38
-Compatibility: [ ok ] UshaOS Core   [ no ] Ubuntu Runtime — needs glibc 2.38
+Runtime profile: Core Portable
+Tux32 tux32-core-1: symbol-ceiling-exceeded (needs glibc 2.34, ceiling 2.31)
+    ! <executable> requires GLIBC_2.34
 ```
 
-Nothing is *wrong* with the binary — it simply picked up `GLIBC_2.38` symbols
+Nothing is *wrong* with the binary — it simply picked up `GLIBC_2.34` symbols
 because it was built on a host with a new glibc. A developer who wants broad
 portability must build against an **older, pinned** host interface, not their
-bleeding-edge machine. That pinned build environment is a **sysroot**, and the
-**SDK** is what provisions and manages it.
+bleeding-edge machine. That pinned build environment is a **sysroot**.
 
-The dependency engine already *detects* this problem *(Implemented — it aggregates
-the glibc floor and reports per-runtime compatibility)*. The SDK's job is to help
-developers *avoid* it at build time, and to *verify* a build was produced against
-the baseline it claims.
+## What ships today
 
-## Architecture
+The minimal Core 1 SDK is [`sdk/tux32-core-1/`](../sdk/tux32-core-1/):
 
-*(Planned.)* Three layered concepts, each building on the previous:
+| File | Purpose | Status |
+|---|---|---|
+| `profile.json` | Machine-readable mirror of the compiled Core 1 profile (pinned by a test). | **Implemented** |
+| `toolchain.cmake` | A minimal CMake toolchain: pins the `x86-64-v1` baseline, targets a sysroot, warns when building against a newer host glibc. | **Implemented** |
+| `build-in-sysroot.sh` | Builds a project **inside** a glibc ≤ 2.31 sysroot (rootless podman, Debian 11), with pkg-config pinned to the sysroot so a newer host library cannot leak in. | **Implemented** |
+| `reference-app/` | A small, dynamically linked app (links libm; exercises the data/cache/temp contract). | **Implemented** |
 
-1. **Baseline** — a [Tux32](TUX32.md) runtime baseline: the host-interface set +
-   symbol-version floor a package targets. *(Design groundwork; see TUX32.md.)*
-2. **Sysroot** — a concrete build environment pinned to a baseline: the headers,
-   link stubs, and symbol-version scripts that make a toolchain *refuse* to emit
-   references newer than the baseline. A sysroot is identified by its baseline id
-   (`tux32-1`) and is toolchain-agnostic — it constrains what the compiler/linker
-   may reference, it is not itself a compiler.
-3. **SDK** — the tooling that installs sysroots, selects one for a build, and
-   verifies a produced binary against it.
+And the verifier, exposed on the CLI:
 
 ```
-   baseline (contract)            sysroot (build env)           SDK (tooling)
-   host interface + floor   →     headers + link stubs +   →    provision · select ·
-   (Tux32)                        version scripts               verify
+lexe sdk verify <binary | project-dir | payload-dir> [--json] [--profile tux32-core-1]
 ```
 
-## How it plugs into what exists
+## How verification reuses the engine (no second path)
 
-The verification half already exists and is reused, not reinvented:
+`lexe sdk verify` needs **no new analysis engine**. It resolves the target exactly
+as `lexe analyze` does, runs the same [dependency engine](DEPENDENCY_ENGINE.md),
+and hands the resulting graph to `verify_against_profile()`. The build host never
+becomes the compatibility target, and there is exactly one notion of "what this
+binary needs".
 
 | Step | Mechanism | Status |
 |---|---|---|
 | Detect a binary's symbol requirements | `core/elf` `DT_VERNEED` parsing | **Implemented** |
-| Aggregate the glibc floor across the graph | `core/depengine` `max_glibc_version` | **Implemented** |
-| Rate against runtime baselines | `core/compat` | **Implemented** |
-| Provision a baseline-pinned sysroot | the SDK | **Planned** |
-| Verify a build ≤ a baseline's floor | reuse the engine against a chosen baseline | **Planned** |
-| Auto-select the profile from the sysroot used | Builder ↔ SDK integration | **Future** |
+| Aggregate the glibc requirement across the closure | `core/depengine` | **Implemented** |
+| Verify against the Core 1 profile (typed verdict) | `core/tux32` `verify_against_profile` | **Implemented** |
+| Provision/assemble a sysroot automatically | the SDK | **Future** |
+| Multiple baselines / `lexe sdk install` | the SDK | **Future** |
 
-The Builder would surface this directly: analyze a candidate binary, and if it
-exceeds the selected baseline, recommend rebuilding in the matching sysroot rather
-than silently shipping a package that only runs on new hosts.
+## Why build in a sysroot (not a flag)
 
-## Interface sketch
+The glibc ceiling is enforced by the **sysroot you build in**, not a compiler
+flag: a compiler cannot invent symbols its glibc does not define, and `-static`
+sidesteps the dynamic ABI rather than satisfying it. The reference workflow:
 
-*(Planned — illustrative, not final, no code yet.)* A `lexe sdk` command group,
-sitting beside `lexe analyze`/`lexe build`:
+```sh
+# 1. Build against a Core 1 sysroot (glibc <= 2.31), not the host glibc.
+sdk/tux32-core-1/build-in-sysroot.sh sdk/tux32-core-1/reference-app
 
+# 2. Verify the closure. Exit 0 = conformant; exit 3 = a typed non-conformant verdict.
+lexe sdk verify sdk/tux32-core-1/reference-app --json
+
+# 3. Only once it verifies, package and sign it.
+lexe build sdk/tux32-core-1/reference-app -o probe.lexe --key mykey.json
 ```
-lexe sdk list                     # baselines/sysroots available locally
-lexe sdk install tux32-1          # provision a baseline-pinned sysroot
-lexe sdk verify ./my-app --baseline tux32-1
-                                  # does the binary stay within the baseline?
-```
 
-`lexe sdk verify` needs **no new engine** — it runs the existing dependency
-analysis and checks the aggregated version floor against the named baseline. Only
-`install` (fetching/assembling a sysroot) is genuinely new work.
+The rejection of a newer-host build is the feature — see the end-to-end proof in
+[`scripts/portability-demo.sh`](../scripts/portability-demo.sh) and
+[TUX32.md](TUX32.md).
 
 ## Non-goals (for now)
 
 - The SDK is **not** a compiler or a full toolchain distribution; it constrains an
   existing toolchain against a baseline.
-- No sysroot artifacts are shipped in this repository yet.
+- No sysroot is *downloaded or assembled* for you yet; you supply the build
+  environment (the script uses a stock Debian 11 image).
 - No `.lexe` manifest or package-format fields are added.
 - Nothing here changes trust, isolation, lifecycle, or concurrency guarantees.
 
 ## Relationship summary
 
-- **Tux32** defines the contract (a baseline).
+- **Tux32 Core 1** defines the contract (the baseline).
 - **The SDK/sysroot** helps a developer *build to* that contract.
-- **The dependency engine + compatibility analysis** *verify* a build against it
-  (this half is implemented today).
-- **Runtime profiles** let the package *declare* which contract it targets.
+- **The dependency engine + `verify_against_profile`** *verify* a build against it.
+- **Runtime profiles** let the package *declare* which contract it targets, and the
+  Builder *enforces* it for Core Portable.

@@ -60,7 +60,8 @@ compiled with `MINIZ_NO_TIME` (deterministic archives, FORMAT §1).
 | `depengine.{hpp,cpp}` | Automatic dependency resolution (DX3): recursive graph from a root binary, deterministic soname resolution, typed classification (host-interface / bundle / forbidden / unresolved / language-runtime hook), hashing, cycles, glibc-version aggregation |
 | `runtime_profile.{hpp,cpp}` | Runtime-profile model (DX2, docs/RUNTIME_PROFILES.md): Core Portable / Forward Runtime / Native Capture + honest `assess_profile` (no silent portability claim) |
 | `compat.{hpp,cpp}` | Compatibility analysis (DX4): per-runtime verdicts (UshaOS/Fedora/Debian/Ubuntu glibc baselines) + explained warnings |
-| `buildreport.{hpp,cpp}` | Build/analysis summary (DX5): identity + deps + profile + compatibility + output, rendered to text and JSON. Shared by `lexe analyze` and the builder result screen |
+| `tux32.{hpp,cpp}` | Tux32 Core 1 baseline (docs/TUX32.md): the compiled `tux32_core_1()` profile (frozen: `elf-dynamic`, x86_64, x86-64-v1, glibc ceiling 2.31), strict `profile.json` parse (pinned to the compiled profile by a test), and `verify_against_profile(deps, profile)` — a typed `Core1VerifyResult` over the dependency engine's graph (no second analysis path) |
+| `buildreport.{hpp,cpp}` | Build/analysis summary (DX5): identity + deps + profile + compatibility + output, rendered to text and JSON. Shared by `lexe analyze` and the builder result screen. Attaches a typed Tux32 Core 1 verdict for the Core Portable profile |
 
 Dependency order (implementation waves): `crypto`/`manifest`/`package`/`versioncmp`
 → `verify`/`registry`/`desktop` → `installer`/`updater`/`launcher` → CLI/GUI.
@@ -78,14 +79,25 @@ lexe update <id> | --all [--check]
 lexe remove <id> [--purge-data] [--yes]
 lexe repair <id>
 lexe info <file.lexe | id> [--json]
+lexe analyze <binary | project-dir | payload-dir> [--json] [--profile <p>]
+lexe sdk verify <binary | project-dir | payload-dir> [--json] [--profile tux32-core-1]
 lexe verify <file.lexe> [--json]
 lexe source set <id> <url>
 lexe rollback <id>
+lexe gc <id> [--keep <n>]
+lexe trust show|block|unblock|forget <id>
 lexe list [--json]
 lexe keygen <keyfile.json>
 lexe pack <source-dir> --manifest <lexe.json> --key <keyfile.json> -o <out.lexe>
+lexe build <project-dir> [-o <out.lexe>] [--key <keyfile.json>]
+lexe sign-update <update.json> --key <keyfile.json>
 lexe integrate            # register .lexe MIME + desktop entry for the runtime
 ```
+
+`lexe sdk verify` reports whether a target satisfies the [Tux32 Core 1](TUX32.md)
+contract with a typed verdict and typed exit codes (0 conformant, 3 a
+non-conformant verdict, 2 usage, 4 not found); it reuses the dependency engine —
+there is no second analysis path.
 
 `lexe install` without `--yes` prints the SPEC "primary screen" summary
 (name, publisher, version, type/arch, source, permissions, size, update policy)
@@ -95,15 +107,26 @@ and asks for confirmation on stdin. Exit codes: `0` ok, `1` runtime error,
 `lexe pack` source-dir convention: the directory's contents become `payload/`;
 `--manifest` supplies `lexe.json`; optional `--icons <dir>`, `--metadata <dir>`.
 
-## GUI — `src/gui/` → binary `lexe-installer` (Linux only)
+## GUI — `src/gui/` → `lexe-installer` + `lexe-builder` (Linux only)
 
-GTK 3 via the C API (`pkg-config gtk+-3.0`), single source file. Flow per SPEC
-§User Interface: open with a `.lexe` argument → run verification → primary screen
-(app, publisher, version, source, type/arch, permissions, size, update policy,
-verification status) → Install / Advanced (install summary of directories used;
-channel selector) → progress → success screen with Launch button (`lexe run`).
-Built only when CMake finds gtk+-3.0; never built on Windows. The GUI shells out
-to nothing — it links `lexe_core` directly.
+GTK 3 via the C API (`pkg-config gtk+-3.0`). Each GUI splits into a pure,
+GTK-free presentation/validation layer (the "view model", unit-tested on every
+host — including Windows — via `LEXE_GUI_VIEWMODEL_ONLY`) and the GTK wiring
+(compiled only when CMake finds gtk+-3.0; never built on Windows). Both link
+`lexe_core` directly and shell out to nothing. All user-supplied text embedded in
+Pango markup is escaped (`g_markup_escape_text`); a headless
+[smoke test](../scripts/gui-smoke.sh) asserts both GUIs render warning-clean,
+including markup-hostile names/headings.
+
+* **`lexe-installer`** — flow per SPEC §User Interface: open with a `.lexe`
+  argument → run verification → primary screen (app, publisher, version, source,
+  type/arch, permissions, size, update policy, verification status) → Install /
+  Advanced → progress → success screen with a Launch button (`lexe run`).
+* **`lexe-builder`** — a seven-step wizard (Source → Dependencies → Architecture →
+  Installer → Signing → Output → Build) that turns a project folder into a signed
+  `.lexe`. The Build step enforces the Core Portable / Tux32 Core 1 gate (a
+  non-conformant closure disables Build); the result screen renders the build
+  report including the Tux32 verdict.
 
 ## Tests — `tests/` → binary `lexe_tests` (doctest, run via CTest)
 
@@ -139,8 +162,11 @@ to nothing — it links `lexe_core` directly.
   Accepts an optional argument to use a different build dir (parallel agents use
   their own build dirs).
 * `scripts/build.sh` — Linux equivalent.
-* CI (`.github/workflows/ci.yml`): matrix — `ubuntu-latest` (GCC,
-  `libgtk-3-dev` installed, GUI built, ctest) and `windows-latest` (MSVC, ctest).
+* CI (`.github/workflows/ci.yml`): `ubuntu-latest` (GCC, `libgtk-3-dev` + `xvfb`,
+  GUIs built, ctest, then the headless [GUI smoke test](../scripts/gui-smoke.sh)),
+  `windows-latest` (MSVC, ctest), and a `portability` job that runs the
+  cross-distribution [Tux32 Core 1 proof](../scripts/portability-demo.sh) under
+  rootless podman.
 
 ## Security invariants (review checklist)
 

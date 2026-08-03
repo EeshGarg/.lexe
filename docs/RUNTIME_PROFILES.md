@@ -1,9 +1,10 @@
 # Runtime Profiles (Phase 2 / DX2)
 
-A **runtime profile** is the portability contract a package targets. This phase
-implements the profile *infrastructure* (`core/runtime_profile.{hpp,cpp}`) — the
-typed model and an honest, dependency-aware assessment — as groundwork for the
-full [Tux32](TUX32.md) specification, which is future work.
+A **runtime profile** is the portability contract a package targets. The profile
+*infrastructure* (`core/runtime_profile.{hpp,cpp}`) is the typed model plus an
+honest, dependency-aware assessment. Core Portable is now bound to a concrete,
+enforced baseline — [Tux32 Core 1](TUX32.md) — so its portability claim is
+verified, not asserted.
 
 ## The three profiles
 
@@ -30,15 +31,32 @@ never overstates portability:
 
 No profile silently claims "runs everywhere."
 
+## Core Portable is enforced against Tux32 Core 1
+
+Core Portable is the profile that makes a cross-distribution portability claim, so
+it is **verified** against [Tux32 Core 1](TUX32.md), not merely assessed:
+
+- The build report attaches a typed Core 1 verdict **only** for Core Portable
+  (`assemble_report` runs `verify_against_profile` over the same dependency
+  closure). Forward Runtime and Native Capture carry no Tux32 verdict — they make
+  no such claim.
+- The Builder **hard-gates** Core Portable: a non-conformant closure disables the
+  Build button and names the offending object/version, forbidden interface, or
+  unresolved soname. Forward Runtime builds but is labeled advisory; Native
+  Capture builds but is labeled host-locked. The build host cannot silently ship
+  an over-ceiling binary under a portability claim.
+
 ## Where it surfaces
 
-- CLI: `lexe analyze --profile <core-portable|forward-runtime|native-capture>`.
-- Builder: the Output step offers the profile; the build report states the
-  chosen profile's portability and any warnings.
+- CLI: `lexe analyze --profile <core-portable|forward-runtime|native-capture>`
+  (Core Portable reports include the Tux32 verdict), and `lexe sdk verify` for the
+  verdict on its own with typed exit codes.
+- Builder: the Runtime profile step selects the profile; the Build step enforces
+  the Core Portable gate; the result screen and build report include the verdict.
 
 ## Future (Tux32)
 
-The full Tux32 model — richer runtime baselines, downloadable native variants,
-and the profile's relationship to signed runtime manifests — is deferred to
-[TUX32.md](TUX32.md). The types here (`RuntimeProfile`, `RuntimeProfileInfo`,
-`ProfileAssessment`) are the seam those features will build on.
+Additional Tux32 baselines, downloadable native variants, and the profile's
+relationship to signed runtime manifests are deferred to [TUX32.md](TUX32.md). The
+types here (`RuntimeProfile`, `RuntimeProfileInfo`, `ProfileAssessment`) are the
+seam those features build on.

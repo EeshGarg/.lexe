@@ -100,6 +100,38 @@ lexe build ./my-project -o my-app.lexe
 Then a user just runs `lexe install my-app.lexe` (or double-clicks it).
 `lexe help` lists the full command surface.
 
+## Cross-distribution portability (Tux32 Core 1)
+
+"Run on every conforming runtime" is only precise when *conforming* has a
+definition. **[Tux32 Core 1](docs/TUX32.md)** is that definition, frozen: a
+dynamically linked x86-64 ELF built against a glibc **symbol ceiling of 2.31**
+(Debian 11 / Ubuntu 20.04), bundling everything except the host interface. The
+central rule:
+
+> A package may claim Core 1 portability **only** when its executable and bundled
+> dependencies stay within the published contract. **The build host must not
+> silently become the compatibility target.**
+
+`lexe sdk verify` enforces it with a typed verdict and typed exit codes, reusing
+the runtime's own dependency engine — no second analysis path:
+
+```sh
+lexe sdk verify ./my-app --json     # exit 0 conformant · 3 non-conformant
+```
+
+A binary built on a current host (glibc 2.39) imports `GLIBC_2.34` symbols and is
+**rejected** — and that same binary genuinely fails to load on a glibc-2.31 host.
+Built in a Core 1 sysroot (see [`sdk/tux32-core-1/`](sdk/tux32-core-1/)) it
+verifies conformant. The Builder **hard-gates** Core Portable on this check, so an
+over-ceiling binary can't be shipped under a portability claim by clicking through.
+
+The whole path is proven end to end, in CI, with real containers
+([`scripts/portability-demo.sh`](scripts/portability-demo.sh)): one unchanged,
+dynamically linked, signed `.lexe` traverses build → verify → package → install →
+sandboxed launch across a genuine distribution boundary — from a newer build host
+to a fresh, older, *different* distribution — checksum identical end to end, its
+data surviving across launches.
+
 ## Platform capabilities
 
 Everything below is **implemented and tested** today.
@@ -128,6 +160,10 @@ Everything below is **implemented and tested** today.
   passthrough, unresolved or unusually-bundled libraries).
 - **Runtime profiles** — Core Portable (default), Forward Runtime, and Native
   Capture, each with an honest portability assessment that never overstates.
+- **Tux32 Core 1 portability** — a frozen, versioned runtime baseline (dynamic
+  x86-64 ELF, glibc symbol ceiling 2.31) with a typed verifier (`lexe sdk verify`)
+  that reuses the dependency engine, a Builder that hard-gates Core Portable on it,
+  a minimal build-in-sysroot SDK, and an end-to-end cross-distribution proof in CI.
 - **Installation & desktop integration** — per-user install, `.desktop` entries,
   hicolor icons, and MIME registration so a double-click opens the graphical
   installer.
@@ -153,6 +189,8 @@ The developer pipeline — a compiled application becomes a signed package:
      profiles          analysis
           └──────┬───────┘
                  ▼
+      Tux32 Core 1 verify             core/tux32 — typed conformance verdict
+                 ▼                     (Core Portable; reuses the graph above)
            Build report               core/buildreport — text + JSON
                  │
                  ▼
@@ -200,11 +238,12 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 | [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | Adversaries, mitigations, and explicit non-guarantees. |
 | [docs/DEPENDENCY_ENGINE.md](docs/DEPENDENCY_ENGINE.md) | The ELF reader and dependency-resolution engine. |
 | [docs/RUNTIME_PROFILES.md](docs/RUNTIME_PROFILES.md) | The runtime-profile model and honest assessment. |
-| [docs/TUX32.md](docs/TUX32.md) | The future conforming-runtime baseline (placeholder). |
+| [docs/TUX32.md](docs/TUX32.md) | The Tux32 Core 1 baseline: the frozen contract, the verifier, `lexe sdk verify`, and the proof. |
+| [docs/SDK.md](docs/SDK.md) | The minimal Core 1 SDK (`lexe sdk verify` + `sdk/tux32-core-1/`). |
 
 ## Project status
 
-**Milestone:** Developer Experience — **complete.**
+**Milestone:** Tux32 Core 1 — cross-distribution portability — **complete.**
 **Stage:** approaching **Alpha.**
 
 The reference Runtime is written in modern C++ (C++20) and builds on Linux (GCC,
@@ -221,14 +260,16 @@ exercised in CI on every push.
 - Concurrency locking, launch leases, TOCTOU closure.
 - Typed local trust-on-first-use model + truthful CLI/GUI presentation.
 - Dependency engine, compatibility analysis, runtime profiles, build report.
-- Graphical Builder wizard and `lexe analyze`.
-
-**In progress**
-- Repository/documentation polish for Alpha readiness (this milestone).
+- Graphical Builder wizard, `lexe analyze`, and `lexe build`.
+- **Tux32 Core 1**: the frozen baseline, the typed verifier + `lexe sdk verify`,
+  the Builder's Core Portable gate, the minimal build-in-sysroot SDK, and the
+  cross-distribution proof (build → verify → install → isolate → launch across a
+  real boundary, in CI).
 
 **Planned (not yet implemented)**
-- The Tux32 conforming-runtime baseline specification.
-- An SDK / sysroot for building broadly-portable binaries.
+- Additional Tux32 baselines and downloadable native variants.
+- Automated sysroot provisioning (`lexe sdk install`); Core 1 ships a
+  build-in-sysroot script and verifier today.
 - Multi-architecture (multi-ISA) packaging with per-architecture payloads.
 - Language-runtime dependency extensions (Python, Java, Node, …).
 - The repository (Tier 2) and root-accreditation (Tier 3) trust tiers.
@@ -244,10 +285,11 @@ proves consistency with a key, not a publisher's real-world identity.
 **Completed**
 - Platform foundations — format, crypto, install/lifecycle, isolation, concurrency, trust.
 - Developer experience — dependency engine, compatibility, profiles, build report, Builder.
+- Tux32 **Core 1** — the frozen baseline, verifier, `lexe sdk verify`, Builder
+  gate, minimal SDK, and the cross-distribution proof.
 
 **Next (toward Alpha)**
-- Formalize the **Tux32** runtime-profile / baseline specification.
-- Design the **SDK / sysroot** architecture for portable builds.
+- Additional **Tux32 baselines** and automated **sysroot provisioning**.
 - Lay the groundwork for **multi-ISA packaging** (universal + per-arch payloads).
 
 **Future**

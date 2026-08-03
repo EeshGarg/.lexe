@@ -37,7 +37,9 @@ deeper. Each document is marked **Normative** (specifies implemented behavior),
 | Document | Kind | What it covers |
 |---|---|---|
 | [DEPENDENCY_ENGINE.md](DEPENDENCY_ENGINE.md) | Normative | The ELF reader and the dependency-resolution engine. |
-| [RUNTIME_PROFILES.md](RUNTIME_PROFILES.md) | Normative | The runtime-profile model and its honest assessment. |
+| [RUNTIME_PROFILES.md](RUNTIME_PROFILES.md) | Normative | The runtime-profile model, and Core Portable's Tux32 Core 1 enforcement. |
+| [TUX32.md](TUX32.md) | Normative | The Tux32 Core 1 conforming-runtime baseline: the frozen contract, the verifier, `lexe sdk verify`, and the cross-distribution proof. |
+| [SDK.md](SDK.md) | Design | The minimal Core 1 SDK (`lexe sdk verify` + `sdk/tux32-core-1/`); full sysroot provisioning is future. |
 
 ## Roadmap groundwork (not yet implemented)
 
@@ -46,8 +48,6 @@ groundwork — each distinguishes what is Implemented, Planned, and Future.
 
 | Document | Kind | What it covers |
 |---|---|---|
-| [TUX32.md](TUX32.md) | Placeholder | The future conforming-runtime baseline. |
-| [SDK.md](SDK.md) | Placeholder | The future SDK / sysroot for baseline-pinned, portable builds. |
 | [MULTI_ARCH.md](MULTI_ARCH.md) | Placeholder | Future multi-architecture (multi-ISA) packaging. |
 
 ## Conventions

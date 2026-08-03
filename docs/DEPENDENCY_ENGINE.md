@@ -60,13 +60,23 @@ newer glibc symbols, GPU driver passthrough, unknown dependencies, and
 host-typical libraries bundled into the payload. See
 [RUNTIME_PROFILES.md](RUNTIME_PROFILES.md).
 
+## One graph, reused by the Tux32 verifier
+
+The [Tux32 Core 1](TUX32.md) verifier does **not** re-analyze. `lexe sdk verify`,
+`lexe analyze --profile core-portable`, `lexe build`, and the Builder all run this
+one engine and hand its `DependencyReport` to `verify_against_profile()`, which
+computes the package's glibc requirement from the executable plus every **bundled**
+library (host-interface libraries are host-supplied and not counted) and returns a
+typed verdict. There is exactly one notion of "what this binary needs".
+
 ## Using it
 
 - CLI: `lexe analyze <binary | project-dir | payload-dir> [--json]
-  [--profile <p>]`.
+  [--profile <p>]`; `lexe sdk verify <target> [--json]` for the typed Core 1
+  verdict.
 - Builder: Step 1 (Source) runs `detect_source`, which uses the engine to find
   the main executable + its dependency graph; Step 2 (Dependencies) shows the
-  classified review.
+  classified review; the Build step verifies the closure against Core 1.
 
 ## Extension point: language runtimes (not implemented)
 
