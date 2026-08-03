@@ -44,7 +44,7 @@ offending() {
     grep -aE \
       '(Gtk|Gdk|GLib|GLib-GObject|GdkPixbuf|Pango|Gnome)-(WARNING|CRITICAL|ERROR)|CRITICAL \*\*|assertion .*failed|due to error parsing markup|Segmentation fault|core dumped|Trace/breakpoint trap' \
       "$1" 2>/dev/null \
-      | grep -avE 'dbind-WARNING|AT-SPI|at-spi|atk-bridge|Failed to connect to|session (manager|bus)|Theme parsing error|Gtk-Message|accessibility bus|Unable to init server|cannot open display: after' \
+      | grep -avE 'dbind-WARNING|AT-SPI|at-spi|atk-bridge|Failed to connect to|session (manager|bus)|Theme parsing error|Gtk-Message|accessibility bus|Unable to init server|cannot open display: after|Could not load a pixbuf|pixbuf from .*(theme|icon|symbolic|Adwaita)|Error loading (theme )?icon' \
       || true
 }
 

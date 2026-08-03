@@ -15,21 +15,17 @@ jobs:
         run: |
           sudo apt-get update
           # bubblewrap: the launcher tests exercise the REAL isolation sandbox
-          # (the launcher fails closed without a backend, by design), so CI must
-          # provide one — never skip those tests.
-          sudo apt-get install -y ninja-build libgtk-3-dev xvfb bubblewrap
+          #   (the launcher fails closed without a backend, by design), so CI
+          #   must provide one — never skip those tests.
+          # librsvg2-common: the GTK SVG pixbuf loader, so symbolic theme icons
+          #   (checkboxes) load without a Gtk-WARNING under the minimal runner.
+          sudo apt-get install -y ninja-build libgtk-3-dev xvfb bubblewrap \
+                                   librsvg2-common
       - name: Enable unprivileged user namespaces for the isolation tests
-        run: |
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor;
-          # allow them so bubblewrap works on the bare runner. Harmless where the
-          # knob is absent.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
-          if bwrap --unshare-user --ro-bind /usr /usr --symlink usr/bin /bin \
-                   --dev /dev --proc /proc /usr/bin/true 2>/dev/null; then
-            echo "bwrap unprivileged user namespaces: OK"
-          else
-            echo "WARNING: bwrap unprivileged user namespaces NOT available on this runner"
-          fi
+        # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; allow
+        # them so bubblewrap works on the bare runner. Harmless where the knob is
+        # absent (rootless podman already uses the same capability here).
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
       - name: Build and test
         run: ./scripts/build.sh build-ci
       - name: Assert GUI was built
