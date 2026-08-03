@@ -27,6 +27,7 @@
 #include "core/registry.hpp"
 #include "core/runtime_profile.hpp"
 #include "core/trust.hpp"
+#include "core/tux32.hpp"
 #include "core/updater.hpp"
 #include "core/util.hpp"
 #include "core/verify.hpp"
@@ -90,6 +91,9 @@ constexpr const char* kSignUpdateUsage =
     "usage: lexe sign-update <update.json> --key <keyfile.json>";
 constexpr const char* kBuildUsage =
     "usage: lexe build <project-dir> [-o <out.lexe>] [--key <keyfile.json>]";
+constexpr const char* kSdkUsage =
+    "usage: lexe sdk verify <binary | project-dir | payload-dir> [--json] "
+    "[--profile <tux32-core-1>]";
 
 // -------------------------------------------------------- argument parsing
 
@@ -620,6 +624,61 @@ fs::path find_main_executable(const fs::path& dir) {
     return found.empty() ? fs::path() : found.front();
 }
 
+// A CLI target resolved to the root binary and its dependency search paths.
+// For a project folder, identity fields are filled from the manifest.
+struct ResolvedTarget {
+    fs::path root;
+    std::vector<fs::path> search;
+    std::string app_name, app_id, app_version;
+    std::vector<std::string> permissions;
+};
+
+// Resolve a positional target — a binary, a project folder (lexe.json +
+// payload/), or a payload directory — to its root executable and the search
+// paths its bundled libraries resolve against. Shared by `analyze` and
+// `sdk verify` so both walk the exact same discovery path. Throws
+// NotFoundError; `noun` names the command in the "nothing found" message.
+ResolvedTarget resolve_binary_target(const fs::path& target, const char* noun) {
+    ResolvedTarget out;
+    std::error_code ec;
+    if (fs::is_regular_file(target, ec)) {
+        out.root = target;
+        if (target.has_parent_path()) {
+            out.search = gather_dirs(target.parent_path());
+        }
+    } else if (fs::is_directory(target, ec)) {
+        fs::path payload = target;
+        const fs::path manifest_file = target / "lexe.json";
+        if (fs::is_regular_file(manifest_file, ec) &&
+            fs::is_directory(target / "payload", ec)) {
+            payload = target / "payload";
+            try {
+                const Manifest m = Manifest::parse(util::slurp(manifest_file));
+                out.app_name = m.name;
+                out.app_id = m.id;
+                out.app_version = m.version;
+                out.permissions = m.permissions;
+                out.root = payload / fs::path(m.entrypoint_executable);
+            } catch (const Error&) {
+                // Fall back to auto-detection below.
+            }
+        }
+        out.search = gather_dirs(payload);
+        if (out.root.empty() || !fs::is_regular_file(out.root, ec)) {
+            out.root = find_main_executable(payload);
+        }
+        if (out.root.empty()) {
+            throw NotFoundError("no ELF executable found under " +
+                                payload.string() + " (point `lexe " + noun +
+                                "` at a binary, a project folder, or a payload "
+                                "directory)");
+        }
+    } else {
+        throw NotFoundError("no such file or directory: " + target.string());
+    }
+    return out;
+}
+
 int cmd_analyze(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {"--json"}, {"--profile"}, false, kAnalyzeUsage);
@@ -632,49 +691,15 @@ int cmd_analyze(const std::vector<std::string>& args) {
         profile = runtime_profile_from_string(pf->second); // UsageError on bad id
     }
 
-    // Resolve the root binary, its search paths, and (for a project) identity.
-    fs::path root;
-    std::vector<fs::path> search;
-    std::string app_name, app_id, app_version;
-    std::vector<std::string> permissions;
-
-    std::error_code ec;
-    if (fs::is_regular_file(target, ec)) {
-        root = target;
-        if (target.has_parent_path()) search = gather_dirs(target.parent_path());
-    } else if (fs::is_directory(target, ec)) {
-        fs::path payload = target;
-        const fs::path manifest_file = target / "lexe.json";
-        if (fs::is_regular_file(manifest_file, ec) &&
-            fs::is_directory(target / "payload", ec)) {
-            payload = target / "payload";
-            try {
-                const Manifest m = Manifest::parse(util::slurp(manifest_file));
-                app_name = m.name;
-                app_id = m.id;
-                app_version = m.version;
-                permissions = m.permissions;
-                root = payload / fs::path(m.entrypoint_executable);
-            } catch (const Error&) {
-                // Fall back to auto-detection below.
-            }
-        }
-        search = gather_dirs(payload);
-        if (root.empty() || !fs::is_regular_file(root, ec)) {
-            root = find_main_executable(payload);
-        }
-        if (root.empty()) {
-            throw NotFoundError("no ELF executable found under " +
-                                payload.string() +
-                                " (point `lexe analyze` at a binary, a project "
-                                "folder, or a payload directory)");
-        }
-    } else {
-        throw NotFoundError("no such file or directory: " + target.string());
-    }
+    const ResolvedTarget t = resolve_binary_target(target, "analyze");
+    const fs::path& root = t.root;
+    const std::string& app_name = t.app_name;
+    const std::string& app_id = t.app_id;
+    const std::string& app_version = t.app_version;
+    const std::vector<std::string>& permissions = t.permissions;
 
     DependencyOptions opts;
-    opts.payload_search_paths = search;
+    opts.payload_search_paths = t.search;
     DependencyReport deps = analyze_dependencies(root, opts);
     if (!deps.root_info.is_elf) {
         throw Error(root.string() +
@@ -701,6 +726,129 @@ int cmd_analyze(const std::vector<std::string>& args) {
         }
     }
     return 0; // analysis is informational; the report content conveys issues
+}
+
+// ---------------------------------------------------------------- sdk verify
+
+// Resolve a `--profile <id>` to a Tux32 profile. Core 1 is the only shipped
+// profile; an unknown id is a UsageError (speculative profiles are refused).
+const Tux32Profile& sdk_profile_for(const std::string& id) {
+    if (id == "tux32-core-1" || id == "core-1") return tux32_core_1();
+    throw UsageError("unknown Tux32 profile \"" + id +
+                     "\" (supported: tux32-core-1)");
+}
+
+// The sdk-verify result as JSON — a machine-consumable superset of the human
+// report. Automation switches on "verdict"; "conformant" is the boolean gate.
+ordered_json sdk_verify_json(const fs::path& target,
+                             const Tux32Profile& profile,
+                             const Core1VerifyResult& r) {
+    ordered_json j;
+    j["tool"] = "lexe sdk verify";
+    j["profile"] = {
+        {"id", profile.id},
+        {"specVersion", profile.spec_version},
+        {"executableFormat", profile.executable_format},
+        {"cpuBaseline", profile.cpu_baseline},
+        {"glibcCeiling", profile.glibc_ceiling()},
+    };
+    j["target"] = target.string();
+    j["executable"] = r.selected_executable;
+    j["architecture"] = r.architecture;
+    j["verdict"] = to_string(r.verdict);
+    j["conformant"] = r.conformant();
+    j["requiredGlibc"] = r.required_glibc; // "" when nothing declares a need
+    ordered_json offenders = ordered_json::array();
+    for (const Core1Offender& o : r.symbol_offenders) {
+        offenders.push_back({{"object", o.object}, {"version", o.version}});
+    }
+    j["symbolOffenders"] = std::move(offenders);
+    j["bundle"] = r.bundle_candidates;
+    j["hostInterfaces"] = r.host_interfaces;
+    j["forbidden"] = r.forbidden;
+    j["unresolved"] = r.unresolved;
+    j["notes"] = r.notes;
+    j["detail"] = r.detail;
+    return j;
+}
+
+void render_sdk_verify_text(std::ostream& os, const Tux32Profile& profile,
+                            const Core1VerifyResult& r) {
+    const auto list = [&](const char* label,
+                          const std::vector<std::string>& items) {
+        if (items.empty()) return;
+        os << label << ":\n";
+        for (const std::string& s : items) os << "    " << s << "\n";
+    };
+
+    os << "Tux32 " << profile.id << " verification (spec " << profile.spec_version
+       << ")\n";
+    os << "  executable:    " << r.selected_executable << "\n";
+    os << "  architecture:  "
+       << (r.architecture.empty() ? std::string("unknown") : r.architecture)
+       << "\n";
+    os << "  cpu baseline:  " << profile.cpu_baseline << "\n";
+    os << "  glibc ceiling: " << r.glibc_ceiling << "\n";
+    if (!r.required_glibc.empty()) {
+        os << "  requires glibc: " << r.required_glibc << "\n";
+    }
+    os << "\n  VERDICT: " << to_string(r.verdict) << "\n";
+    os << "  " << r.detail << "\n\n";
+
+    if (!r.symbol_offenders.empty()) {
+        os << "Objects above the glibc ceiling:\n";
+        for (const Core1Offender& o : r.symbol_offenders) {
+            os << "    " << o.object << "  needs " << o.version << "\n";
+        }
+    }
+    list("Libraries to bundle", r.bundle_candidates);
+    list("Host-provided interfaces (not bundled)", r.host_interfaces);
+    list("Forbidden (host driver) interfaces", r.forbidden);
+    list("Unresolved dependencies", r.unresolved);
+    if (!r.notes.empty()) {
+        os << "Notes:\n";
+        for (const std::string& n : r.notes) os << "  ! " << n << "\n";
+    }
+}
+
+int cmd_sdk_verify(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json"}, {"--profile"}, false, kSdkUsage);
+    require_positionals(parsed, 1, kSdkUsage);
+    const fs::path target(parsed.positionals[0]);
+
+    std::string profile_id = "tux32-core-1";
+    const auto pf = parsed.options.find("--profile");
+    if (pf != parsed.options.end()) profile_id = pf->second;
+    const Tux32Profile& profile = sdk_profile_for(profile_id);
+
+    // ONE dependency-analysis path: resolve exactly as `analyze` does, run the
+    // shared dependency engine, then verify the resulting report — no second
+    // analyzer, and the build host never becomes the compatibility target.
+    const ResolvedTarget t = resolve_binary_target(target, "sdk verify");
+    DependencyOptions opts;
+    opts.payload_search_paths = t.search;
+    const DependencyReport deps = analyze_dependencies(t.root, opts);
+    const Core1VerifyResult r = verify_against_profile(deps, profile);
+
+    if (parsed.flags.count("--json") != 0) {
+        std::cout << sdk_verify_json(target, profile, r).dump(2) << "\n";
+    } else {
+        render_sdk_verify_text(std::cout, profile, r);
+    }
+
+    // Typed exit: 0 = conformant (the ONLY case a build may claim the profile);
+    // 3 = a non-conformant verdict (a verification failure, matching the tool's
+    // exit-code model). The precise reason is the typed `verdict` in the output.
+    return r.conformant() ? 0 : 3;
+}
+
+int cmd_sdk(const std::vector<std::string>& args) {
+    if (args.empty()) throw UsageError(kSdkUsage);
+    const std::string& sub = args[0];
+    const std::vector<std::string> rest(args.begin() + 1, args.end());
+    if (sub == "verify") return cmd_sdk_verify(rest);
+    throw UsageError("unknown sdk subcommand \"" + sub + "\"\n" + kSdkUsage);
 }
 
 int cmd_info(const std::vector<std::string>& args) {
@@ -1445,6 +1593,8 @@ std::string usage_text() {
            "  analyze <binary | dir> [--json] [--profile <p>]\n"
            "                                               inspect dependencies "
            "and runtime compatibility\n"
+           "  sdk verify <binary | dir> [--json]           check Tux32 Core 1 "
+           "portability (typed verdict/exit)\n"
            "  verify <file.lexe> [--json]                  run the "
            "verification pipeline\n"
            "  source set <id> <url>                        set the update "
@@ -1492,6 +1642,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "repair") return cmd_repair(rest);
     if (command == "info") return cmd_info(rest);
     if (command == "analyze") return cmd_analyze(rest);
+    if (command == "sdk") return cmd_sdk(rest);
     if (command == "verify") return cmd_verify(rest);
     if (command == "source") return cmd_source(rest);
     if (command == "rollback") return cmd_rollback(rest);
