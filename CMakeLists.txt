@@ -107,7 +107,8 @@ add_test(NAME lexe_tests COMMAND lexe_tests)
 set_tests_properties(lexe_tests PROPERTIES ENVIRONMENT
   "LEXE_CLI=$<TARGET_FILE:lexe>;LEXE_TEST_BINARY=$<TARGET_FILE:lexe>")
 target_compile_definitions(lexe_tests PRIVATE
-  LEXE_TEST_BINARY_PATH="$<TARGET_FILE:lexe>")
+  LEXE_TEST_BINARY_PATH="$<TARGET_FILE:lexe>"
+  LEXE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
 # lexe-installer — GTK 3 GUI, Linux only (ARCHITECTURE.md #GUI). Built when

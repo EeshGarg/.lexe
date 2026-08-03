@@ -1,0 +1,23 @@
+{
+  "id": "tux32-core-1",
+  "specVersion": "1",
+  "executableFormat": "elf-dynamic",
+  "architectures": ["x86_64"],
+  "cpuBaseline": "x86-64-v1",
+  "glibcCeiling": "2.31",
+  "policy": {
+    "dynamicLinking": "Dynamically linked against the host glibc via the host-provided loader (ld-linux-x86-64.so.2). Fully static binaries are out of scope for Core 1.",
+    "kernelBaseline": "Linux 5.10 or newer with user namespaces available for the sandbox.",
+    "hostProvided": "The core system runtime present on every conforming host: glibc, libgcc_s, the dynamic loader, and the vDSO. Never bundled.",
+    "mustBundle": "Every other shared library the application needs, carried in the payload.",
+    "forbidden": "Host GPU/graphics/accelerator driver interfaces (libGL, libEGL, libcuda, libvulkan, libdrm) — provided by the host, never bundled.",
+    "filesystem": "A read-only application image plus private, writable data, cache and temp roots (FORMAT-0.1 §9). No ambient filesystem access.",
+    "environment": "A sanitized environment allow-list; dangerous variables (LD_PRELOAD, LD_LIBRARY_PATH) are stripped.",
+    "isolation": "The Linux baseline sandbox: read-only app image, private data/cache/temp, environment sanitization, and network denied unless granted.",
+    "graphics": "Headless/terminal applications only in Core 1. GUI forwarding is out of scope.",
+    "network": "No network unless the application declares and the user approves the network permission; otherwise the network namespace is unshared.",
+    "dataPaths": "Per-App persistent data survives update/rollback; cache is disposable; temp is per-launch and private.",
+    "claimLanguage": "Targets Tux32 Core 1. Verified against the Core 1 glibc symbol ceiling. Core Portable does not mean every arbitrary Linux binary is portable; runtime dlopen dependencies may require explicit declaration.",
+    "conformance": "A runtime conforms to Core 1 when it provides the host interface with a glibc of at least 2.31, the stated kernel/isolation capabilities, and runs a conforming package's exact signed artifact unchanged."
+  }
+}
