@@ -132,8 +132,8 @@ There is **no silent fallback to unrestricted networking**.
 
 **Not implemented in 0.1.** No display, Wayland/X, or D-Bus socket is forwarded
 into the sandbox, so a `.lexe` GUI application launched via `lexe run` runs
-headless (isolation is terminal/headless only). The Lexe builder and installer
-GTK apps are the runtime's own tools — they are not `.lexe` applications and are
+headless (isolation is terminal/headless only). The Builder and Installer GTK
+apps are the runtime's own tools — they are not `.lexe` applications and are
 not launched through this isolation path, so they are unaffected. GUI capability
 is reported as **not forwarded**; the filesystem and network controls are never
 weakened to make GUI launch work.

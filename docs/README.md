@@ -72,7 +72,9 @@ implemented).
 
 Used consistently across the code, the GUIs, and the docs:
 
-- **`.lexe`** — the platform and its package format (always lowercase, with the dot).
+- **`.lexe`** — the platform and its package format (always lowercase, with the
+  dot). *Lexe* (capitalized, no dot) names the project/product in prose and
+  titles — e.g. the *Lexe Reference Runtime*; the file and format are always `.lexe`.
 - **Runtime** — the reference implementation (`lexe`) that verifies, installs, launches, updates, and removes packages.
 - **Builder** — `lexe-builder` (GUI) and `lexe build` (CLI) that produce packages.
 - **Installer** — `lexe-installer` (GUI) and `lexe install` (CLI) that install a package.
