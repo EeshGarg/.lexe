@@ -53,6 +53,7 @@ implemented).
 |---|---|---|
 | [DEPENDENCY_ENGINE.md](DEPENDENCY_ENGINE.md) | Normative | The direct-ELF reader and the dependency-resolution engine. |
 | [RUNTIME_PROFILES.md](RUNTIME_PROFILES.md) | Normative | The Runtime Profile model, and Core Portable's Tux32 Core 1 enforcement. |
+| [IMPLEMENTERS.md](IMPLEMENTERS.md) | Informative | A reading path for implementing a conforming `.lexe` verifier, builder, or runtime in another language. |
 
 ## Contributor docs
 

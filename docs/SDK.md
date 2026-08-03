@@ -91,3 +91,7 @@ The rejection of a newer-host build is the feature — see the end-to-end proof 
 - **The dependency engine + `verify_against_profile`** *verify* a build against it.
 - **Runtime profiles** let the package *declare* which contract it targets, and the
   Builder *enforces* it for Core Portable.
+
+Implementing a conforming verifier, builder, or runtime in another language? See
+[IMPLEMENTERS.md](IMPLEMENTERS.md) for a reading path through the normative specs
+([../SPEC.md](../SPEC.md), [FORMAT-0.1.md](FORMAT-0.1.md), [TUX32.md](TUX32.md)).

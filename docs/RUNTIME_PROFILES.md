@@ -60,3 +60,6 @@ Additional Tux32 baselines, downloadable native variants, and the profile's
 relationship to signed runtime manifests are deferred to [TUX32.md](TUX32.md). The
 types here (`RuntimeProfile`, `RuntimeProfileInfo`, `ProfileAssessment`) are the
 seam those features build on.
+
+*See also:* the overall specification in [../SPEC.md](../SPEC.md) and the frozen
+portability contract in [TUX32.md](TUX32.md).

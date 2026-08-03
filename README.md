@@ -260,6 +260,7 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 | [docs/SDK.md](docs/SDK.md) | The minimal Core 1 SDK (`lexe sdk verify` + `sdk/tux32-core-1/`). |
 | [docs/DEPENDENCY_ENGINE.md](docs/DEPENDENCY_ENGINE.md) | The direct-ELF reader and dependency-resolution engine. |
 | [docs/RUNTIME_PROFILES.md](docs/RUNTIME_PROFILES.md) | The Runtime Profile model and Core Portable enforcement. |
+| [docs/IMPLEMENTERS.md](docs/IMPLEMENTERS.md) | A reading path for implementing `.lexe` in another language. |
 
 **Status, contributing & history**
 

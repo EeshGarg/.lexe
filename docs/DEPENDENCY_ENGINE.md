@@ -92,3 +92,7 @@ and `analyze_dependencies` simply consults it.
 - Runtime `dlopen`-ed plugins are not discoverable from static metadata.
 - glibc baselines for the known runtimes are coarse, documented approximations,
   not a live probe of any specific host.
+
+*See also:* the package format is specified in [FORMAT-0.1.md](FORMAT-0.1.md) and
+the product vision in [../SPEC.md](../SPEC.md); [IMPLEMENTERS.md](IMPLEMENTERS.md)
+gives a reading path for a non-C++ implementation.
