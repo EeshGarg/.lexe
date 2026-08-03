@@ -98,7 +98,8 @@ lexe build ./my-project -o my-app.lexe
 ```
 
 Then a user just runs `lexe install my-app.lexe` (or double-clicks it).
-`lexe help` lists the full command surface.
+`lexe help` lists the full command surface; `lexe version` reports the runtime,
+package-format, and Tux32 baseline versions.
 
 ## Cross-distribution portability (Tux32 Core 1)
 
@@ -240,6 +241,9 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 | [docs/RUNTIME_PROFILES.md](docs/RUNTIME_PROFILES.md) | The runtime-profile model and honest assessment. |
 | [docs/TUX32.md](docs/TUX32.md) | The Tux32 Core 1 baseline: the frozen contract, the verifier, `lexe sdk verify`, and the proof. |
 | [docs/SDK.md](docs/SDK.md) | The minimal Core 1 SDK (`lexe sdk verify` + `sdk/tux32-core-1/`). |
+| [docs/ALPHA.md](docs/ALPHA.md) | The Alpha support contract: what is and is not claimed, known limitations, and the evidence-linked checklist. |
+| [docs/TUTORIAL.md](docs/TUTORIAL.md) | One canonical walkthrough: analyze → verify → build → install → launch → remove. |
+| [CHANGELOG.md](CHANGELOG.md) | Release history. |
 
 ## Project status
 
@@ -248,9 +252,10 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 
 The reference Runtime is written in modern C++ (C++20) and builds on Linux (GCC,
 with the GTK GUIs) and Windows (MSVC). The full suite is **green on both
-platforms** — 410 tests on Linux and 394 on Windows, nearly 6,000 assertions,
+platforms** — 413 tests on Linux and 397 on Windows, ~6,000 assertions,
 exercised in CI on every push, plus a headless GUI smoke test and a
-cross-distribution portability proof.
+cross-distribution portability proof. See the **[Alpha support contract and
+evidence checklist](docs/ALPHA.md)** for what this stage does and does not claim.
 
 **Implemented**
 - Package format, deterministic packing, strict hardened parsing.
