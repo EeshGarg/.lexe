@@ -1038,6 +1038,142 @@ int cmd_info(const std::vector<std::string>& args) {
     return 0;
 }
 
+constexpr const char* kInspectUsage =
+    "usage: lexe inspect <file.lexe> [--json] [--manifest]";
+
+// Extract the payload to `scratch` and assemble the dependency / compatibility /
+// Tux32 report — the same engine `analyze` and the Builder use, no second path.
+BuildReport inspect_report(const PackageReader& reader, const Manifest& manifest,
+                           const fs::path& scratch) {
+    reader.extract_payload(scratch);
+    DependencyOptions opts;
+    opts.payload_search_paths = gather_dirs(scratch);
+    DependencyReport deps =
+        analyze_dependencies(scratch / fs::path(manifest.entrypoint_executable),
+                             opts);
+    BuildReport r = assemble_report(std::move(deps), RuntimeProfile::CorePortable);
+    // Identity and permissions are already shown in the inspection header, so
+    // leave them off the report to avoid duplicating them; keep architectures.
+    if (r.architectures.empty()) r.architectures = manifest.architectures;
+    return r;
+}
+
+// A dedicated, human-first package inspection (DX2). No raw JSON by default —
+// the manifest is shown as fields; `--manifest` dumps it, `--json` the whole
+// structured view. Exit 0 when the package verifies, 3 when it does not.
+int cmd_inspect(const std::vector<std::string>& args) {
+    const Parsed parsed = parse_arguments(args, {"--json", "--manifest"}, {},
+                                          false, kInspectUsage);
+    require_positionals(parsed, 1, kInspectUsage);
+    const fs::path pkg(parsed.positionals[0]);
+    std::error_code ec;
+    if (!fs::is_regular_file(pkg, ec)) {
+        throw NotFoundError("no such package file: " + pkg.string());
+    }
+
+    const PackageReader reader(pkg);
+    const Manifest manifest = Manifest::parse(reader.read_entry("lexe.json"));
+    const VerificationReport vr =
+        verify_package(pkg, /*check_architecture=*/false);
+    const Fingerprint fp = key_fingerprint(manifest.decoded_public_key());
+    const std::string pkg_sha = crypto::sha256_file_hex(pkg);
+    const auto file_size = static_cast<std::uint64_t>(fs::file_size(pkg, ec));
+
+    if (parsed.flags.count("--manifest") != 0) { // the explicit raw-JSON path
+        std::cout << manifest_json(manifest).dump(2) << "\n";
+        return vr.ok() ? 0 : 3;
+    }
+
+    // Scratch extraction for the dependency/compatibility/Tux32 analysis.
+    const fs::path scratch =
+        fs::temp_directory_path() / ("lexe-inspect-" + pkg_sha.substr(0, 16));
+    fs::remove_all(scratch, ec);
+    fs::create_directories(scratch, ec);
+    struct Scratch {
+        fs::path p;
+        ~Scratch() {
+            std::error_code e;
+            fs::remove_all(p, e);
+        }
+    } scratch_guard{scratch};
+    BuildReport report;
+    std::string analysis_error;
+    try {
+        report = inspect_report(reader, manifest, scratch);
+    } catch (const Error& e) {
+        analysis_error = e.what();
+    }
+
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json j;
+        j["package"] = {{"path", pkg.string()},
+                        {"fileSize", file_size},
+                        {"payloadSize", payload_size(reader)},
+                        {"sha256", pkg_sha}};
+        j["application"] = {{"name", manifest.name},
+                            {"id", manifest.id},
+                            {"version", manifest.version}};
+        j["publisher"] = {
+            {"name", manifest.publisher_name},
+            {"key", manifest.publisher_public_key},
+            {"fingerprint",
+             {{"full", fp.full}, {"grouped", fp.grouped}, {"short", fp.short_id}}},
+            {"identityVerified", false}};
+        j["architectures"] = manifest.architectures;
+        j["permissions"] = manifest.permissions;
+        ordered_json stages = ordered_json::array();
+        for (const VerificationStage& s : vr.stages) {
+            stages.push_back(
+                {{"name", s.name}, {"ok", s.ok}, {"detail", s.detail}});
+        }
+        j["verification"] = {{"ok", vr.ok()}, {"stages", std::move(stages)}};
+        if (analysis_error.empty()) {
+            j["report"] = build_report_json(report);
+        } else {
+            j["analysisError"] = analysis_error;
+        }
+        j["manifest"] = manifest_json(manifest);
+        std::cout << j.dump(2) << "\n";
+        return vr.ok() ? 0 : 3;
+    }
+
+    // ---- human, formatted ----
+    std::cout << "Package: " << pkg.string() << " (" << format_size(file_size)
+              << ")\n\n";
+    print_manifest_info(manifest, display_size(manifest, reader));
+    std::cout << "\n";
+    print_kv("Signing key:", fp.grouped);
+    std::cout << "  (a valid signature proves consistency with this key, not the "
+                 "publisher's real-world identity)\n";
+    print_kv("Verification:",
+             vr.ok() ? "PASSED — all checks succeeded"
+                     : std::string("FAILED — ") +
+                           (vr.first_failure() != nullptr
+                                ? vr.first_failure()->name + ": " +
+                                      vr.first_failure()->detail
+                                : std::string("see `lexe verify`")));
+    print_kv("Checksum:", "sha256:" + pkg_sha);
+
+    // Permissions, explained (human titles; enforcement detail is shown at
+    // install time, where the isolation backend is probed).
+    if (!manifest.permissions.empty()) {
+        std::cout << "\nPermissions:\n";
+        for (const std::string& id : manifest.permissions) {
+            std::cout << "  - " << presentation::describe_permission(id) << "\n";
+        }
+    }
+
+    // Dependencies / compatibility / Tux32 — the shared build report.
+    std::cout << "\n";
+    if (analysis_error.empty()) {
+        std::cout << render_build_report_text(report);
+    } else {
+        std::cout << "Dependency analysis unavailable: " << analysis_error
+                  << "\n";
+    }
+    return vr.ok() ? 0 : 3;
+}
+
 int cmd_verify(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {"--json"}, {}, false, kVerifyUsage);
@@ -1647,6 +1783,8 @@ std::string usage_text() {
            "applications\n"
            "  info <file.lexe | id> [--json]           show package or "
            "application details\n"
+           "  inspect <file.lexe> [--json|--manifest]  inspect a package in "
+           "full (identity, deps, checks)\n"
            "  update <id> | --all [--check]            apply (or check for) "
            "updates\n"
            "  rollback <id>                            return to the previous "
@@ -1723,6 +1861,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "remove") return cmd_remove(rest);
     if (command == "repair") return cmd_repair(rest);
     if (command == "info") return cmd_info(rest);
+    if (command == "inspect") return cmd_inspect(rest);
     if (command == "analyze") return cmd_analyze(rest);
     if (command == "sdk") return cmd_sdk(rest);
     if (command == "verify") return cmd_verify(rest);
