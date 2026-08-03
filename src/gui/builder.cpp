@@ -38,12 +38,14 @@
 #include "core/depengine.hpp"
 #include "core/elf.hpp"
 #include "core/runtime_profile.hpp"
+#include "core/tux32.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -407,6 +409,72 @@ inline SourceDetection detect_source(const std::filesystem::path& folder) {
     return d;
 }
 
+/// The Build gate for a chosen runtime profile, given the analyzed source.
+/// Core Portable is HARD-gated on Tux32 Core 1: a non-conformant dependency
+/// closure BLOCKS the build (build_allowed=false), because Core Portable is the
+/// profile that makes a cross-distribution portability claim. Forward Runtime
+/// and Native Capture always allow the build but are clearly labeled — forward
+/// compatibility is advisory, and native capture is explicitly host-locked.
+struct ProfileGate {
+    bool build_allowed = true; // may the Build proceed?
+    bool blocking = false;     // Build is disabled because of a hard failure
+    std::string headline;      // one-line status
+    std::string detail;        // human explanation
+    std::vector<std::string> notes;         // advisory lines to surface
+    std::optional<Core1VerifyResult> core1; // set for Core Portable only
+};
+
+inline ProfileGate evaluate_profile_gate(RuntimeProfile profile,
+                                         const DependencyReport& deps) {
+    ProfileGate g;
+    const RuntimeProfileInfo& info = runtime_profile_info(profile);
+    switch (profile) {
+    case RuntimeProfile::CorePortable: {
+        const Core1VerifyResult r = verify_against_profile(deps, tux32_core_1());
+        g.core1 = r;
+        g.build_allowed = r.conformant();
+        g.blocking = !r.conformant();
+        g.detail = r.detail;
+        g.headline = r.conformant()
+                         ? "Core Portable — conformant with Tux32 " + r.profile_id
+                         : "Core Portable — NOT conformant (" +
+                               std::string(to_string(r.verdict)) + ")";
+        for (const Core1Offender& o : r.symbol_offenders) {
+            g.notes.push_back(o.object + " requires " + o.version +
+                              " — above the " + r.glibc_ceiling + " ceiling");
+        }
+        for (const std::string& s : r.forbidden) {
+            g.notes.push_back("forbidden host interface: " + s +
+                              " (must be host-provided, not bundled)");
+        }
+        for (const std::string& s : r.unresolved) {
+            g.notes.push_back("unresolved dependency: " + s +
+                              " (bundle it or confirm the host provides it)");
+        }
+        for (const std::string& n : r.notes) g.notes.push_back(n);
+        break;
+    }
+    case RuntimeProfile::ForwardRuntime:
+        g.build_allowed = true;
+        g.headline = info.name + " — targets this host's runtime forward";
+        g.detail = "The package targets the build host's runtime and newer "
+                   "hosts. It is not guaranteed on hosts older than this one and "
+                   "makes no Core Portable claim.";
+        g.notes.push_back("Not verified against the Tux32 Core 1 ceiling — pick "
+                          "Core Portable for the widest reach.");
+        break;
+    case RuntimeProfile::NativeCapture:
+        g.build_allowed = true;
+        g.headline = info.name + " — host-locked (not portable)";
+        g.detail = "The package captures this host's environment and targets "
+                   "matching hosts only. It makes no portability claim.";
+        g.notes.push_back(
+            "Native Capture is not cross-distribution portable by design.");
+        break;
+    }
+    return g;
+}
+
 } // namespace lexe::gui
 // ===========================================================================
 // GTK 3 wizard (Phase 2 / DX1). A seven-step "Publish"-style flow: Source →
@@ -745,6 +813,7 @@ void run_detection(BuilderState* st) {
 void refresh_build_summary(BuilderState* st) {
     st->form = gather_form(st);
     const lexe::gui::ValidationResult v = lexe::gui::validate_form(st->form);
+    bool allow = v.ok;
     std::string text;
     if (!v.ok) {
         text = "Please fix before building:\n  " + v.error;
@@ -767,10 +836,25 @@ void refresh_build_summary(BuilderState* st) {
                 "\n";
         text += "  Dependencies: " +
                 std::to_string(st->detection.dependencies.dependencies.size()) +
-                " analyzed";
+                " analyzed\n";
+
+        // Profile gate: Core Portable is hard-gated on Tux32 Core 1; other
+        // profiles are allowed but labeled. A blocking gate disables Build.
+        const lexe::gui::ProfileGate gate = lexe::gui::evaluate_profile_gate(
+            st->form.profile, st->detection.dependencies);
+        allow = gate.build_allowed;
+        text += "\n  " + std::string(gate.blocking ? "\xE2\x9C\x97 " : "\xE2\x80\xA2 ") +
+                gate.headline + "\n";
+        text += "  " + gate.detail + "\n";
+        for (const std::string& n : gate.notes) text += "    ! " + n + "\n";
+        if (gate.blocking) {
+            text += "\n  Build is disabled: this source does not satisfy the "
+                    "Core Portable contract. Fix the items above, or choose a "
+                    "different runtime profile (Step 3).";
+        }
     }
     gtk_label_set_text(GTK_LABEL(st->build_summary), text.c_str());
-    gtk_widget_set_sensitive(st->next_button, v.ok ? TRUE : FALSE);
+    gtk_widget_set_sensitive(st->next_button, allow ? TRUE : FALSE);
 }
 
 gboolean on_build_finished(gpointer user_data);

@@ -15,6 +15,12 @@ BuildReport assemble_report(DependencyReport deps, RuntimeProfile profile) {
     r.profile_assessment = assess_profile(profile, deps);
     r.compatibility = analyze_compatibility(deps);
     r.dependencies = std::move(deps);
+    // Core Portable is the profile that claims cross-distribution portability,
+    // so it — and only it — is verified against the Tux32 Core 1 contract. The
+    // build host must not silently become the compatibility target.
+    if (profile == RuntimeProfile::CorePortable) {
+        r.core1 = verify_against_profile(r.dependencies, tux32_core_1());
+    }
     return r;
 }
 
@@ -64,6 +70,19 @@ std::string render_build_report_text(const BuildReport& r) {
     }
     os << "Runtime profile: " << pinfo.name << " (" << pinfo.portability
        << " portability)\n";
+
+    if (r.core1.has_value()) {
+        const Core1VerifyResult& c = *r.core1;
+        os << "Tux32 " << c.profile_id << ": " << to_string(c.verdict);
+        if (!c.required_glibc.empty()) {
+            os << " (needs glibc " << c.required_glibc << ", ceiling "
+               << c.glibc_ceiling << ")";
+        }
+        os << "\n                 " << c.detail << "\n";
+        for (const Core1Offender& o : c.symbol_offenders) {
+            os << "    ! " << o.object << " requires " << o.version << "\n";
+        }
+    }
 
     const DependencyReport& d = r.dependencies;
     os << "Dependencies:    " << d.dependencies.size() << " total — "
@@ -148,6 +167,25 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
         {"claimsPortability", r.profile_assessment.claims_portability},
         {"warnings", r.profile_assessment.warnings},
         {"notes", r.profile_assessment.notes}};
+
+    if (r.core1.has_value()) {
+        const Core1VerifyResult& c = *r.core1;
+        ordered_json offenders = ordered_json::array();
+        for (const Core1Offender& o : c.symbol_offenders) {
+            offenders.push_back({{"object", o.object}, {"version", o.version}});
+        }
+        j["tux32"] = {
+            {"profile", c.profile_id},
+            {"verdict", to_string(c.verdict)},
+            {"conformant", c.conformant()},
+            {"glibcCeiling", c.glibc_ceiling},
+            {"requiredGlibc", c.required_glibc},
+            {"symbolOffenders", std::move(offenders)},
+            {"forbidden", c.forbidden},
+            {"unresolved", c.unresolved},
+            {"detail", c.detail},
+        };
+    }
 
     ordered_json targets = ordered_json::array();
     for (const TargetCompat& t : r.compatibility.targets) {

@@ -296,4 +296,58 @@ TEST_CASE("build_manifest_json emits categories, estimatedSize and description")
     CHECK(contains(json, "A tidy little tool."));
 }
 
+// ------------------------------------------------- Core Portable build gate
+
+// A dynamically linked x86_64 dependency report needing `glibc`, plus libc.
+lexe::DependencyReport gate_source(const std::string& glibc) {
+    lexe::DependencyReport r;
+    r.root_info.is_elf = true;
+    r.root_info.has_interpreter = true;
+    r.root_info.is_dynamic = true;
+    r.root_info.machine = lexe::elf::Machine::X86_64;
+    r.root_info.version_needs = {glibc};
+    lexe::Dependency host;
+    host.soname = "libc.so.6";
+    host.kind = lexe::DependencyKind::HostInterface;
+    r.dependencies = {host};
+    return r;
+}
+
+TEST_CASE("Core Portable gate allows a conformant source and blocks an over-ceiling one") {
+    const lexe::gui::ProfileGate ok = lexe::gui::evaluate_profile_gate(
+        lexe::RuntimeProfile::CorePortable, gate_source("GLIBC_2.17"));
+    CHECK(ok.build_allowed);
+    CHECK_FALSE(ok.blocking);
+    REQUIRE(ok.core1.has_value());
+    CHECK(ok.core1->verdict == lexe::Core1Verdict::Conformant);
+    CHECK(contains(ok.headline, "conformant"));
+
+    const lexe::gui::ProfileGate bad = lexe::gui::evaluate_profile_gate(
+        lexe::RuntimeProfile::CorePortable, gate_source("GLIBC_2.34"));
+    CHECK_FALSE(bad.build_allowed); // Build is disabled
+    CHECK(bad.blocking);
+    CHECK(contains(bad.headline, "NOT conformant"));
+    // The exact offender is surfaced to the developer.
+    bool named = false;
+    for (const std::string& n : bad.notes) {
+        if (contains(n, "GLIBC_2.34")) named = true;
+    }
+    CHECK(named);
+}
+
+TEST_CASE("Forward Runtime and Native Capture always build but carry no Core 1 gate") {
+    const lexe::gui::ProfileGate fwd = lexe::gui::evaluate_profile_gate(
+        lexe::RuntimeProfile::ForwardRuntime, gate_source("GLIBC_2.34"));
+    CHECK(fwd.build_allowed); // an over-ceiling source still builds here
+    CHECK_FALSE(fwd.blocking);
+    CHECK_FALSE(fwd.core1.has_value());
+    CHECK_FALSE(fwd.notes.empty()); // but it is advised to prefer Core Portable
+
+    const lexe::gui::ProfileGate nat = lexe::gui::evaluate_profile_gate(
+        lexe::RuntimeProfile::NativeCapture, gate_source("GLIBC_2.34"));
+    CHECK(nat.build_allowed);
+    CHECK_FALSE(nat.core1.has_value());
+    CHECK(contains(nat.headline, "host-locked"));
+}
+
 } // TEST_SUITE("builder")

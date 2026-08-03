@@ -80,4 +80,55 @@ TEST_CASE("a bare-binary report omits the identity block") {
     CHECK_FALSE(r.profile_assessment.claims_portability);
 }
 
+// A dynamically linked x86_64 root with the given glibc need.
+DependencyReport dyn_root(const std::string& glibc_need) {
+    DependencyReport deps;
+    deps.root_info.is_elf = true;
+    deps.root_info.has_interpreter = true;
+    deps.root_info.is_dynamic = true;
+    deps.root_info.machine = elf::Machine::X86_64;
+    deps.root_info.version_needs = {glibc_need};
+    deps.dependencies = {dep("libc.so.6", DependencyKind::HostInterface)};
+    return deps;
+}
+
+TEST_CASE("Core Portable reports attach a Tux32 Core 1 verdict; others do not") {
+    SUBCASE("conformant Core Portable") {
+        const BuildReport r =
+            assemble_report(dyn_root("GLIBC_2.17"), RuntimeProfile::CorePortable);
+        REQUIRE(r.core1.has_value());
+        CHECK(r.core1->verdict == Core1Verdict::Conformant);
+        const std::string text = render_build_report_text(r);
+        CHECK(has(text, "Tux32 tux32-core-1: conformant"));
+        const nlohmann::ordered_json j = build_report_json(r);
+        CHECK(j.at("tux32").at("verdict") == "conformant");
+        CHECK(j.at("tux32").at("conformant") == true);
+    }
+    SUBCASE("non-conformant Core Portable names the offender") {
+        const BuildReport r =
+            assemble_report(dyn_root("GLIBC_2.34"), RuntimeProfile::CorePortable);
+        REQUIRE(r.core1.has_value());
+        CHECK(r.core1->verdict == Core1Verdict::SymbolCeilingExceeded);
+        const std::string text = render_build_report_text(r);
+        CHECK(has(text, "symbol-ceiling-exceeded"));
+        CHECK(has(text, "GLIBC_2.34"));
+        const nlohmann::ordered_json j = build_report_json(r);
+        CHECK(j.at("tux32").at("requiredGlibc") == "2.34");
+        CHECK(j.at("tux32").at("symbolOffenders").size() == 1);
+    }
+    SUBCASE("Forward Runtime carries no Tux32 verdict") {
+        const BuildReport r = assemble_report(dyn_root("GLIBC_2.34"),
+                                              RuntimeProfile::ForwardRuntime);
+        CHECK_FALSE(r.core1.has_value());
+        CHECK_FALSE(has(render_build_report_text(r), "Tux32"));
+        const nlohmann::ordered_json j = build_report_json(r);
+        CHECK(j.find("tux32") == j.end());
+    }
+    SUBCASE("Native Capture carries no Tux32 verdict") {
+        const BuildReport r = assemble_report(dyn_root("GLIBC_2.34"),
+                                              RuntimeProfile::NativeCapture);
+        CHECK_FALSE(r.core1.has_value());
+    }
+}
+
 } // TEST_SUITE("buildreport")

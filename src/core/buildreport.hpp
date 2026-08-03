@@ -9,11 +9,13 @@
 #include "core/compat.hpp"
 #include "core/depengine.hpp"
 #include "core/runtime_profile.hpp"
+#include "core/tux32.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,10 @@ struct BuildReport {
     DependencyReport dependencies;
     ProfileAssessment profile_assessment;
     CompatibilityReport compatibility;
+    // Tux32 Core 1 verification — populated ONLY when the target profile is Core
+    // Portable (the profile that makes a cross-distribution portability claim).
+    // Its typed verdict is the authoritative gate for that claim.
+    std::optional<Core1VerifyResult> core1;
 
     // --- output (optional; set after a real build) ---
     std::filesystem::path output_package;
