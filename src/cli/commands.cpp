@@ -874,6 +874,36 @@ int cmd_version(const std::vector<std::string>& args) {
     return 0;
 }
 
+constexpr const char* kCompletionUsage = "usage: lexe completion [bash]";
+
+// Shell-completion groundwork (DX6): emit a minimal, dependency-free bash
+// completion for the top-level commands. `source <(lexe completion bash)`.
+int cmd_completion(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {}, false, kCompletionUsage);
+    const std::string shell =
+        parsed.positionals.empty() ? "bash" : parsed.positionals[0];
+    if (shell != "bash") {
+        throw UsageError("unsupported shell \"" + shell +
+                         "\" (supported: bash)\n" + kCompletionUsage);
+    }
+    std::cout <<
+        "# lexe bash completion. Load it with:\n"
+        "#   source <(lexe completion bash)\n"
+        "_lexe() {\n"
+        "  local cur cmds\n"
+        "  cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
+        "  cmds=\"install run list info inspect update rollback repair remove gc \\\n"
+        "        build analyze sdk pack keygen sign-update verify trust source \\\n"
+        "        apps config integrate completion version help\"\n"
+        "  if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
+        "    COMPREPLY=( $(compgen -W \"$cmds\" -- \"$cur\") )\n"
+        "  fi\n"
+        "}\n"
+        "complete -F _lexe lexe\n";
+    return 0;
+}
+
 int cmd_sdk(const std::vector<std::string>& args) {
     if (args.empty()) throw UsageError(kSdkUsage);
     const std::string& sub = args[0];
@@ -1605,56 +1635,72 @@ const char* banner_text() {
 std::string usage_text() {
     return std::string(banner_text()) +
            "\n"
-           "usage: lexe <command> [arguments]\n"
+           "usage: lexe <command> [arguments]        (run a command with no "
+           "arguments to see its usage)\n"
            "\n"
-           "commands:\n"
-           "  install <file.lexe> [--yes] [--channel <c>]  verify and install "
-           "a package\n"
-           "  run <id> [-- <args...>]                      launch an installed "
-           "application\n"
-           "  update <id> | --all [--check]                apply (or check "
-           "for) updates\n"
-           "  remove <id> [--remove-cache] [--purge-data] [--yes]\n"
-           "                                               uninstall an "
-           "application\n"
-           "  repair <id>                                  verify and repair "
-           "installed files\n"
-           "  info <file.lexe | id> [--json]               show package or "
-           "application details\n"
-           "  analyze <binary | dir> [--json] [--profile <p>]\n"
-           "                                               inspect dependencies "
-           "and runtime compatibility\n"
-           "  sdk verify <binary | dir> [--json]           check Tux32 Core 1 "
-           "portability (typed verdict/exit)\n"
-           "  verify <file.lexe> [--json]                  run the "
-           "verification pipeline\n"
-           "  source set <id> <url>                        set the update "
-           "source\n"
-           "  rollback <id>                                return to the "
-           "previous version\n"
-           "  gc <id> [--keep <n>]                         reclaim old "
-           "versions (keeps active + n)\n"
-           "  trust show|block|unblock|forget <id>         inspect or set "
-           "local publisher trust\n"
-           "  list [--json]                                list installed "
-           "applications\n"
-           "  keygen <keyfile.json>                        generate a signing "
-           "keypair\n"
-           "  pack <source-dir> --manifest <lexe.json> --key <keyfile.json> "
-           "-o <out.lexe>\n"
-           "       [--icons <dir>] [--metadata <dir>]      build a signed "
+           "Applications\n"
+           "  install <file.lexe> [--yes] [--trust]    verify and install a "
            "package\n"
+           "  run <id> [-- <args...>]                  launch an installed "
+           "application (sandboxed)\n"
+           "  list [--json]                            list installed "
+           "applications\n"
+           "  info <file.lexe | id> [--json]           show package or "
+           "application details\n"
+           "  update <id> | --all [--check]            apply (or check for) "
+           "updates\n"
+           "  rollback <id>                            return to the previous "
+           "version\n"
+           "  repair <id>                              verify and repair "
+           "installed files\n"
+           "  remove <id> [--purge-data] [--yes]       uninstall an "
+           "application\n"
+           "  gc <id> [--keep <n>]                     reclaim old versions "
+           "(keeps active + n)\n"
+           "\n"
+           "Developer\n"
            "  build <project-dir> [-o <out.lexe>] [--key <keyfile.json>]\n"
-           "                                               build a .lexe from a "
-           "project folder (lexe.json + payload/)\n"
+           "                                           build a signed .lexe from "
+           "a project folder\n"
+           "  analyze <binary | dir> [--json] [--profile <p>]\n"
+           "                                           inspect dependencies and "
+           "runtime compatibility\n"
+           "  sdk verify <binary | dir> [--json]       check Tux32 Core 1 "
+           "portability (typed verdict/exit)\n"
+           "  pack <source-dir> --manifest <m> --key <k> -o <out.lexe>\n"
+           "                                           build a signed package "
+           "(low-level)\n"
+           "  keygen <keyfile.json>                    generate a signing "
+           "keypair\n"
            "  sign-update <update.json> --key <keyfile.json>\n"
-           "                                               sign an update "
-           "manifest (writes <update.json>.sig)\n"
-           "  integrate                                    register .lexe "
-           "handling for the runtime\n"
-           "  version [--json]                             show runtime, format "
-           "and Tux32 versions\n"
-           "  help                                         show this help\n";
+           "                                           sign an update manifest "
+           "(writes <update.json>.sig)\n"
+           "\n"
+           "Trust & verification\n"
+           "  verify <file.lexe> [--json]              run the verification "
+           "pipeline\n"
+           "  trust show|block|unblock|forget <id>     inspect or set local "
+           "publisher trust\n"
+           "  source set <id> <url>                    set the update source\n"
+           "\n"
+           "System\n"
+           "  integrate                                register .lexe handling "
+           "for the runtime\n"
+           "  completion [bash]                        print a shell-completion "
+           "script\n"
+           "  version [--json]                         show runtime, format and "
+           "Tux32 versions\n"
+           "  help                                     show this help\n"
+           "\n"
+           "Examples\n"
+           "  lexe install ./app.lexe        install a package (shows what it is "
+           "and asks first)\n"
+           "  lexe run com.example.app       launch it under the sandbox\n"
+           "  lexe build ./my-project        package a project folder into a "
+           "signed .lexe\n"
+           "  lexe sdk verify ./my-app       check Tux32 Core 1 portability\n"
+           "\n"
+           "Learn more: docs/TUTORIAL.md and docs/README.md\n";
 }
 
 int dispatch(const std::vector<std::string>& args) {
@@ -1690,6 +1736,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "build") return cmd_build(rest);
     if (command == "sign-update") return cmd_sign_update(rest);
     if (command == "integrate") return cmd_integrate(rest);
+    if (command == "completion") return cmd_completion(rest);
 
     throw UsageError("unknown command \"" + command + "\"\n" + usage_text());
 }

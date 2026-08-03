@@ -352,9 +352,11 @@ InstallResult Installer::install(const fs::path& lexe_file,
                 added += id;
             }
             throw PermissionError(
-                "update to " + manifest.id + " " + manifest.version +
-                " requests new permissions not previously approved: " + added +
-                ". Re-run with explicit permission approval to grant them.");
+                manifest.name + " " + manifest.version +
+                " requests additional permissions compared to the version you "
+                "previously approved: " + added +
+                ". Review the new permissions before continuing, then re-run "
+                "with --accept-permissions to grant them.");
         }
     }
 
