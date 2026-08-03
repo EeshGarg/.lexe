@@ -68,8 +68,21 @@ TEST_CASE("completion emits a sourceable bash script") {
     CHECK(has(r.stdout_text, "compgen"));
 }
 
+TEST_CASE("completion offers subcommands for grouped commands") {
+    const std::string s = run({"completion", "bash"}).stdout_text;
+    CHECK(has(s, "verify"));                  // sdk verify
+    CHECK(has(s, "show block unblock forget")); // trust
+    CHECK(has(s, "list get set reset path"));   // config
+}
+
 TEST_CASE("completion rejects an unsupported shell as a usage error") {
     CHECK(run({"completion", "zsh"}).exit_code == 2);
+}
+
+TEST_CASE("a mistyped command is a usage error (with a suggestion on stderr)") {
+    // The suggestion text goes to stderr; here we assert the typed exit code.
+    CHECK(run({"instal"}).exit_code == 2);
+    CHECK(run({"aps"}).exit_code == 2);
 }
 
 TEST_CASE("an unknown command is a usage error (exit 2)") {

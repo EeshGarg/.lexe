@@ -879,6 +879,46 @@ constexpr const char* kCompletionUsage = "usage: lexe completion [bash]";
 
 // Shell-completion groundwork (DX6): emit a minimal, dependency-free bash
 // completion for the top-level commands. `source <(lexe completion bash)`.
+// The full top-level command surface — the single source of truth for the shell
+// completion word list and the "did you mean" suggester.
+const std::vector<std::string>& known_commands() {
+    static const std::vector<std::string> k = {
+        "install", "run",  "list",   "apps",        "info",      "inspect",
+        "update",  "rollback", "repair", "remove",  "gc",        "build",
+        "analyze", "sdk",  "pack",   "keygen",      "sign-update", "verify",
+        "trust",   "source", "config", "integrate", "completion", "version",
+        "help"};
+    return k;
+}
+
+// Levenshtein distance (small strings only; used for typo suggestions).
+std::size_t edit_distance(const std::string& a, const std::string& b) {
+    std::vector<std::size_t> prev(b.size() + 1), cur(b.size() + 1);
+    for (std::size_t j = 0; j <= b.size(); ++j) prev[j] = j;
+    for (std::size_t i = 1; i <= a.size(); ++i) {
+        cur[0] = i;
+        for (std::size_t j = 1; j <= b.size(); ++j) {
+            const std::size_t cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost});
+        }
+        std::swap(prev, cur);
+    }
+    return prev[b.size()];
+}
+
+// The closest known command to `input`, or "" if none is within edit distance 2.
+std::string suggest_command(const std::string& input) {
+    std::string best;
+    std::size_t best_d = 3;
+    for (const std::string& c : known_commands()) {
+        if (const std::size_t d = edit_distance(input, c); d < best_d) {
+            best_d = d;
+            best = c;
+        }
+    }
+    return best;
+}
+
 int cmd_completion(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {}, {}, false, kCompletionUsage);
@@ -888,18 +928,25 @@ int cmd_completion(const std::vector<std::string>& args) {
         throw UsageError("unsupported shell \"" + shell +
                          "\" (supported: bash)\n" + kCompletionUsage);
     }
+    std::string cmds;
+    for (const std::string& c : known_commands()) {
+        cmds += (cmds.empty() ? "" : " ") + c;
+    }
     std::cout <<
         "# lexe bash completion. Load it with:\n"
         "#   source <(lexe completion bash)\n"
         "_lexe() {\n"
-        "  local cur cmds\n"
+        "  local cur\n"
         "  cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
-        "  cmds=\"install run list info inspect update rollback repair remove gc \\\n"
-        "        build analyze sdk pack keygen sign-update verify trust source \\\n"
-        "        apps config integrate completion version help\"\n"
         "  if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
-        "    COMPREPLY=( $(compgen -W \"$cmds\" -- \"$cur\") )\n"
+        "    COMPREPLY=( $(compgen -W \"" + cmds + "\" -- \"$cur\") ); return\n"
         "  fi\n"
+        "  case \"${COMP_WORDS[1]}\" in\n"
+        "    sdk)    COMPREPLY=( $(compgen -W \"verify\" -- \"$cur\") );;\n"
+        "    trust)  COMPREPLY=( $(compgen -W \"show block unblock forget\" -- \"$cur\") );;\n"
+        "    config) COMPREPLY=( $(compgen -W \"list get set reset path\" -- \"$cur\") );;\n"
+        "    source) COMPREPLY=( $(compgen -W \"set\" -- \"$cur\") );;\n"
+        "  esac\n"
         "}\n"
         "complete -F _lexe lexe\n";
     return 0;
@@ -2063,7 +2110,11 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "config") return cmd_config(rest);
     if (command == "completion") return cmd_completion(rest);
 
-    throw UsageError("unknown command \"" + command + "\"\n" + usage_text());
+    std::string msg = "unknown command \"" + command + "\"";
+    if (const std::string s = suggest_command(command); !s.empty()) {
+        msg += " — did you mean \"" + s + "\"?";
+    }
+    throw UsageError(msg + "\n\n" + usage_text());
 }
 
 } // namespace lexe::cli
