@@ -31,7 +31,21 @@ mime_dir="$data_home/mime"
 
 binaries=(lexe lexe-installer lexe-builder)
 
+# --------------------------------------------------------------- presentation
+step_total=4
+step() { printf '\n[%d/%d] %s\n' "$1" "$step_total" "$2"; }
+ok()   { printf '   ok  %s\n' "$1"; }
+
+cat <<'BANNER'
+      __
+     / /__  _  _____
+    / / _ \| |/_/ _ \
+   / /  __/>  </  __/
+  /_/\___/_/|_|\___/   installing the .lexe runtime (per-user, no root)
+BANNER
+
 # ------------------------------------------------------------------- checks
+step 1 "Checking the build"
 if [ ! -d "$build_dir" ]; then
     echo "error: build directory not found: $build_dir" >&2
     echo "       build the runtime first, e.g.:" >&2
@@ -65,29 +79,32 @@ if command -v ldconfig >/dev/null 2>&1; then
 fi
 
 # ------------------------------------------------------------ install binaries
+step 2 "Installing binaries to $bin_dir"
 mkdir -p "$bin_dir"
 for bin in "${binaries[@]}"; do
     cp -f "$build_dir/$bin" "$bin_dir/$bin"
     chmod +x "$bin_dir/$bin"
-    echo "installed $bin_dir/$bin"
+    ok "$bin"
 done
 
 # --------------------------------------------------------- desktop + MIME wiring
+step 3 "Registering desktop integration"
 mkdir -p "$applications_dir" "$mime_packages_dir"
 
 cp -f "$script_dir/lexe-installer.desktop" \
     "$applications_dir/lexe-installer.desktop"
-echo "installed $applications_dir/lexe-installer.desktop"
+ok "lexe-installer.desktop"
 
 cp -f "$script_dir/lexe-builder.desktop" \
     "$applications_dir/lexe-builder.desktop"
-echo "installed $applications_dir/lexe-builder.desktop"
+ok "lexe-builder.desktop"
 
 cp -f "$script_dir/application-x-lexe.xml" \
     "$mime_packages_dir/application-x-lexe.xml"
-echo "installed $mime_packages_dir/application-x-lexe.xml"
+ok "application/x-lexe MIME type"
 
 # Refresh the shared databases (best-effort: absent tools are not an error).
+step 4 "Refreshing the desktop and MIME databases"
 if command -v update-mime-database >/dev/null 2>&1; then
     update-mime-database "$mime_dir" || true
 fi
@@ -104,30 +121,22 @@ else
 fi
 
 # ------------------------------------------------------------------ next steps
-cat <<'BANNER'
-
-      __
-     / /__  _  _____
-    / / _ \| |/_/ _ \
-   / /  __/>  </  __/
-  /_/\___/_/|_|\___/
-
-  Linux applications, made simple.
-
-BANNER
-
-echo "Installed:"
-echo "  [ok] Runtime          (lexe)"
-echo "  [ok] Builder          (lexe-builder)"
-echo "  [ok] Installer        (lexe-installer)"
-echo "  [ok] MIME type        (application/x-lexe)"
-echo "  [ok] Desktop handler  (double-click a .lexe file)"
 echo
-echo "Welcome to .lexe."
+echo "Done — the .lexe runtime is installed for $(id -un)."
 echo
-echo "  Build applications:    lexe-builder"
-echo "  Install applications:  lexe install App.lexe"
-echo "  Explore the CLI:       lexe help"
+echo "  Runtime      lexe"
+echo "  Builder      lexe-builder"
+echo "  Installer    lexe-installer   (opens when you double-click a .lexe)"
+echo
+echo "Try it:"
+echo "  Build an app:      lexe-builder"
+echo "  Install an app:    lexe install App.lexe"
+echo "  See what you have: lexe apps"
+echo "  Explore the CLI:   lexe help"
+echo
+echo "Everything installs under your home directory. Nothing needs root, and"
+echo "uninstalling the runtime never removes apps you installed, their data, or"
+echo "your trust records — see packaging/uninstall.sh."
 
 case ":$PATH:" in
     *":$bin_dir:"*) ;;

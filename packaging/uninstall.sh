@@ -19,9 +19,11 @@ binaries=(lexe lexe-installer lexe-builder)
 remove() {
     if [ -e "$1" ]; then
         rm -f "$1"
-        echo "removed $1"
+        echo "   removed $1"
     fi
 }
+
+echo "Removing the .lexe runtime for $(id -un) (per-user; nothing else is touched)…"
 
 # Drop the default-handler association (best-effort) before removing files.
 if command -v xdg-mime >/dev/null 2>&1; then

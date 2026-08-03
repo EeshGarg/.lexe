@@ -285,6 +285,10 @@ struct ViewModel {
     std::vector<std::string> channels;  // Advanced Options channel combo
     int active_channel = 0;             // preselected combo index
     std::string advanced_dirs_text;     // Advanced Options directory summary
+    // Plain-language answer to "where does this go, and can I undo it?"
+    std::string after_install_text =
+        "Installs under your home directory — no root, nothing system-wide. You "
+        "can remove it any time; your data is kept unless you explicitly purge it.";
 };
 
 /// Build the primary-screen view model. `eval` is the local trust evaluation
@@ -329,6 +333,10 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
         vm.permissions_text = format_permissions(m.permissions, caps);
         vm.permission_delta_text = format_permission_delta(delta);
         vm.install_text = format_install(m.install_scope, m.install_estimated_size);
+        vm.after_install_text =
+            "Installs under your home directory — no root, nothing system-wide.\n"
+            "Remove it any time with:  lexe remove " + m.id + "\n"
+            "Your data is kept unless you also pass --purge-data.";
         vm.updates_text = format_updates(m.updates_enabled, m.updates_manifest_url,
                                          m.updates_channel);
         vm.channels = channel_options(m.updates_channel);
@@ -623,6 +631,7 @@ GtkWidget* build_details_page(AppState* st) {
     add_section(box, "Installation:", vm.install_text);
     add_section(box, "Updates:", vm.updates_text);
     add_section(box, "Isolation on this platform:", vm.isolation_text);
+    add_section(box, "After install:", vm.after_install_text);
 
     // [Advanced Options] — directories used + update channel.
     GtkWidget* expander = gtk_expander_new("Advanced Options");

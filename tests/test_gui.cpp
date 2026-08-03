@@ -301,6 +301,10 @@ TEST_CASE("view model reflects SPEC manifest example fields") {
     CHECK(contains(vm.permissions_text, "Network access"));
     CHECK(contains(vm.permissions_text, "Access to files you select"));
     CHECK(vm.install_text == "Current user only\n126 MB");
+    // "After install:" answers where it goes and how to undo it, by id.
+    CHECK(contains(vm.after_install_text, "home directory"));
+    CHECK(contains(vm.after_install_text, "lexe remove com.example.application"));
+    CHECK(contains(vm.after_install_text, "purge-data"));
     CHECK(vm.verified);
     CHECK(vm.can_install); // first-seen but valid → installable
     CHECK(vm.trust_severity == "caution");
