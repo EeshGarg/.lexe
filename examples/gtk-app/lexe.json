@@ -1,0 +1,21 @@
+{
+  "lexeVersion": "0.1",
+  "id": "org.lexe.examples.gtk-app",
+  "name": "Lexe Example — GTK App",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Lexe Examples",
+    "publicKey": "AUTO"
+  },
+  "applicationType": "native",
+  "architectures": ["x86_64"],
+  "entrypoint": {
+    "executable": "bin/gtk-example",
+    "arguments": []
+  },
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "permissions": []
+}

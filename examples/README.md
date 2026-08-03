@@ -8,9 +8,10 @@ for a Core Portable result.
 
 | Example | Shows |
 |---|---|
-| [cli-tool/](cli-tool/) | A minimal dynamically linked C CLI (reads args, links libm). |
-| [bundled-library/](bundled-library/) | An app that carries its **own** shared library in the payload (RPATH `$ORIGIN/../lib`); the dependency engine classifies it as a *bundle*. |
-| [../sdk/tux32-core-1/reference-app/](../sdk/tux32-core-1/reference-app/) | The reference package: dynamic libm, persistent data/cache/temp, the artifact the portability proof carries across the distribution boundary. |
+| [cli-tool/](cli-tool/) | A minimal dynamically linked C **CLI utility** (reads args, links libm). Verifies conformant. |
+| [bundled-library/](bundled-library/) | An app that carries its **own shared library** in the payload (RPATH `$ORIGIN/../lib`); the dependency engine classifies it as a *bundle*. Verifies conformant. |
+| [gtk-app/](gtk-app/) | A minimal **GTK desktop application** — shows the Core 1 boundary: Core 1 is headless in this Alpha, so `lexe sdk verify` reports a GUI app non-conformant, and GTK's `dlopen`-ed graphics stack illustrates the dlopen limitation. |
+| [../sdk/tux32-core-1/reference-app/](../sdk/tux32-core-1/reference-app/) | The **reference package**: dynamic libm, persistent data/cache/temp — the artifact the portability proof carries across the distribution boundary. |
 
 Each example follows the same flow (see [../docs/TUTORIAL.md](../docs/TUTORIAL.md)):
 
@@ -25,7 +26,7 @@ lexe install cli-tool.lexe --yes --trust
 lexe run org.lexe.examples.cli-tool -- 2 9 16
 ```
 
-**Planned examples** (templates, not yet shipped): a GTK desktop app and a small
-game. Core 1 is headless/terminal, so a GUI app runs GUI-forwarded only in a
-later milestone; these are intentionally out of scope for the Alpha and are
-tracked in the roadmap, not stubbed here.
+A small **game** example is planned but not yet shipped; like `gtk-app` it would
+be a GUI application, which Core 1 does not run in the sandbox in this Alpha
+(headless/terminal only — GUI forwarding is a later milestone), so it is tracked
+in the roadmap rather than stubbed here.
