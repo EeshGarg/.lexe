@@ -112,6 +112,145 @@ std::string req_string(const nlohmann::json& obj, const char* key) {
 
 } // namespace
 
+const char* to_string(Core1Verdict v) {
+    switch (v) {
+    case Core1Verdict::Conformant:              return "conformant";
+    case Core1Verdict::ConformantWithNotes:     return "conformant-with-notes";
+    case Core1Verdict::SymbolCeilingExceeded:   return "symbol-ceiling-exceeded";
+    case Core1Verdict::UnresolvedDependency:    return "unresolved-dependency";
+    case Core1Verdict::ForbiddenDependency:     return "forbidden-dependency";
+    case Core1Verdict::UnsupportedArchitecture: return "unsupported-architecture";
+    case Core1Verdict::UnsupportedExecutable:   return "unsupported-executable";
+    case Core1Verdict::InvalidInput:            return "invalid-input";
+    case Core1Verdict::IncompleteClosure:       return "incomplete-closure";
+    }
+    return "invalid-input";
+}
+
+namespace {
+
+// The highest GLIBC_x.y requirement in a version-need list. Returns false when
+// none is present or parseable.
+bool max_glibc_of(const std::vector<std::string>& needs, int& major, int& minor) {
+    bool any = false;
+    major = -1;
+    minor = -1;
+    for (const std::string& v : needs) {
+        if (v.rfind("GLIBC_", 0) != 0) continue;
+        int mj = 0, mn = 0;
+        if (!parse_glibc_version(v.substr(6), mj, mn)) continue;
+        if (mj > major || (mj == major && mn > minor)) {
+            major = mj;
+            minor = mn;
+        }
+        any = true;
+    }
+    return any && major >= 0;
+}
+
+} // namespace
+
+Core1VerifyResult verify_against_profile(const DependencyReport& deps,
+                                         const Tux32Profile& profile) {
+    Core1VerifyResult r;
+    r.profile_id = profile.id;
+    r.profile_version = profile.spec_version;
+    r.cpu_baseline = profile.cpu_baseline;
+    r.glibc_ceiling = profile.glibc_ceiling();
+    r.selected_executable = deps.root.string();
+    r.architecture = deps.root_info.arch();
+
+    // Bucket the dependency closure by classification.
+    for (const Dependency& d : deps.dependencies) {
+        switch (d.kind) {
+        case DependencyKind::HostInterface:
+            r.host_interfaces.push_back(d.soname);
+            break;
+        case DependencyKind::Bundle:
+            r.bundle_candidates.push_back(d.soname);
+            break;
+        case DependencyKind::Forbidden:
+            r.forbidden.push_back(d.soname);
+            break;
+        case DependencyKind::Unresolved:
+            r.unresolved.push_back(d.soname);
+            break;
+        case DependencyKind::LanguageRuntime:
+            break;
+        }
+    }
+
+    // The PACKAGE's glibc requirement = the executable + every bundled library
+    // (host libraries are supplied by the host and are not the package's need).
+    int req_major = -1, req_minor = -1;
+    const auto consider = [&](const std::string& object,
+                              const std::vector<std::string>& needs) {
+        int mj = 0, mn = 0;
+        if (!max_glibc_of(needs, mj, mn)) return;
+        if (mj > req_major || (mj == req_major && mn > req_minor)) {
+            req_major = mj;
+            req_minor = mn;
+        }
+        if (!profile.within_glibc_ceiling(mj, mn)) {
+            r.symbol_offenders.push_back(
+                {object, "GLIBC_" + std::to_string(mj) + "." + std::to_string(mn)});
+        }
+    };
+    consider("<executable>", deps.root_info.version_needs);
+    for (const Dependency& d : deps.dependencies) {
+        if (d.kind == DependencyKind::Bundle) {
+            consider(d.soname, d.version_needs);
+        }
+    }
+    if (req_major >= 0) {
+        r.required_glibc =
+            std::to_string(req_major) + "." + std::to_string(req_minor);
+    }
+
+    if (!r.unresolved.empty()) {
+        r.notes.push_back("Dependency closure is incomplete: " +
+                          std::to_string(r.unresolved.size()) +
+                          " unresolved soname(s); analysis may be partial.");
+    }
+
+    // Verdict precedence (documented): structural, then symbol ceiling, then
+    // driver passthrough, then closure completeness.
+    if (!deps.root_info.is_elf) {
+        r.verdict = Core1Verdict::InvalidInput;
+        r.detail = "the target is not an analyzable ELF binary.";
+    } else if (!deps.root_info.dynamically_linked()) {
+        r.verdict = Core1Verdict::UnsupportedExecutable;
+        r.detail = "Core 1 requires a dynamically linked ELF executable; this "
+                   "object is not dynamically linked.";
+    } else if (!profile.supports_arch(r.architecture)) {
+        r.verdict = Core1Verdict::UnsupportedArchitecture;
+        r.detail = "architecture \"" +
+                   (r.architecture.empty() ? std::string("unknown")
+                                           : r.architecture) +
+                   "\" is not supported by " + profile.id + ".";
+    } else if (!r.symbol_offenders.empty()) {
+        r.verdict = Core1Verdict::SymbolCeilingExceeded;
+        r.detail = "requires glibc " + r.required_glibc + ", above the Core 1 " +
+                   r.glibc_ceiling +
+                   " ceiling. Rebuild against a Core 1 sysroot (glibc <= " +
+                   r.glibc_ceiling + ").";
+    } else if (!r.forbidden.empty()) {
+        r.verdict = Core1Verdict::ForbiddenDependency;
+        r.detail = "needs host driver/GPU interface(s) that must not be "
+                   "bundled; not Core 1 portable without host passthrough.";
+    } else if (!r.unresolved.empty()) {
+        r.verdict = Core1Verdict::UnresolvedDependency;
+        r.detail = "has unresolved dependency(ies); bundle them or confirm the "
+                   "host provides them.";
+    } else {
+        r.verdict = r.notes.empty() ? Core1Verdict::Conformant
+                                    : Core1Verdict::ConformantWithNotes;
+        r.detail = "satisfies Tux32 " + profile.id + " (glibc <= " +
+                   r.glibc_ceiling + ", " + r.architecture + ", dynamic ELF).";
+    }
+    return r;
+}
+
 Tux32Profile parse_profile_json(std::string_view text) {
     // Strict: duplicate-key rejection + a bounded byte budget.
     const nlohmann::json j =

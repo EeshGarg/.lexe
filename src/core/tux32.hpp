@@ -13,6 +13,8 @@
 // Core 1 is deliberately narrow: dynamically linked ELF, x86-64 only, glibc
 // symbol-version ceiling 2.31 (see docs/TUX32.md for the justification).
 
+#include "core/depengine.hpp"
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -68,5 +70,61 @@ Tux32Profile parse_profile_json(std::string_view text);
 
 /// Parse "2.31" into (major, minor); returns false when absent/unparseable.
 bool parse_glibc_version(const std::string& v, int& major, int& minor);
+
+// ------------------------------------------------------- SDK verification
+
+/// The typed verdict of verifying an application against a Tux32 profile.
+/// Automation must switch on this, never on message text.
+enum class Core1Verdict {
+    Conformant,               // satisfies every Core 1 rule
+    ConformantWithNotes,      // conformant, but with advisory notes
+    SymbolCeilingExceeded,    // requires a glibc symbol newer than the ceiling
+    UnresolvedDependency,     // a DT_NEEDED soname could not be found
+    ForbiddenDependency,      // needs a host driver/GPU interface (not bundlable)
+    UnsupportedArchitecture,  // the executable's arch is not in the profile
+    UnsupportedExecutable,    // not a dynamically linked ELF (Core 1 requires it)
+    InvalidInput,             // the target is not an analyzable ELF binary
+    IncompleteClosure,        // the dependency closure could not be completed
+};
+const char* to_string(Core1Verdict v);
+
+/// The exact object + version that pushed a requirement above the ceiling.
+struct Core1Offender {
+    std::string object;   // "<executable>" or a bundled soname
+    std::string version;  // e.g. "GLIBC_2.34"
+};
+
+/// A complete, typed Core 1 verification result.
+struct Core1VerifyResult {
+    std::string profile_id;
+    std::string profile_version;
+    Core1Verdict verdict = Core1Verdict::InvalidInput;
+
+    std::string selected_executable;  // the analyzed binary
+    std::string architecture;         // the executable's arch ("x86_64" / …)
+    std::string cpu_baseline;         // the profile's CPU baseline
+    std::string glibc_ceiling;        // the profile's ceiling ("2.31")
+    std::string required_glibc;       // the package's highest glibc need ("" none)
+
+    std::vector<Core1Offender> symbol_offenders; // objects above the ceiling
+    std::vector<std::string> bundle_candidates;  // sonames to bundle
+    std::vector<std::string> host_interfaces;    // approved host sonames
+    std::vector<std::string> forbidden;          // forbidden sonames
+    std::vector<std::string> unresolved;         // unresolved sonames
+    std::vector<std::string> notes;              // advisory notes / guidance
+    std::string detail;                          // one-line human summary
+
+    bool conformant() const {
+        return verdict == Core1Verdict::Conformant ||
+               verdict == Core1Verdict::ConformantWithNotes;
+    }
+};
+
+/// Verify a dependency report against a Tux32 profile. Reuses the dependency
+/// engine's already-computed graph — it does NOT re-analyze. Considers the
+/// PACKAGE's requirement (the executable + bundled libraries) against the glibc
+/// ceiling; host-interface libraries are supplied by the host and not counted.
+Core1VerifyResult verify_against_profile(const DependencyReport& deps,
+                                         const Tux32Profile& profile);
 
 } // namespace lexe
