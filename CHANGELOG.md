@@ -113,6 +113,40 @@ than by reading the code:
   window reproduces it 3/3 against a cold Xvfb; both GUIs are clean 8/8 against
   a warm one), so the race no longer fails CI.
 
+### GUI acceptance fixes
+Found by capturing what the GUIs actually render, rather than only checking that
+they render without warnings:
+- **The Installer opened with its primary action off-screen.** The `[Close]
+  [Install]` row was packed at the bottom of the *scrolled* content, so at the
+  default 520x640 window a package with ordinary detail pushed `Install` below
+  the fold — an installer whose install button you had to go looking for. The
+  action bar is now pinned below the scroller and is visible on open.
+- **A line came up highlighted for no reason.** Body labels are selectable so a
+  fingerprint can be copied, and GTK's `gtk-label-select-on-focus` therefore
+  made the first one select all of its text the moment the window opened. Turned
+  off in both GUIs; the labels stay selectable by hand.
+- **"Install size not specified"** where the size is knowable. The Installer
+  showed the manifest's estimate or nothing, while `lexe info` falls back to the
+  real uncompressed payload size. The Installer now applies the same fallback,
+  so the CLI and the GUI cannot disagree about how much space an install takes.
+
+### Test-fidelity fixes
+- **The GUI smoke test was not headless on any Wayland host.** With
+  `WAYLAND_DISPLAY` set — every WSLg session and most current desktops — GTK
+  prefers Wayland and connected to *that*, silently ignoring the virtual X
+  server `xvfb-run` had just created: the test passed while the GUIs rendered on
+  the developer's real desktop. It now unsets `WAYLAND_DISPLAY` and pins
+  `GDK_BACKEND=x11` before anything launches.
+- **The smoke test now asserts each GUI MAPS a window**, not merely that it
+  emitted no warnings — the failure above produced no output at all and passed
+  for exactly that reason. Verified against a negative control (a process that
+  starts and shows nothing now fails the test). CI installs `x11-utils` for the
+  `xwininfo` this needs.
+- The remaining wrong hints were swept: a missing signing key now names
+  `lexe keygen`, an unreachable update source names `lexe source set`, and
+  "no ELF executable found" explains what the command accepts instead of
+  suggesting `lexe apps`.
+
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
 notably: Linux-only isolation (Windows is a build/test host), isolation requires

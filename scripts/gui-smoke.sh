@@ -30,9 +30,20 @@ ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 die() { printf '  \033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
 
 command -v xvfb-run >/dev/null 2>&1 || die "xvfb-run is required (install the xvfb package)"
+command -v xwininfo >/dev/null 2>&1 || die "xwininfo is required (install the x11-utils package)"
 [ -x "$INSTALLER" ] || die "no lexe-installer in $BUILD_DIR (build the GTK GUI first)"
 [ -x "$BUILDER" ]   || die "no lexe-builder in $BUILD_DIR"
 [ -x "$LEXE" ]      || die "no lexe CLI in $BUILD_DIR"
+
+# Force the X11 backend and hide any Wayland display BEFORE anything launches.
+# On a host with a Wayland compositor — every WSLg session, and most current
+# desktops — GTK prefers Wayland and connects to THAT, silently ignoring the
+# virtual X server xvfb-run just created. The test then "passes" while the GUIs
+# render on the developer's real desktop, proving nothing about headless
+# behaviour and putting windows on their screen. Pinning the backend keeps this
+# test genuinely headless wherever it runs.
+unset WAYLAND_DISPLAY
+export GDK_BACKEND=x11
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -65,17 +76,39 @@ smoke() {
     label="$1"; shift
     log="$WORK/$(echo "$label" | tr ' /' '__').log"
     code=0
-    timeout "$TIMEOUT" xvfb-run -a "$@" >"$log" 2>&1 || code=$?
+    # Launch under Xvfb and, from INSIDE that display, wait for the GUI to map a
+    # real toplevel window. Checking only for warnings is not enough: a GUI that
+    # never shows a window, or one that connects to a different display
+    # entirely, emits nothing at all and would "pass" silently.
+    timeout "$TIMEOUT" xvfb-run -a sh -c '
+        "$@" &
+        app=$!
+        i=0
+        while [ "$i" -lt 20 ]; do
+            if xwininfo -root -children 2>/dev/null                  | grep -qE "^ +0x[0-9a-f]+ \"[^\"]+\".*[0-9][0-9][0-9]+x[0-9][0-9][0-9]+"
+            then
+                echo "GUI-SMOKE: mapped a toplevel window"
+                break
+            fi
+            i=$((i + 1))
+            sleep 0.5
+        done
+        wait $app
+    ' sh "$@" >"$log" 2>&1 || code=$?
     if [ "$code" != 124 ] && [ "$code" != 0 ]; then
         echo "---- $label output ----"; sed 's/^/    /' "$log" >&2
         die "$label exited $code (a crash, not a clean render)"
+    fi
+    if ! grep -q "GUI-SMOKE: mapped a toplevel window" "$log"; then
+        echo "---- $label output ----"; sed 's/^/    /' "$log" >&2
+        die "$label never mapped a window on the virtual display"
     fi
     bad=$(offending "$log")
     if [ -n "$bad" ]; then
         echo "---- $label offending lines ----"; printf '%s\n' "$bad" | sed 's/^/    /' >&2
         die "$label emitted GTK/Pango warnings"
     fi
-    ok "$label rendered clean (exit $code, no GTK/Pango warnings)"
+    ok "$label mapped a window and rendered clean (exit $code)"
 }
 
 printf 'Headless GTK smoke test\n  build dir: %s\n  timeout:   %ss\n' \
