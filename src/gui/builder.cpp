@@ -222,6 +222,13 @@ inline std::string build_manifest_json(const BuilderForm& form,
     if (!permissions.empty()) {
         doc["permissions"] = permissions;
     }
+    // Record the profile this build was GATED on. Without it every reader
+    // re-judged the package against Core Portable, so a package deliberately
+    // built as Native Capture — host-locked by definition — came back from
+    // `lexe inspect` as a hard portability failure, from the same runtime whose
+    // Builder had just accepted it. Optional and forward-compatible: older
+    // runtimes ignore the field (FORMAT-0.1 §5).
+    doc["runtimeProfile"] = lexe::to_string(form.profile);
     // Optional freedesktop categories (integration §9).
     if (!form.categories.empty()) {
         nlohmann::ordered_json integration;
@@ -481,6 +488,37 @@ inline ProfileGate evaluate_profile_gate(RuntimeProfile profile,
 
 // --------------------------------------------------- first-run welcome (DX8)
 
+/// A non-blocking warning about a version string, or "" when it is unremarkable.
+///
+/// FORMAT-0.1 §8 orders ANY pair of strings — non-numeric components compare as
+/// byte strings — so no version is invalid and the Builder must not reject one.
+/// But updates require the new version to be strictly GREATER under that order,
+/// and a version whose first component is not a number sorts after every
+/// numeric one, so "release-2" can never be superseded by "3". That is worth
+/// saying before a package ships, not after the first update is refused.
+inline std::string version_advisory(const std::string& version) {
+    if (version.empty()) return "";
+    const std::size_t dot = version.find('.');
+    const std::string first = version.substr(0, dot);
+    const bool numeric =
+        !first.empty() && std::all_of(first.begin(), first.end(), [](char c) {
+            return c >= '0' && c <= '9';
+        });
+    if (!numeric) {
+        return "Version \"" + version +
+               "\" does not start with a number. FORMAT-0.1 §8 sorts "
+               "non-numeric components after numeric ones, so a later numeric "
+               "version can never supersede this one and updates to it will be "
+               "refused as downgrades.";
+    }
+    if (version.find(' ') != std::string::npos) {
+        return "Version \"" + version +
+               "\" contains a space. It is legal, but it orders as text and "
+               "reads badly everywhere it is shown.";
+    }
+    return "";
+}
+
 /// Whether `relative` inside `folder` could plausibly START an application: an
 /// ELF binary, a script with a shebang, or a file carrying an execute bit.
 ///
@@ -706,6 +744,7 @@ struct BuilderState {
     std::string folder;
     lexe::gui::SourceDetection detection;
     bool detection_done = false;
+    std::string detection_error; // worker -> main loop; "" on success
 
     // Captured on Build (main thread) → worker.
     lexe::gui::BuilderForm form;
@@ -881,10 +920,21 @@ void render_dependencies(BuilderState* st) {
     const std::vector<lexe::gui::DependencyRow> rows =
         lexe::gui::dependency_rows(st->detection.dependencies);
     if (rows.empty()) {
-        gtk_box_pack_start(GTK_BOX(st->deps_box),
-                           body_label("No shared-library dependencies were "
-                                      "detected (a static or script app)."),
-                           FALSE, FALSE, 0);
+        // Two very different situations produced the same sentence. An empty
+        // list because nothing was ANALYZED is not evidence of a static or
+        // script app — it means the folder had no runnable executable to read,
+        // which is a problem the developer needs to hear about, not a clean
+        // bill of health.
+        gtk_box_pack_start(
+            GTK_BOX(st->deps_box),
+            body_label(st->detection.ok
+                           ? "No shared-library dependencies — this executable "
+                             "is statically linked, or it is a script."
+                           : "Nothing was analyzed: no runnable executable was "
+                             "found in this folder, so its dependencies are "
+                             "unknown. Choose a folder containing your compiled "
+                             "application."),
+            FALSE, FALSE, 0);
     }
     for (const lexe::gui::DependencyRow& row : rows) {
         GtkWidget* frame = gtk_frame_new(nullptr);
@@ -912,9 +962,48 @@ void render_dependencies(BuilderState* st) {
     gtk_widget_show_all(st->deps_box);
 }
 
-/// Run automatic detection on the chosen folder and prefill the wizard.
-void run_detection(BuilderState* st) {
-    st->detection = lexe::gui::detect_source(fs::path(st->folder));
+gboolean on_detection_finished(gpointer user_data);
+void update_step(BuilderState* st); // defined with the navigation below
+
+/// Detection walks the whole source folder, reads every ELF and resolves the
+/// full dependency graph. That ran on the UI THREAD, so choosing a folder with
+/// any real number of files froze the entire wizard — no spinner, no message,
+/// no cancel, nothing repainting — for as long as it took. Off the main loop it
+/// goes, exactly like the build: the worker touches no GTK, and everything that
+/// updates a widget happens back on the main loop via g_idle_add.
+gpointer detection_worker(gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    try {
+        st->detection = lexe::gui::detect_source(fs::path(st->folder));
+        st->detection_error.clear();
+    } catch (const std::exception& e) {
+        st->detection = {};
+        st->detection_error = e.what();
+    } catch (...) {
+        st->detection = {};
+        st->detection_error = "unknown error while inspecting the folder";
+    }
+    g_idle_add(on_detection_finished, st);
+    return nullptr;
+}
+
+/// Start detection and tell the user it is running. Next/Back stay disabled
+/// until it finishes, so the step cannot advance on a half-built detection and
+/// a second click cannot start a second worker.
+void begin_detection(BuilderState* st) {
+    gtk_widget_set_sensitive(st->next_button, FALSE);
+    gtk_widget_set_sensitive(st->back_button, FALSE);
+    gtk_label_set_text(
+        GTK_LABEL(st->source_summary),
+        ("Inspecting " + st->folder +
+         " — reading the executable and resolving its dependencies. This can "
+         "take a moment for a large folder.")
+            .c_str());
+    g_thread_unref(g_thread_new("lexe-detect", detection_worker, st));
+}
+
+/// Apply a COMPLETED detection to the wizard. Main thread only.
+void apply_detection(BuilderState* st) {
     st->detection_done = true;
 
     gtk_label_set_text(GTK_LABEL(st->source_summary),
@@ -974,6 +1063,26 @@ void run_detection(BuilderState* st) {
     render_dependencies(st);
 }
 
+/// Main-loop continuation of detection_worker: apply the result and advance,
+/// or report the failure and stay put.
+gboolean on_detection_finished(gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    gtk_widget_set_sensitive(st->next_button, TRUE);
+    gtk_widget_set_sensitive(st->back_button, TRUE);
+    if (!st->detection_error.empty()) {
+        set_banner(st, false,
+                   "Could not inspect that folder: " + st->detection_error);
+        gtk_label_set_text(GTK_LABEL(st->source_summary),
+                           "Choose a folder, then press Next to detect the "
+                           "executable and dependencies.");
+        return G_SOURCE_REMOVE;
+    }
+    apply_detection(st);
+    ++st->step;
+    update_step(st);
+    return G_SOURCE_REMOVE;
+}
+
 // --- build summary + worker -------------------------------------------------
 
 void refresh_build_summary(BuilderState* st) {
@@ -1003,6 +1112,15 @@ void refresh_build_summary(BuilderState* st) {
         text += "  Dependencies: " +
                 std::to_string(st->detection.dependencies.dependencies.size()) +
                 " analyzed\n";
+
+        // Non-blocking: FORMAT-0.1 §8 orders any string, so no version is
+        // invalid — but one that can never be superseded is worth saying before
+        // the package ships rather than when the first update is refused.
+        if (const std::string advisory =
+                lexe::gui::version_advisory(st->form.version);
+            !advisory.empty()) {
+            text += "\n  ! " + advisory + "\n";
+        }
 
         // Profile gate: Core Portable is hard-gated on Tux32 Core 1; other
         // profiles are allowed but labeled. A blocking gate disables Build.
@@ -1259,7 +1377,10 @@ void on_next_clicked(GtkButton*, gpointer user_data) {
                        "Choose the folder that holds your application's files.");
             return;
         }
-        run_detection(st);
+        // Detection is asynchronous now; on_detection_finished advances the
+        // step when it completes, so do not fall through to ++st->step here.
+        begin_detection(st);
+        return;
     } else if (current == lexe::gui::WizardStep::Build) {
         start_build(st);
         return; // build drives the stack directly
@@ -1274,12 +1395,35 @@ void on_next_clicked(GtkButton*, gpointer user_data) {
 void on_open_folder(GtkButton*, gpointer user_data) {
     BuilderState* st = static_cast<BuilderState*>(user_data);
     const fs::path dir = fs::path(st->report.output_package).parent_path();
-    gchar* uri = g_filename_to_uri(dir.string().c_str(), nullptr, nullptr);
-    if (uri != nullptr) {
-        gtk_show_uri_on_window(GTK_WINDOW(st->window), uri, GDK_CURRENT_TIME,
-                               nullptr);
-        g_free(uri);
+    // Both failure paths were discarded: g_filename_to_uri got a nullptr
+    // GError** and so did gtk_show_uri_on_window. On a machine with no
+    // registered file-manager handler — a bare desktop, a headless session, a
+    // container — the button did nothing at all, with no message, forever.
+    // Tell the user, and give them the path so the button's failure does not
+    // also lose the information it was going to show.
+    GError* error = nullptr;
+    gchar* uri = g_filename_to_uri(dir.string().c_str(), nullptr, &error);
+    if (uri == nullptr) {
+        set_banner(st, false,
+                   "Could not open the output folder: " +
+                       std::string(error != nullptr ? error->message
+                                                    : "unknown error") +
+                       ". It is at " + dir.string());
+        if (error != nullptr) g_error_free(error);
+        return;
     }
+    const gboolean shown = gtk_show_uri_on_window(
+        GTK_WINDOW(st->window), uri, GDK_CURRENT_TIME, &error);
+    g_free(uri);
+    if (shown == FALSE) {
+        set_banner(st, false,
+                   "No file manager is available to open the output folder. "
+                   "It is at " + dir.string() +
+                       (error != nullptr
+                            ? std::string(" (") + error->message + ")"
+                            : std::string()));
+    }
+    if (error != nullptr) g_error_free(error);
 }
 
 void on_copy_checksum(GtkButton*, gpointer user_data) {
@@ -1381,6 +1525,13 @@ GtkWidget* build_metadata_page(BuilderState* st) {
                                    "https://example.com");
     st->description_entry =
         grid_entry(grid, row++, "Description (optional)", "A short description");
+    // Say what actually happens to it. The 0.1 manifest has no description
+    // field, so this is stored as forward-compatible metadata and no 0.1
+    // surface displays it — a plain "Description" label promises otherwise.
+    gtk_widget_set_tooltip_text(
+        st->description_entry,
+        "Stored in the package as forward-compatible metadata. No 0.1 surface "
+        "displays it yet; the installer shows the Name and Publisher.");
     st->categories_entry =
         grid_entry(grid, row++, "Categories (optional)", "Utility, Development");
 
@@ -1406,6 +1557,16 @@ GtkWidget* build_metadata_page(BuilderState* st) {
     return page_scroller(box);
 }
 
+/// Grey out whichever signing control the chosen option does not use, so the
+/// page cannot show two live inputs when only one of them will be read.
+void on_signing_choice_toggled(GtkToggleButton*, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    const gboolean generating =
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->key_generate_radio));
+    gtk_widget_set_sensitive(st->generated_key_entry, generating);
+    gtk_widget_set_sensitive(st->existing_key_chooser, !generating);
+}
+
 GtkWidget* build_signing_page(BuilderState* st) {
     GtkWidget* box = new_page();
     gtk_box_pack_start(GTK_BOX(box), section_heading("Sign the application"),
@@ -1429,6 +1590,13 @@ GtkWidget* build_signing_page(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(box), st->generated_key_entry, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), st->key_existing_radio, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), st->existing_key_chooser, FALSE, FALSE, 0);
+    // Only the SELECTED option's control stays live. Both were enabled at once,
+    // so the page showed a key-file chooser and a "where to write the new key"
+    // box side by side with nothing to say which one the build would use —
+    // and filling in the ignored one had no effect and no explanation.
+    g_signal_connect(st->key_generate_radio, "toggled",
+                     G_CALLBACK(on_signing_choice_toggled), st);
+    on_signing_choice_toggled(nullptr, st); // set the initial state
     gtk_box_pack_start(
         GTK_BOX(box),
         body_label("Publisher certification (e.g. Usha Corporation of America) "
