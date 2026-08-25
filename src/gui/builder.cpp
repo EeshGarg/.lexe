@@ -1571,6 +1571,15 @@ void build_ui(BuilderState* st) {
 
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
+
+    // Body text is selectable so a user can copy a fingerprint or an ID. GTK
+    // pairs that with gtk-label-select-on-focus, which makes the first
+    // focusable label select ALL of its text the moment the window opens — one
+    // line comes up highlighted as if the user had dragged over it. Turn the
+    // behaviour off; the labels stay selectable by hand.
+    if (GtkSettings* settings = gtk_settings_get_default()) {
+        g_object_set(settings, "gtk-label-select-on-focus", FALSE, nullptr);
+    }
     BuilderState* st = new BuilderState();
     build_ui(st);
     gtk_widget_show_all(st->window);

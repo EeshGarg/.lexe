@@ -152,13 +152,19 @@ inline std::string format_install_scope(const std::string& scope) {
     return scope;
 }
 
-/// The full "Installation:" block: scope + size.
+/// The full "Installation:" block: scope + size. `payload_bytes` is the
+/// package's actual payload size, used when the manifest declares no estimate —
+/// the same fallback `lexe info` applies, so the CLI and the Installer never
+/// disagree about how much space an install takes.
 inline std::string format_install(const std::string& scope,
-                                  std::uint64_t estimated_size) {
+                                  std::uint64_t estimated_size,
+                                  std::uint64_t payload_bytes = 0) {
     std::string text = format_install_scope(scope);
     text += '\n';
-    text += estimated_size > 0 ? format_size(estimated_size)
-                               : std::string("Install size not specified");
+    const std::uint64_t size =
+        estimated_size > 0 ? estimated_size : payload_bytes;
+    text += size > 0 ? format_size(size)
+                     : std::string("Install size not specified");
     return text;
 }
 
@@ -308,7 +314,8 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                   const std::string& host_arch,
                                   const std::optional<TrustEvaluation>& eval,
                                   const IsolationCapabilities& caps,
-                                  const PermissionDelta& delta = {}) {
+                                  const PermissionDelta& delta = {},
+                                  std::uint64_t payload_bytes = 0) {
     ViewModel vm;
     const std::string filename = package_path.filename().string();
     vm.verified = report.ok();
@@ -337,7 +344,9 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                                m.architectures, host_arch);
         vm.permissions_text = format_permissions(m.permissions, caps);
         vm.permission_delta_text = format_permission_delta(delta);
-        vm.install_text = format_install(m.install_scope, m.install_estimated_size);
+        vm.install_text = format_install(m.install_scope,
+                                         m.install_estimated_size,
+                                         payload_bytes);
         vm.after_install_text =
             "Installs under your home directory — no root, nothing system-wide.\n"
             "Remove it any time with:  lexe remove " + m.id + "\n"
@@ -659,23 +668,31 @@ GtkWidget* build_details_page(AppState* st) {
     gtk_container_add(GTK_CONTAINER(expander), advanced);
     gtk_box_pack_start(GTK_BOX(box), expander, FALSE, FALSE, 0);
 
-    // Button row: [Close] [Install].
+    return box;
+}
+
+/// The action bar: [Close] [Install]. Built SEPARATELY from the details page so
+/// build_ui can pin it below the scroller. It used to be packed at the bottom
+/// of the scrolled content, which meant that at the default window size the
+/// primary action of an installer was below the fold — the window opened with
+/// no visible way to install, and the user had to scroll a long page to find
+/// it.
+GtkWidget* build_action_bar(AppState* st) {
     GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_halign(buttons, GTK_ALIGN_END);
+    gtk_container_set_border_width(GTK_CONTAINER(buttons), 12);
     st->details_close_button = gtk_button_new_with_label("Close");
     g_signal_connect(st->details_close_button, "clicked",
                      G_CALLBACK(on_close_clicked), nullptr);
     st->install_button = gtk_button_new_with_label("Install");
     gtk_widget_set_sensitive(st->install_button,
-                             vm.can_install ? TRUE : FALSE);
+                             st->vm.can_install ? TRUE : FALSE);
     g_signal_connect(st->install_button, "clicked",
                      G_CALLBACK(on_install_clicked), st);
     gtk_box_pack_start(GTK_BOX(buttons), st->details_close_button,
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(buttons), st->install_button, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(box), buttons, FALSE, FALSE, 0);
-
-    return box;
+    return buttons;
 }
 
 GtkWidget* build_progress_page(AppState* st) {
@@ -743,7 +760,17 @@ void build_ui(AppState* st) {
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(scroller), build_details_page(st));
 
-    gtk_stack_add_named(GTK_STACK(st->stack), scroller, "details");
+    // The details scroll; the action bar stays pinned to the bottom, so
+    // [Install] is visible the moment the window opens however long the
+    // package's details run.
+    GtkWidget* details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(details), scroller, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(details), gtk_separator_new(
+                                             GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(details), build_action_bar(st), FALSE, FALSE, 0);
+
+    gtk_stack_add_named(GTK_STACK(st->stack), details, "details");
     gtk_stack_add_named(GTK_STACK(st->stack), build_progress_page(st),
                         "progress");
     gtk_stack_add_named(GTK_STACK(st->stack), build_done_page(st), "done");
@@ -768,6 +795,15 @@ int show_startup_error(const std::string& message, int code) {
 
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
+
+    // Body text is selectable so a user can copy a fingerprint or an ID. GTK
+    // pairs that with gtk-label-select-on-focus, which makes the first
+    // focusable label select ALL of its text the moment the window opens — one
+    // line comes up highlighted as if the user had dragged over it. Turn the
+    // behaviour off; the labels stay selectable by hand.
+    if (GtkSettings* settings = gtk_settings_get_default()) {
+        g_object_set(settings, "gtk-label-select-on-focus", FALSE, nullptr);
+    }
 
     if (argc < 2 || argv[1] == nullptr || *argv[1] == '\0') {
         return show_startup_error(
@@ -804,13 +840,23 @@ int main(int argc, char** argv) {
     }
 
     // Read the manifest for display. Failures leave it empty — the screen
-    // still renders and the report banner explains what went wrong.
+    // still renders and the report banner explains what went wrong. The
+    // uncompressed payload size is read alongside it so the "Installation:"
+    // block can show a real figure when the manifest declares no estimate,
+    // matching what `lexe info` reports for the same package.
     std::optional<lexe::Manifest> manifest;
+    std::uint64_t payload_bytes = 0;
     try {
         lexe::PackageReader reader(st->package_path);
         manifest = lexe::Manifest::parse(reader.read_entry("lexe.json"));
+        for (const lexe::PackageEntry& entry : reader.entries()) {
+            if (entry.path.rfind("payload/", 0) == 0) {
+                payload_bytes += entry.uncompressed_size;
+            }
+        }
     } catch (const std::exception&) {
         manifest.reset();
+        payload_bytes = 0;
     }
 
     // Local trust evaluation + isolation capability + permission delta for the
@@ -858,7 +904,7 @@ int main(int argc, char** argv) {
 
     st->vm = lexe::gui::build_view_model(manifest, report, st->package_path,
                                          st->paths, lexe::host_architecture(),
-                                         eval, caps, delta);
+                                         eval, caps, delta, payload_bytes);
     if (!st->vm.channels.empty()) {
         st->selected_channel =
             st->vm.channels[static_cast<std::size_t>(st->vm.active_channel)];
