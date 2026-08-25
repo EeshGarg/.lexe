@@ -147,6 +147,45 @@ they render without warnings:
   "no ELF executable found" explains what the command accepts instead of
   suggesting `lexe apps`.
 
+### One wording, every surface
+The CLI and the GTK Installer each carried their own copy of the code that turns a
+package into words. The copies had drifted, so the same package was described
+differently depending on where you looked:
+
+| Fact | CLI said | Installer said |
+|---|---|---|
+| `user-files-selected` | "Access to files you choose" | "Access to files you select" |
+| Application type | `Native Linux - x86_64` (hyphen) | `Native Linux — x86_64` (em dash) |
+| Install scope (system) | "System-wide" | "All users (system-wide)" |
+| No update source | "No automatic updates" | "Updates are disabled for this package." |
+| Install size, no estimate | real payload size | "Install size not specified" |
+
+`lexe info` was a third voice again, printing raw permission ids
+(`user-files-selected`) and its own type format (`native (x86_64)`) where every
+other surface printed human titles.
+
+- `core/presentation` — which already existed to be the ONE place both frontends
+  render trust, permission and isolation text — now also owns size, application
+  type, install scope, source and update-policy wording. Both frontends call it;
+  neither formats these itself any more.
+- Where the two disagreed, **SPEC.md's "Opening a .lexe File" mock is the
+  tie-breaker**: the em dash and "Access to files you select" (which also matches
+  the permission's own id, `user-files-selected`) win. The frozen vocabulary's
+  title was corrected to match — a title is display text, not part of the
+  permission-set digest, so no consent record changes.
+- The Installer no longer carries its own permission list. It had eleven entries,
+  **nine of which name permissions that do not exist in the 0.1 vocabulary** and
+  can never be reached (a manifest declaring them is rejected at parse time).
+  Permission wording now comes from the frozen vocabulary, so a permission cannot
+  be added to the runtime without the GUI naming it correctly.
+- New regression tests lock this shut: the GUI's formatters are asserted equal to
+  `core/presentation`'s, and every id in the vocabulary is asserted to render
+  through the GUI exactly as the vocabulary titles it.
+- `lexe build` now reports the Tux32 Core 1 verdict it never used to mention, the
+  way the Builder reports it at the same moment. Advisory — `lexe build` takes no
+  runtime profile, so there is no portability claim to gate — but a developer
+  building from the CLI no longer has to know to run `lexe sdk verify` to find out.
+
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
 notably: Linux-only isolation (Windows is a build/test host), isolation requires
