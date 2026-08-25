@@ -944,8 +944,9 @@ void refresh_build_summary(BuilderState* st) {
         for (const std::string& n : gate.notes) text += "    ! " + n + "\n";
         if (gate.blocking) {
             text += "\n  Build is disabled: this source does not satisfy the "
-                    "Core Portable contract. Fix the items above, or choose a "
-                    "different runtime profile (Step 3).";
+                    "Core Portable contract. Fix the items above, or go back and "
+                    "choose a "
+                    "different runtime profile (the Output step).";
         }
     }
     gtk_label_set_text(GTK_LABEL(st->build_summary), text.c_str());

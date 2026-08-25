@@ -98,7 +98,10 @@ TEST_CASE("exactly at the ceiling is conformant; one above is not") {
     CHECK_FALSE(r.conformant());
     CHECK(r.required_glibc == "2.34");
     REQUIRE(r.symbol_offenders.size() == 1);
-    CHECK(r.symbol_offenders[0].object == "<executable>");
+    // The offender names the actual file, not the literal token "<executable>"
+    // that used to be printed verbatim to users by `lexe analyze`, `lexe sdk
+    // verify`, `lexe inspect` and the Builder.
+    CHECK(r.symbol_offenders[0].object == "above");
     CHECK(r.symbol_offenders[0].version == "GLIBC_2.34");
     CHECK(r.detail.find("2.31") != std::string::npos); // names the ceiling
 }
