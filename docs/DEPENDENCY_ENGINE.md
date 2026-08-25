@@ -48,8 +48,14 @@ from a root binary:
   recorded), **cycle-safe** (a visited set prevents infinite recursion; cycles
   are noted), and resolved bundle files are **hashed** (SHA-256).
 - Versioned requirements are aggregated: `max_glibc_version()` returns the
-  highest `GLIBC_x.y` across the whole graph, driving the compatibility
-  analysis.
+  **package's own** highest `GLIBC_x.y` — the root executable plus every
+  **bundled** library. Host-interface libraries are excluded: the target host
+  supplies its own matching `libc`/`libm`, so the copies on the *build* host
+  carry internal version needs that say nothing about this application, and
+  counting them would make the same package report a different requirement on
+  every distribution it was analyzed on. This drives the compatibility analysis,
+  and it is the same rule the Tux32 verifier applies. `all_version_needs()`
+  remains the raw whole-graph view, for diagnostics only.
 
 ## Compatibility analysis
 

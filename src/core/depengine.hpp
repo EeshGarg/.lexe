@@ -56,10 +56,19 @@ struct DependencyReport {
     std::vector<const Dependency*> of_kind(DependencyKind k) const;
     bool has_unresolved() const { return count(DependencyKind::Unresolved) > 0; }
     bool has_forbidden() const { return count(DependencyKind::Forbidden) > 0; }
-    /// The highest "GLIBC_x.y" requirement across the whole graph (root + deps),
-    /// e.g. "2.34"; empty when none is present.
+    /// The PACKAGE's own highest "GLIBC_x.y" requirement, e.g. "2.34"; empty
+    /// when none is present. Counts the root executable plus every BUNDLED
+    /// library and nothing else: host-interface libraries are supplied by the
+    /// target host, so the build host's copy of libc/libm says nothing about
+    /// what this package needs. Counting them would make the answer depend on
+    /// the machine the analysis ran on. This is the same rule the Tux32
+    /// verifier applies, so there is exactly one notion of "what this binary
+    /// needs" (DEPENDENCY_ENGINE.md).
     std::string max_glibc_version() const;
-    /// Every versioned requirement across the graph, deduped and sorted.
+    /// Every versioned requirement seen anywhere in the graph, INCLUDING
+    /// host-interface libraries, deduped and sorted. A raw graph accessor for
+    /// diagnostics; for "what does this package require", use
+    /// max_glibc_version().
     std::vector<std::string> all_version_needs() const;
 };
 
