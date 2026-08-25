@@ -104,7 +104,10 @@ void fetch_to_file(const std::string& url, const fs::path& dest) {
     const fs::path src = local_source(url);
     std::error_code ec;
     if (!fs::exists(src, ec) || fs::is_directory(src, ec)) {
-        throw NotFoundError("source not found: " + url);
+        throw NotFoundError(
+            "source not found: " + url,
+            "Check the update source URL; change it with `lexe source set "
+            "<id> <url>`.");
     }
     fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
     if (ec) {
@@ -118,7 +121,10 @@ std::vector<std::uint8_t> fetch_bytes(const std::string& url) {
         const fs::path src = local_source(url);
         std::error_code ec;
         if (!fs::exists(src, ec) || fs::is_directory(src, ec)) {
-            throw NotFoundError("source not found: " + url);
+            throw NotFoundError(
+            "source not found: " + url,
+            "Check the update source URL; change it with `lexe source set "
+            "<id> <url>`.");
         }
         return lexe::util::slurp(src);
     }

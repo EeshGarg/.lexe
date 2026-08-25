@@ -671,10 +671,12 @@ ResolvedTarget resolve_binary_target(const fs::path& target, const char* noun) {
             out.root = find_main_executable(payload);
         }
         if (out.root.empty()) {
-            throw NotFoundError("no ELF executable found under " +
-                                payload.string() + " (point `lexe " + noun +
-                                "` at a binary, a project folder, or a payload "
-                                "directory)");
+            throw NotFoundError(
+                "no ELF executable found under " + payload.string(),
+                "`lexe " + std::string(noun) +
+                    "` takes a binary, a project folder, or a payload "
+                    "directory. If this is a project folder, build its payload "
+                    "first.");
         }
     } else {
         throw NotFoundError(
@@ -1917,7 +1919,10 @@ int cmd_build(const std::vector<std::string>& args) {
     if (key_opt != parsed.options.end()) {
         keyfile = fs::path(key_opt->second);
         if (!fs::is_regular_file(keyfile)) {
-            throw NotFoundError("no such key file: " + keyfile.string());
+            throw NotFoundError(
+                "no such key file: " + keyfile.string(),
+                "Generate a signing keypair with `lexe keygen " +
+                    keyfile.string() + "`.");
         }
     } else {
         keyfile = project / "key.json";
