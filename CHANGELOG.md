@@ -253,6 +253,77 @@ Also in this pass:
   above it already prints the .lexe file size and two unlabelled figures that
   disagree invite the reader to assume one is wrong.
 
+### Final acceptance pass — Builder, Installer, integration
+Structural:
+- **The Builder's chosen runtime profile is now recorded in the package.** It
+  was not, so every reader re-judged every package against Core Portable and a
+  package deliberately built as Native Capture — host-locked *by definition* —
+  came back from `lexe inspect` as a hard portability failure, from the same
+  runtime whose Builder had just accepted it. `runtimeProfile` is an optional
+  manifest field (FORMAT-0.1 §5), which is exactly the forward-compatible
+  mechanism the format documents: older runtimes ignore it, and a reader that
+  cannot resolve the value MUST treat the package as declaring none rather than
+  substituting a default.
+- **Source detection no longer freezes the wizard.** It walked the folder, read
+  every ELF and resolved the whole dependency graph on the UI thread, so
+  choosing a folder of any size locked the window — no spinner, no message,
+  nothing repainting — until it finished. It runs on a worker now, with Next and
+  Back disabled and a message naming what is happening.
+
+Builder:
+- **"Generate a new signing key" no longer destroys an existing key** (see
+  above), and the result screen names the key file and says whether it was
+  reused or created.
+- A folder with **no runnable executable** no longer auto-selects the first file
+  alphabetically as the entrypoint and builds a signed package around it.
+- **"Open output folder" reported nothing when it failed.** Both error paths were
+  discarded, so on a machine with no file-manager handler the button silently did
+  nothing forever. It now says so and prints the path.
+- Only the **selected** signing option stays live; both inputs used to be enabled
+  with nothing to say which one the build would read.
+- A **version advisory** for versions that can never be superseded: FORMAT-0.1 §8
+  orders any string, so none is invalid, but one whose first component is not
+  numeric sorts after every numeric version and every update to it is refused as
+  a downgrade.
+- "No shared-library dependencies (a static or script app)" was also printed when
+  **nothing had been analyzed at all** — a missing executable reported as a clean
+  bill of health.
+- The Description field says what actually happens to it (stored as
+  forward-compatible metadata; no 0.1 surface displays it).
+
+Installer:
+- **A heading over an empty body.** An unreadable package rendered "Authenticity
+  & local trust:" above four blank strings. It now states which of the two
+  situations occurred — the file could not be decoded, or the local record could
+  not be read — since those are different facts.
+- **The progress screen reports the stage genuinely running**, read from the
+  transaction journal the installer already writes, plus elapsed time. No bar, no
+  percentage, no ETA: the installer publishes phases, not byte counts, and a
+  fraction would be fabricated.
+- **Closing the window mid-install was an unsafe cancel** — `[X]` quit the main
+  loop with the worker still writing into `.txn-staging`. It is now vetoed while
+  an install is in flight, with the reason on screen, and closes normally the
+  moment it finishes. A real Cancel needs a cancellation token through
+  `core/installer`; inviting a mid-flight abort is the failure HARDENING §A
+  exists to survive, not to encourage.
+
+CLI and integration:
+- `lexe verify` / `lexe inspect` **warn when local trust will refuse the package**
+  install would reject — you were told a package was fine and then refused at
+  install. The §6 verdict and every exit code are unchanged; the note is
+  additive, and `--json` states it either way.
+- **`Source:` labelled two unrelated facts** — the package path in the CLI, the
+  packaging mode in the Installer. The CLI's are now `Package file:` and
+  `Installed from:`.
+- **`lexe integrate` claimed to register a handler it had not registered.** With
+  `LEXE_HOME` set the files land in a tree no desktop scans; the command said
+  "Registered the Lexe runtime as the .lexe handler" regardless. It now
+  distinguishes writing the files from registering them, and explains why
+  double-clicking a `.lexe` will not work plus how to fix it.
+- `packaging/uninstall.sh` no longer claims to have removed things it did not:
+  it counts removals, only refreshes databases that exist, and cleans up the
+  confined copies too.
+
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
 notably: Linux-only isolation (Windows is a build/test host), isolation requires
