@@ -276,8 +276,12 @@ std::optional<std::string> retained_data_owner(const Registry& registry,
 /// local-trust view (never a single "verified" line), truthful per-permission
 /// enforcement, and the real isolation state for this platform. The signature
 /// has already been validated by the caller, so it is presented as Valid.
-void print_primary_screen(const Manifest& manifest, const fs::path& package,
-                          std::uint64_t size_bytes, const Paths& paths) {
+/// Renders the screen and returns the trust evaluation behind it, so the caller
+/// can refuse instead of asking a question whose answer cannot matter.
+TrustEvaluation print_primary_screen(const Manifest& manifest,
+                                     const fs::path& package,
+                                     std::uint64_t size_bytes,
+                                     const Paths& paths) {
     const Registry registry(paths);
     const TrustEvaluation eval = TrustStore(paths).evaluate(
         manifest.id, manifest.decoded_public_key(), SignatureState::Valid,
@@ -298,9 +302,19 @@ void print_primary_screen(const Manifest& manifest, const fs::path& package,
               << "Authenticity & local trust:\n"
               << "  " << auth.headline << "\n"
               << "  " << auth.signature_text << "\n"
-              << "  " << auth.key_text << "\n"
-              << "  Signing key fingerprint: " << auth.fingerprint_grouped << "\n"
-              << "  " << auth.identity_caveat << "\n\n"
+              << "  " << auth.key_text << "\n";
+    // When the key CHANGED, both fingerprints, labelled — one fingerprint on a
+    // "the signing key has changed" screen gives nothing to compare against.
+    if (auth.expected_fingerprint_grouped.empty()) {
+        std::cout << "  Signing key fingerprint: " << auth.fingerprint_grouped
+                  << "\n";
+    } else {
+        std::cout << "  Expected (already installed): "
+                  << auth.expected_fingerprint_grouped << "\n"
+                  << "  Presented (this package):    "
+                  << auth.fingerprint_grouped << "\n";
+    }
+    std::cout << "  " << auth.identity_caveat << "\n\n"
               << "Source:\n  " << package.string() << "\n\n"
               << "Application Type:\n  "
               << presentation::application_type_line(
@@ -340,6 +354,12 @@ void print_primary_screen(const Manifest& manifest, const fs::path& package,
         std::cout << "    " << c.first << ": " << c.second << "\n";
     }
     std::cout << "  " << iso.platform_caveat << "\n";
+    // The remedy is deliberately NOT printed here. When this screen refuses,
+    // the caller throws immediately and the typed error carries the same
+    // procedure — and that error is also the only thing a `--yes` run sees, so
+    // it has to stand alone anyway. Printing both put it on screen twice.
+    // The Installer, which has no exception to show, renders auth.remedy.
+    return eval;
 }
 
 constexpr int kLabelWidth = 15;
@@ -450,7 +470,12 @@ int cmd_install(const std::vector<std::string>& args) {
             const PackageReader reader(package);
             size = payload_size(reader);
         }
-        print_primary_screen(manifest, package, size, paths);
+        const TrustEvaluation eval =
+            print_primary_screen(manifest, package, size, paths);
+        // Do not ask a question whose answer cannot matter. The trust decision
+        // is already made at this point; installing would throw the same typed
+        // error after the user had read the whole screen and typed "y".
+        eval.throw_if_rejected();
         std::cout << "\n";
         if (!confirm("Install " + manifest.name + " " + manifest.version +
                      "?")) {
