@@ -1,10 +1,13 @@
 // desktop module tests (ARCHITECTURE.md #Tests) — pure content generation
 // (desktop entries, MIME XML, escaping) verified on every platform;
 // would-create lists asserted exactly against the fixture manifest under a
-// temp LEXE_HOME-derived XDG layout (this is what the Windows dev host
-// checks); actual file creation/removal verified on Linux.
+// temp LEXE_HOME-derived layout (this is what the Windows dev host checks);
+// actual file creation/removal verified on Linux; and, for both LEXE_HOME
+// settings, whether the files land where a desktop reads them and whether the
+// result says so.
 // Every test case constructs lexe::test::TempLexeHome first — no test
-// touches the real user profile.
+// touches the real user profile. The XDG cases point XDG_DATA_HOME *inside*
+// that temp home rather than unsetting isolation.
 
 #include <doctest/doctest.h>
 
@@ -16,7 +19,9 @@
 #include "core/util.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -70,6 +75,34 @@ void check_lists_equal(const std::vector<std::string>& actual,
         CAPTURE(i);
         CHECK_EQ(actual[i], expected[i]);
     }
+}
+
+/// RAII save/restore for one environment variable, so the XDG cases below can
+/// clear LEXE_HOME without leaking that into any later test case.
+class EnvGuard {
+public:
+    explicit EnvGuard(std::string name)
+        : name_(std::move(name)), previous_(lexe::util::get_env(name_)) {}
+    ~EnvGuard() {
+        if (previous_.has_value()) {
+            lexe::util::set_env(name_, *previous_);
+        } else {
+            lexe::util::unset_env(name_);
+        }
+    }
+    EnvGuard(const EnvGuard&) = delete;
+    EnvGuard& operator=(const EnvGuard&) = delete;
+
+private:
+    std::string name_;
+    std::optional<std::string> previous_;
+};
+
+/// True when `p` is `root` or lies beneath it. Used to prove that a confined
+/// integration wrote nothing outside its temp LEXE_HOME.
+bool is_under(const fs::path& p, const fs::path& root) {
+    const auto rel = p.lexically_relative(root);
+    return !rel.empty() && rel.native()[0] != '.';
 }
 
 } // namespace
@@ -391,6 +424,113 @@ TEST_CASE("`lexe integrate` and packaging/ install the very same files") {
 }
 
 // ---------------------------------------------------------------------------
+// WHERE integration lands, and whether it admits it (the LEXE_HOME defect).
+//
+// `lexe integrate` used to print "Registered the Lexe runtime as the .lexe
+// handler" whenever the files were written — and under LEXE_HOME they are
+// written into `<LEXE_HOME>/applications` and `<LEXE_HOME>/mime`, which no
+// desktop environment scans. Every path it printed was real, every write
+// succeeded, and double-clicking a .lexe still did nothing. These cases pin
+// both halves: the confinement stays (a test run must never leave entries in
+// the developer's own ~/.local/share/applications) and the result says so.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integrate_runtime under LEXE_HOME reports confinement, not a "
+          "registration") {
+    lexe::test::TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+    REQUIRE(paths.desktop_scope() == lexe::DesktopScope::confined);
+
+    const auto result = lexe::desktop::integrate_runtime(paths);
+
+    // The whole point: nothing here is visible to a desktop, so no frontend
+    // may render this as "registered".
+    CHECK_FALSE(result.visible_to_desktop);
+    // Confinement holds: not one byte outside the temp LEXE_HOME.
+    for (const auto& f : result.created_files) {
+        CAPTURE(f);
+        CHECK(is_under(fs::path(f), home.path()));
+    }
+
+#ifdef _WIN32
+    // Nothing was written at all, which `status` already says.
+    CHECK(result.status == lexe::desktop::IntegrationStatus::skipped);
+    CHECK(result.note.empty());
+#else
+    CHECK(result.status == lexe::desktop::IntegrationStatus::applied);
+    // …and the note is what a frontend prints instead of claiming success: the
+    // directory, the concrete consequence, and the way out.
+    REQUIRE_FALSE(result.note.empty());
+    CHECK(result.note.find("LEXE_HOME") != std::string::npos);
+    CHECK(result.note.find(paths.applications_dir().string()) !=
+          std::string::npos);
+    CHECK(result.note.find(paths.mime_dir().string()) != std::string::npos);
+    CHECK(result.note.find("no desktop environment reads") != std::string::npos);
+    CHECK(result.note.find("lexe-installer") != std::string::npos);
+    CHECK(result.note.find("packaging/install.sh") != std::string::npos);
+#endif
+}
+
+TEST_CASE("integrate_app under LEXE_HOME reports confinement too") {
+    lexe::test::TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+    const lexe::Manifest m = fixture_manifest();
+    const fs::path icons = make_icons_dir(home.path() / "staging-icons");
+
+    const auto result = lexe::desktop::integrate_app(paths, m, icons);
+
+    CHECK_FALSE(result.visible_to_desktop);
+    for (const auto& f : result.created_files) {
+        CAPTURE(f);
+        CHECK(is_under(fs::path(f), home.path()));
+    }
+#ifdef _WIN32
+    CHECK(result.note.empty());
+#else
+    // An installed app under LEXE_HOME still runs from the CLI — the note must
+    // say what is actually lost (the menu entry), not imply the install broke.
+    REQUIRE_FALSE(result.note.empty());
+    CHECK(result.note.find("lexe run com.example.hello") != std::string::npos);
+    CHECK(result.note.find("application menu") != std::string::npos);
+#endif
+}
+
+TEST_CASE("`lexe integrate` and packaging/uninstall.sh name the same files") {
+    // The runtime writes these two names and the shipped scripts install and
+    // remove them. When they drifted apart, uninstall.sh printed the MIME type
+    // as removed while leaving the runtime's actual file on disk.
+    lexe::test::TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+    const fs::path packaging = fs::path(LEXE_SOURCE_DIR) / "packaging";
+    const std::string install = lexe::util::slurp_text(packaging / "install.sh");
+    const std::string uninstall =
+        lexe::util::slurp_text(packaging / "uninstall.sh");
+
+    const auto result = lexe::desktop::integrate_runtime(paths);
+    REQUIRE_FALSE(result.created_files.empty());
+    for (const auto& f : result.created_files) {
+        const std::string base = fs::path(f).filename().string();
+        CAPTURE(base);
+        CHECK(install.find(base) != std::string::npos);
+        CHECK(uninstall.find(base) != std::string::npos);
+    }
+
+    // …and in the directories Paths derives for a real (non-LEXE_HOME) run, so
+    // "what integrate created" and "what uninstall removes" are one set of
+    // paths rather than two that merely look alike.
+    for (const std::string& script : {install, uninstall}) {
+        CHECK(script.find("${XDG_DATA_HOME:-$HOME/.local/share}") !=
+              std::string::npos);
+        CHECK(script.find("$data_home/applications") != std::string::npos);
+        CHECK(script.find("$data_home/mime/packages") != std::string::npos);
+    }
+
+    // uninstall.sh must also clear a confined integration, because that is
+    // where `lexe integrate` puts its files whenever LEXE_HOME is set.
+    CHECK(uninstall.find("LEXE_HOME") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // remove_integration.
 // ---------------------------------------------------------------------------
 
@@ -469,6 +609,53 @@ TEST_CASE("remove_integration deletes previously created files (Linux)") {
     // Removing again (all missing now) is not an error.
     CHECK_NOTHROW(lexe::desktop::remove_integration(paths,
                                                     result.created_files));
+}
+
+TEST_CASE("integrate_runtime with LEXE_HOME unset lands in the XDG dirs a "
+          "desktop actually scans (Linux)") {
+    // The other half of the defect: with no LEXE_HOME the two files must go to
+    // $XDG_DATA_HOME/applications and $XDG_DATA_HOME/mime/packages — the exact
+    // pair packaging/install.sh writes — and only then may the result be
+    // reported as a registration.
+    //
+    // TempLexeHome is still constructed first and XDG_DATA_HOME is pointed
+    // inside it, so this exercises the real-run branch without the developer's
+    // own ~/.local/share ever being a candidate.
+    lexe::test::TempLexeHome home;
+    EnvGuard g_lexe("LEXE_HOME");
+    EnvGuard g_home("HOME");
+    EnvGuard g_data("XDG_DATA_HOME");
+    EnvGuard g_cache("XDG_CACHE_HOME");
+    const fs::path xdg_data = home.path() / "xdg-data";
+    lexe::util::unset_env("LEXE_HOME");
+    lexe::util::set_env("HOME", (home.path() / "fake-home").string());
+    lexe::util::set_env("XDG_DATA_HOME", xdg_data.string());
+    lexe::util::set_env("XDG_CACHE_HOME", (home.path() / "xdg-cache").string());
+
+    const lexe::Paths paths = lexe::Paths::detect();
+    REQUIRE(paths.desktop_scope() == lexe::DesktopScope::xdg);
+
+    const auto result = lexe::desktop::integrate_runtime(paths);
+
+    REQUIRE(result.status == lexe::desktop::IntegrationStatus::applied);
+    CHECK(result.visible_to_desktop);
+    CHECK(result.note.empty()); // nothing to warn about: this one is live
+    check_lists_equal(
+        result.created_files,
+        {(xdg_data / "applications" / "lexe-installer.desktop").string(),
+         (xdg_data / "mime" / "packages" / "application-x-lexe.xml").string()});
+    for (const auto& f : result.created_files) {
+        CAPTURE(f);
+        CHECK(fs::is_regular_file(fs::path(f)));
+        // Still inside the temp home — the real ~/.local/share is untouched.
+        CHECK(is_under(fs::path(f), home.path()));
+    }
+    CHECK_EQ(lexe::util::slurp_text(xdg_data / "applications" /
+                                    "lexe-installer.desktop"),
+             lexe::desktop::runtime_desktop_entry_text());
+    CHECK_EQ(lexe::util::slurp_text(xdg_data / "mime" / "packages" /
+                                    "application-x-lexe.xml"),
+             lexe::desktop::runtime_mime_xml_text());
 }
 #endif // !_WIN32
 

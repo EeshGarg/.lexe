@@ -24,6 +24,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -
 build_dir="${1:-build}"
 
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
+# Desktop registration goes to the XDG user dirs a desktop actually scans, and
+# is deliberately NOT derived from LEXE_HOME: an entry written anywhere else
+# registers nothing. (`lexe integrate` confines itself to LEXE_HOME when that is
+# set, since it is also what the tests and demos use to stay out of the real
+# profile — it reports that instead of claiming a registration. See README.md.)
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 applications_dir="$data_home/applications"
 mime_packages_dir="$data_home/mime/packages"

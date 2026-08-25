@@ -14,12 +14,18 @@ Paths Paths::detect() {
     const auto lexe_home = util::get_env("LEXE_HOME");
     if (lexe_home.has_value() && !lexe_home->empty()) {
         // Override: everything (including desktop-integration dirs) is kept
-        // under LEXE_HOME so tests never touch the real user profile.
+        // under LEXE_HOME so tests never touch the real user profile —
+        // ./build/lexe_tests must not leave `lexe-com.example.hello.desktop`
+        // in the developer's own ~/.local/share/applications.
         p.home_ = fs::path(*lexe_home);
         p.cache_ = p.home_ / "cache";
         p.applications_ = p.home_ / "applications";
         p.icons_ = p.home_ / "icons" / "hicolor";
         p.mime_ = p.home_ / "mime";
+        // …which is exactly why these three are NOT the dirs a desktop reads.
+        // Recording that here is what lets desktop integration say so, instead
+        // of reporting a registration no desktop environment can act on.
+        p.desktop_scope_ = DesktopScope::confined;
         return p;
     }
 
@@ -34,6 +40,9 @@ Paths Paths::detect() {
     p.applications_ = p.home_ / "applications";
     p.icons_ = p.home_ / "icons" / "hicolor";
     p.mime_ = p.home_ / "mime";
+    // No XDG dirs on the Windows development host, and desktop integration is
+    // a recorded no-op there anyway: the layout above is Lexe-private.
+    p.desktop_scope_ = DesktopScope::confined;
 #else
     const auto home_env = util::get_env("HOME");
     const auto xdg_data = util::get_env("XDG_DATA_HOME");
@@ -60,9 +69,13 @@ Paths Paths::detect() {
 
     p.home_ = data_home / "lexe";
     p.cache_ = cache_home / "lexe";
+    // The XDG user dirs a desktop actually scans — NOT `<home>/applications`.
+    // packaging/install.sh installs into these same three, so `lexe integrate`
+    // and the script agree on every path.
     p.applications_ = data_home / "applications";
     p.icons_ = data_home / "icons" / "hicolor";
     p.mime_ = data_home / "mime";
+    p.desktop_scope_ = DesktopScope::xdg;
 #endif
     return p;
 }

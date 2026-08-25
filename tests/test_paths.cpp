@@ -48,6 +48,11 @@ TEST_CASE("LEXE_HOME override wins and nests every directory") {
     CHECK(p.applications_dir() == home.path() / "applications");
     CHECK(p.icons_dir() == home.path() / "icons" / "hicolor");
     CHECK(p.mime_dir() == home.path() / "mime");
+    // …and the layout must SAY it is private. These three are not the dirs a
+    // desktop scans, so anything written into them registers nothing; without
+    // this flag `lexe integrate` reported a working .lexe association that
+    // could not open a file.
+    CHECK(p.desktop_scope() == DesktopScope::confined);
 }
 
 TEST_CASE("empty LEXE_HOME is treated as unset") {
@@ -68,6 +73,8 @@ TEST_CASE("platform default when LEXE_HOME is unset") {
     const Paths p = Paths::detect();
     CHECK(p.home() == fs::path(*local) / "lexe");
     CHECK(p.apps_dir() == p.home() / "apps");
+    // No XDG dirs on the dev host, and integration is a recorded no-op there.
+    CHECK(p.desktop_scope() == DesktopScope::confined);
 #else
     // Linux: XDG dirs (FORMAT-0.1 §9). Point XDG_* into the temp dir so the
     // real profile is never touched.
@@ -83,9 +90,12 @@ TEST_CASE("platform default when LEXE_HOME is unset") {
     CHECK(p.apps_dir() == xdg_data / "lexe" / "apps");
     CHECK(p.data_dir() == xdg_data / "lexe" / "data");
     CHECK(p.cache_dir() == xdg_cache / "lexe");
+    // The XDG user dirs a desktop really reads, and the very same three
+    // packaging/install.sh writes into — never `<home>/applications`.
     CHECK(p.applications_dir() == xdg_data / "applications");
     CHECK(p.icons_dir() == xdg_data / "icons" / "hicolor");
     CHECK(p.mime_dir() == xdg_data / "mime");
+    CHECK(p.desktop_scope() == DesktopScope::xdg);
 #endif
 }
 
@@ -105,6 +115,35 @@ TEST_CASE("XDG fallback to ~/.local/share and ~/.cache") {
     CHECK(p.cache_dir() == home.path() / ".cache" / "lexe");
     CHECK(p.applications_dir() ==
           home.path() / ".local" / "share" / "applications");
+    CHECK(p.mime_dir() == home.path() / ".local" / "share" / "mime");
+    CHECK(p.desktop_scope() == DesktopScope::xdg);
+}
+
+TEST_CASE("desktop dirs follow XDG_DATA_HOME, never the Lexe home, when "
+          "LEXE_HOME is unset") {
+    // Regression: the desktop dirs must be derived from the XDG data home and
+    // NOT from `home()`. When a custom XDG_DATA_HOME made the two differ, an
+    // implementation that hung them off `home()` would have produced
+    // `<data>/lexe/applications` — a directory no desktop scans — while still
+    // reporting the integration as registered.
+    lexe::test::TempLexeHome home;
+    util::unset_env("LEXE_HOME");
+    EnvGuard g_home("HOME");
+    EnvGuard g_data("XDG_DATA_HOME");
+    EnvGuard g_cache("XDG_CACHE_HOME");
+    const fs::path xdg_data = home.path() / "elsewhere";
+    util::set_env("HOME", home.path().string());
+    util::set_env("XDG_DATA_HOME", xdg_data.string());
+    util::unset_env("XDG_CACHE_HOME");
+
+    const Paths p = Paths::detect();
+    REQUIRE(p.home() == xdg_data / "lexe");
+    CHECK(p.applications_dir() == xdg_data / "applications");
+    CHECK(p.icons_dir() == xdg_data / "icons" / "hicolor");
+    CHECK(p.mime_dir() == xdg_data / "mime");
+    CHECK(p.applications_dir() != p.home() / "applications");
+    CHECK(p.mime_dir() != p.home() / "mime");
+    CHECK(p.desktop_scope() == DesktopScope::xdg);
 }
 #endif
 
