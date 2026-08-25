@@ -186,6 +186,32 @@ other surface printed human titles.
   runtime profile, so there is no portability claim to gate — but a developer
   building from the CLI no longer has to know to run `lexe sdk verify` to find out.
 
+### The Installer could not grant a permission it asked you to grant
+An update that requests a permission you have not approved before was a **dead
+end in the GUI**. The Installer showed "New permissions this update requests
+(separate approval required)", offered no way to give that approval, and never
+set `allow_permission_expansion` — so pressing Install failed with "requests
+permissions you have not approved for it: network", and pressing it again failed
+identically. The only way through was to abandon the GUI and run
+`lexe install --accept-permissions`.
+
+The window now shows a **"Grant the new permissions listed above"** checkbox
+directly beneath the list, unticked, and keeps **Install disabled until it is
+ticked** — so the failure cannot be reached at all rather than being explained
+after the fact. Consent stays a separate, explicit act: ticking the box is what
+grants the authority, never pressing Install, which is the same rule the CLI
+follows by refusing to infer `--accept-permissions` from `--yes`.
+
+Verified end to end through the GUI alone: 1.0.0 installed, an update adding
+`network` opened, Install inert until the box was ticked, then 2.0.0 installed.
+The view model reports the expansion, and a regression test asserts it is flagged
+when the set grows and not flagged when it does not.
+
+Also: the Installer no longer opens with a **text caret blinking in read-only
+prose** (a selectable body label took focus). Focus starts on Close — which also
+puts the dialog's default where a consent dialog's default belongs, matching
+`lexe install`'s `[y/N]` prompt.
+
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
 notably: Linux-only isolation (Windows is a build/test host), isolation requires

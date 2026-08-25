@@ -215,6 +215,7 @@ struct ViewModel {
     std::string type_text;        // "Application Type:" block
     std::string permissions_text; // "Permissions:" block (with enforcement)
     std::string permission_delta_text; // new-permissions-on-update ("" when none)
+    bool permission_expansion = false;  // this update requests NEW permissions
     std::string install_text;     // "Installation:" block (scope + size)
     std::string updates_text;     // "Updates:" block
     std::string isolation_text;   // "Isolation on this platform" block
@@ -283,6 +284,7 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                                m.architectures, host_arch);
         vm.permissions_text = format_permissions(m.permissions, caps);
         vm.permission_delta_text = format_permission_delta(delta);
+        vm.permission_expansion = delta.expands();
         vm.install_text = format_install(m.install_scope,
                                          m.install_estimated_size,
                                          payload_bytes);
@@ -359,6 +361,8 @@ struct AppState {
     GtkWidget* install_button = nullptr;
     GtkWidget* details_close_button = nullptr;
     GtkWidget* channel_combo = nullptr;
+    GtkWidget* accept_permissions_check = nullptr;
+    bool accept_permissions = false; // read on the main thread, before the worker
     GtkWidget* spinner = nullptr;
     GtkWidget* progress_label = nullptr;
     GtkWidget* success_label = nullptr;
@@ -428,12 +432,18 @@ void on_close_clicked(GtkButton*, gpointer) { gtk_main_quit(); }
 /// Worker thread: runs the actual installation. NO GTK calls here — results
 /// land in AppState and the main loop is notified via g_idle_add.
 gboolean on_install_finished(gpointer user_data);
+/// Defined with the details page; the failure path below re-arms Install
+/// through it so a retry still respects the consent box.
+void update_install_sensitivity(AppState* st);
 
 gpointer install_worker(gpointer user_data) {
     AppState* st = static_cast<AppState*>(user_data);
     try {
         lexe::InstallOptions opts;
         opts.channel = st->selected_channel;
+        // A separate, explicit act — never implied by pressing Install, exactly
+        // as the CLI never implies it from --yes.
+        opts.allow_permission_expansion = st->accept_permissions;
         lexe::Installer installer(st->paths);
         const lexe::InstallResult result =
             installer.install(st->package_path, opts);
@@ -457,7 +467,7 @@ gboolean on_install_finished(gpointer user_data) {
         // Back to the details screen with the failure in the banner; the
         // user may retry (verification state is unchanged).
         set_banner(st, "danger", "Installation failed: " + st->install_error);
-        gtk_widget_set_sensitive(st->install_button, TRUE);
+        update_install_sensitivity(st);
         gtk_widget_set_sensitive(st->details_close_button, TRUE);
         gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "details");
     } else {
@@ -477,6 +487,10 @@ void on_install_clicked(GtkButton*, gpointer user_data) {
         GTK_COMBO_BOX_TEXT(st->channel_combo));
     st->selected_channel =
         (channel != nullptr && *channel != '\0') ? channel : "stable";
+    st->accept_permissions =
+        st->accept_permissions_check != nullptr &&
+        gtk_toggle_button_get_active(
+            GTK_TOGGLE_BUTTON(st->accept_permissions_check));
     if (channel != nullptr) g_free(channel);
 
     gtk_widget_set_sensitive(st->install_button, FALSE);
@@ -532,6 +546,26 @@ void on_launch_clicked(GtkButton*, gpointer user_data) {
 
 // ------------------------------------------------------------------ screens
 
+/// Install is allowed only when the package verifies, trust permits it, AND —
+/// when this update asks for permissions the user has not approved before — the
+/// consent box is ticked. Pressing Install must never itself be the act that
+/// grants new authority (runtime-trust WS5), which is the same rule the CLI
+/// applies by refusing to infer --accept-permissions from --yes.
+void update_install_sensitivity(AppState* st) {
+    if (st->install_button == nullptr) return;
+    const bool consented =
+        !st->vm.permission_expansion ||
+        (st->accept_permissions_check != nullptr &&
+         gtk_toggle_button_get_active(
+             GTK_TOGGLE_BUTTON(st->accept_permissions_check)));
+    gtk_widget_set_sensitive(st->install_button,
+                             (st->vm.can_install && consented) ? TRUE : FALSE);
+}
+
+void on_accept_permissions_toggled(GtkToggleButton*, gpointer user_data) {
+    update_install_sensitivity(static_cast<AppState*>(user_data));
+}
+
 /// Primary screen — mirrors the SPEC "Opening a .lexe File" mock.
 GtkWidget* build_details_page(AppState* st) {
     const lexe::gui::ViewModel& vm = st->vm;
@@ -581,6 +615,7 @@ GtkWidget* build_details_page(AppState* st) {
     if (!vm.permission_delta_text.empty()) {
         add_section(box, "Permission changes:", vm.permission_delta_text);
     }
+
     add_section(box, "Installation:", vm.install_text);
     add_section(box, "Updates:", vm.updates_text);
     add_section(box, "Isolation on this platform:", vm.isolation_text);
@@ -617,21 +652,43 @@ GtkWidget* build_details_page(AppState* st) {
 /// no visible way to install, and the user had to scroll a long page to find
 /// it.
 GtkWidget* build_action_bar(AppState* st) {
+    GtkWidget* bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(bar), 12);
+
+    // The consent control lives HERE, beside the button it gates, not with the
+    // permission list up in the scrolled details. Install is disabled until it
+    // is ticked, and a disabled button whose reason has scrolled out of sight
+    // is just a dead end with extra steps.
+    if (st->vm.permission_expansion) {
+        st->accept_permissions_check = gtk_check_button_new_with_label(
+            "Grant the new permissions this update requests");
+        gtk_widget_set_halign(st->accept_permissions_check, GTK_ALIGN_START);
+        gtk_label_set_line_wrap(
+            GTK_LABEL(gtk_bin_get_child(
+                GTK_BIN(st->accept_permissions_check))),
+            TRUE);
+        g_signal_connect(st->accept_permissions_check, "toggled",
+                         G_CALLBACK(on_accept_permissions_toggled), st);
+        gtk_box_pack_start(GTK_BOX(bar), st->accept_permissions_check, TRUE,
+                           TRUE, 0);
+    }
+
     GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_halign(buttons, GTK_ALIGN_END);
-    gtk_container_set_border_width(GTK_CONTAINER(buttons), 12);
+    gtk_widget_set_valign(buttons, GTK_ALIGN_CENTER);
+    gtk_box_pack_end(GTK_BOX(bar), buttons, FALSE, FALSE, 0);
     st->details_close_button = gtk_button_new_with_label("Close");
     g_signal_connect(st->details_close_button, "clicked",
                      G_CALLBACK(on_close_clicked), nullptr);
     st->install_button = gtk_button_new_with_label("Install");
-    gtk_widget_set_sensitive(st->install_button,
-                             st->vm.can_install ? TRUE : FALSE);
+    // sensitivity is set below, once the consent box (if any) exists
     g_signal_connect(st->install_button, "clicked",
                      G_CALLBACK(on_install_clicked), st);
     gtk_box_pack_start(GTK_BOX(buttons), st->details_close_button,
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(buttons), st->install_button, FALSE, FALSE, 0);
-    return buttons;
+    update_install_sensitivity(st);
+    return bar;
 }
 
 GtkWidget* build_progress_page(AppState* st) {

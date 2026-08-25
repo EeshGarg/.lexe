@@ -159,6 +159,43 @@ TEST_CASE("the GUI formats package facts through core/presentation, not its own"
                    pres::install_scope_line("user")));
 }
 
+TEST_CASE("an update that expands permissions is flagged for a consent gate") {
+    // The Installer used to SAY "separate approval required" and offer no way to
+    // give that approval: it never set allow_permission_expansion, so every
+    // press of Install failed with "requests permissions you have not approved"
+    // and the only way through was `lexe install --accept-permissions`. The view
+    // model now reports the expansion so the window can show a consent box and
+    // keep Install disabled until it is ticked.
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const auto key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_test_package(home.path(), key);
+    const VerificationReport report =
+        lexe::verify_package(pkg, /*check_architecture=*/false);
+    const std::optional<Manifest> manifest = try_read_manifest(pkg);
+    REQUIRE(manifest.has_value());
+
+    // No previously approved set -> adding "network" is an expansion.
+    const lexe::PermissionDelta expanding = lexe::permission_delta(
+        lexe::normalize_permissions({}), lexe::normalize_permissions({"network"}));
+    REQUIRE(expanding.expands());
+    const lexe::gui::ViewModel grew =
+        make_vm(manifest, report, pkg, paths, expanding);
+    CHECK(grew.permission_expansion);
+    CHECK_FALSE(grew.permission_delta_text.empty());
+    CHECK(contains(grew.permission_delta_text, "Network access"));
+
+    // Same permissions already approved -> nothing new, no consent gate.
+    const lexe::PermissionDelta unchanged = lexe::permission_delta(
+        lexe::normalize_permissions({"network"}),
+        lexe::normalize_permissions({"network"}));
+    CHECK_FALSE(unchanged.expands());
+    const lexe::gui::ViewModel same =
+        make_vm(manifest, report, pkg, paths, unchanged);
+    CHECK_FALSE(same.permission_expansion);
+    CHECK(same.permission_delta_text.empty());
+}
+
 TEST_CASE("permission wording comes from the frozen vocabulary, not a copy") {
     TempLexeHome home;
     // Every id in the vocabulary must render through the GUI exactly as the
