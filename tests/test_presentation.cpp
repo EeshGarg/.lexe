@@ -102,7 +102,7 @@ TEST_CASE("authenticity: an invalid signature is danger even for a known key") {
 
 TEST_CASE("permissions: truthful labels and enforcement per platform") {
     CHECK(describe_permission("network") == "Network access");
-    CHECK(describe_permission("user-files-selected") == "Access to files you choose");
+    CHECK(describe_permission("user-files-selected") == "Access to files you select");
     CHECK(describe_permission("com.unknown.thing") == "com.unknown.thing");
 
     const IsolationCapabilities avail = linux_available();

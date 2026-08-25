@@ -55,44 +55,14 @@ namespace lexe::gui {
 // this layer is unit-testable on hosts without GTK.
 // ---------------------------------------------------------------------------
 
-/// Human-readable size, decimal units, mirroring the SPEC mock
-/// (125829120 bytes -> "126 MB").
-inline std::string format_size(std::uint64_t bytes) {
-    static const char* const kUnits[] = {"B", "KB", "MB", "GB", "TB", "PB"};
-    double value = static_cast<double>(bytes);
-    std::size_t unit = 0;
-    while (value >= 1000.0 && unit + 1 < std::size(kUnits)) {
-        value /= 1000.0;
-        ++unit;
-    }
-    char buf[64];
-    if (unit == 0) {
-        std::snprintf(buf, sizeof(buf), "%llu B",
-                      static_cast<unsigned long long>(bytes));
-    } else if (value < 10.0) {
-        std::snprintf(buf, sizeof(buf), "%.1f %s", value, kUnits[unit]);
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.0f %s", value, kUnits[unit]);
-    }
-    return buf;
-}
+// The plain package facts — size, permission wording, type line, scope, source,
+// update policy — are NOT formatted here. They come from core/presentation, the
+// one place both this GUI and the CLI render them, so the two can never again
+// describe the same package differently. These thin aliases keep the call sites
+// (and the view-model tests) readable.
 
-/// Map a manifest permission id (SPEC "Permission Disclosure") to user
-/// language; unknown ids pass through verbatim so nothing is ever hidden.
-inline std::string describe_permission(const std::string& permission) {
-    if (permission == "network") return "Network access";
-    if (permission == "user-files-selected") return "Access to files you select";
-    if (permission == "user-files-all") return "Access to all of your files";
-    if (permission == "microphone") return "Microphone access";
-    if (permission == "camera") return "Camera access";
-    if (permission == "notifications") return "Show notifications";
-    if (permission == "removable-storage") return "Access to removable storage";
-    if (permission == "background") return "Run in the background";
-    if (permission == "autostart") return "Start automatically at login";
-    if (permission == "system-service") return "Install a system service";
-    if (permission == "device-access") return "Direct device access";
-    return permission;
-}
+using lexe::presentation::describe_permission;
+using lexe::presentation::format_size;
 
 /// The "Permissions:" block: one description per line with its TRUTHFUL
 /// enforcement state on this platform, or an explicit "None requested".
@@ -100,10 +70,10 @@ inline std::string format_permissions(const std::vector<std::string>& permission
                                       const IsolationCapabilities& caps) {
     if (permissions.empty()) return "None requested";
     std::string text;
-    for (const auto& p : permissions) {
+    for (const presentation::PermissionView& row :
+         presentation::present_permissions(permissions, caps)) {
         if (!text.empty()) text += '\n';
-        text += describe_permission(p) + "  [" +
-                presentation::permission_enforcement(p, caps) + "]";
+        text += row.title + "  [" + row.enforcement + "]";
     }
     return text;
 }
@@ -111,45 +81,23 @@ inline std::string format_permissions(const std::vector<std::string>& permission
 /// The permission CHANGE on an update, kept separate from any key-change or
 /// trust decision (empty when there is nothing new).
 inline std::string format_permission_delta(const PermissionDelta& delta) {
-    if (!delta.expands()) return "";
+    const presentation::PermissionDeltaView view =
+        presentation::present_permission_delta(delta);
+    if (!view.expands) return "";
     std::string text = "New permissions this update requests (separate approval "
                        "required):";
-    for (const std::string& id : delta.added) {
-        text += "\n  + " + describe_permission(id);
+    for (const std::string& title : view.added) {
+        text += "\n  + " + title;
     }
     return text;
-}
-
-/// Architecture part of the type line: the host architecture when the
-/// package supports it, otherwise every architecture the package offers.
-inline std::string architecture_text(const std::vector<std::string>& architectures,
-                                     const std::string& host_arch) {
-    if (std::find(architectures.begin(), architectures.end(), host_arch) !=
-        architectures.end()) {
-        return host_arch;
-    }
-    std::string joined;
-    for (const auto& a : architectures) {
-        if (!joined.empty()) joined += ", ";
-        joined += a;
-    }
-    return joined.empty() ? std::string("unknown architecture") : joined;
 }
 
 /// SPEC mock "Application Type:" line, e.g. "Native Linux — x86_64".
 inline std::string format_application_type(const std::string& application_type,
                                            const std::vector<std::string>& architectures,
                                            const std::string& host_arch) {
-    const std::string type =
-        application_type == "native" ? "Native Linux" : application_type;
-    return type + " — " + architecture_text(architectures, host_arch);
-}
-
-/// SPEC mock "Installation:" scope line ("Current user only").
-inline std::string format_install_scope(const std::string& scope) {
-    if (scope == "user") return "Current user only";
-    if (scope == "system") return "All users (system-wide)";
-    return scope;
+    return presentation::application_type_line(application_type, architectures,
+                                               host_arch);
 }
 
 /// The full "Installation:" block: scope + size. `payload_bytes` is the
@@ -159,12 +107,11 @@ inline std::string format_install_scope(const std::string& scope) {
 inline std::string format_install(const std::string& scope,
                                   std::uint64_t estimated_size,
                                   std::uint64_t payload_bytes = 0) {
-    std::string text = format_install_scope(scope);
+    std::string text = presentation::install_scope_line(scope);
     text += '\n';
-    const std::uint64_t size =
-        estimated_size > 0 ? estimated_size : payload_bytes;
-    text += size > 0 ? format_size(size)
-                     : std::string("Install size not specified");
+    const std::string size =
+        presentation::install_size_line(estimated_size, payload_bytes);
+    text += size.empty() ? std::string("Install size not specified") : size;
     return text;
 }
 
@@ -172,21 +119,13 @@ inline std::string format_install(const std::string& scope,
 /// source is always the package file itself.
 inline std::string format_source(const std::string& install_mode,
                                  const std::string& package_filename) {
-    if (install_mode == "bundled") {
-        return "Bundled package — all application files are contained in " +
-               package_filename;
-    }
-    return install_mode + " (unsupported in Lexe 0.1)";
+    return presentation::source_line(install_mode, package_filename);
 }
 
-/// The "Updates:" block (SPEC mock "Automatically check the developer
-/// repository"), or an explicit disabled notice.
+/// The "Updates:" block, or an explicit "no automatic updates" notice.
 inline std::string format_updates(bool enabled, const std::string& manifest_url,
                                   const std::string& channel) {
-    if (!enabled || manifest_url.empty()) {
-        return "Updates are disabled for this package.";
-    }
-    return "Automatically check " + manifest_url + "\nChannel: " + channel;
+    return presentation::updates_line(enabled, manifest_url, channel);
 }
 
 /// The two-dimensional authenticity + local-trust lines for the banner and the

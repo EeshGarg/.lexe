@@ -185,25 +185,12 @@ std::string join(const std::vector<std::string>& parts,
     return out;
 }
 
-/// Human size in decimal units, matching the SPEC primary screen
-/// (125829120 bytes -> "126 MB").
-std::string format_size(std::uint64_t bytes) {
-    if (bytes < 1000) return std::to_string(bytes) + " B";
-    static const char* const kUnits[] = {"KB", "MB", "GB", "TB"};
-    double value = static_cast<double>(bytes) / 1000.0;
-    std::size_t unit = 0;
-    while (value >= 1000.0 && unit + 1 < 4) {
-        value /= 1000.0;
-        ++unit;
-    }
-    char buf[32];
-    if (value < 10.0) {
-        std::snprintf(buf, sizeof(buf), "%.1f %s", value, kUnits[unit]);
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.0f %s", value, kUnits[unit]);
-    }
-    return buf;
-}
+// Size, scope and update wording come from core/presentation, the one place
+// both this CLI and the GTK Installer render them. They each used to carry a
+// private copy, and the copies drifted — the Installer wrote "All users
+// (system-wide)" where this wrote "System-wide", and an em dash in the type
+// line where this wrote a hyphen.
+using lexe::presentation::format_size;
 
 /// Sum of the package's payload/ entry sizes (shown when the manifest gives
 /// no install.estimatedSize).
@@ -227,17 +214,13 @@ std::uint64_t display_size(const Manifest& manifest,
 }
 
 std::string install_scope_text(const Manifest& manifest) {
-    if (manifest.install_scope == "user") return "Current user only";
-    if (manifest.install_scope == "system") return "System-wide";
-    return manifest.install_scope;
+    return presentation::install_scope_line(manifest.install_scope);
 }
 
 std::string update_policy_text(const Manifest& manifest) {
-    if (manifest.updates_enabled && !manifest.updates_manifest_url.empty()) {
-        return "Automatically check " + manifest.updates_manifest_url +
-               " (channel: " + manifest.updates_channel + ")";
-    }
-    return "No automatic updates";
+    return presentation::updates_line(manifest.updates_enabled,
+                                      manifest.updates_manifest_url,
+                                      manifest.updates_channel);
 }
 
 /// Ask on stdin. Only "y"/"yes" (any case) confirms; EOF declines.
@@ -314,8 +297,11 @@ void print_primary_screen(const Manifest& manifest, const fs::path& package,
               << "  Signing key fingerprint: " << auth.fingerprint_grouped << "\n"
               << "  " << auth.identity_caveat << "\n\n"
               << "Source:\n  " << package.string() << "\n\n"
-              << "Application Type:\n  Native Linux - "
-              << join(manifest.architectures, ", ") << "\n\n"
+              << "Application Type:\n  "
+              << presentation::application_type_line(
+                     manifest.application_type, manifest.architectures,
+                     host_architecture())
+              << "\n\n"
               << "Permissions:\n";
     if (perms.ids.empty()) {
         std::cout << "  (none requested)\n";
@@ -367,15 +353,28 @@ void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes) {
     if (!manifest.publisher_website.empty()) {
         print_kv("Website:", manifest.publisher_website);
     }
-    print_kv("Type:", manifest.application_type + " (" +
-                          join(manifest.architectures, ", ") + ")");
+    // The same "Native Linux — x86_64" the install screen and the Installer
+    // show; this line used to invent a third format ("native (x86_64)") for the
+    // one fact all three describe.
+    print_kv("Type:", presentation::application_type_line(
+                          manifest.application_type, manifest.architectures,
+                          host_architecture()));
     print_kv("Entrypoint:", manifest.entrypoint_executable);
     print_kv("Install:",
              manifest.install_mode + ", " + manifest.install_scope + " scope");
     print_kv("Size:", format_size(size_bytes));
-    print_kv("Permissions:", manifest.permissions.empty()
+    // Human titles, as `lexe inspect` and the install screen show them — this
+    // line used to print raw ids ("user-files-selected"), so the one command a
+    // user runs to decide whether to trust a package named its permissions
+    // differently from every other surface. Raw ids remain in `--json`.
+    std::vector<std::string> permission_titles;
+    permission_titles.reserve(manifest.permissions.size());
+    for (const std::string& id : manifest.permissions) {
+        permission_titles.push_back(presentation::describe_permission(id));
+    }
+    print_kv("Permissions:", permission_titles.empty()
                                  ? "(none)"
-                                 : join(manifest.permissions, ", "));
+                                 : join(permission_titles, ", "));
     print_kv("Updates:", update_policy_text(manifest));
 }
 
@@ -1999,6 +1998,35 @@ int cmd_build(const std::vector<std::string>& args) {
               << manifest.version << " (" << manifest.id << ")\n"
               << "  publisher key: " << pubkey << "\n"
               << "  verification:  " << (report.ok() ? "OK" : "FAILED") << "\n";
+    // The Tux32 Core 1 verdict, reported the way the Builder reports it at the
+    // same moment. ADVISORY here: `lexe build` takes no runtime profile, so
+    // there is no portability claim to gate — but a developer who builds from
+    // the CLI should still learn what the Builder would have told them, instead
+    // of finding out only if they happen to run `lexe sdk verify`. Any payload
+    // this cannot analyze (non-ELF, cross-arch, an interpreted app) simply gets
+    // no line rather than a spurious failure.
+    try {
+        const ResolvedTarget t = resolve_binary_target(project, "build");
+        DependencyOptions dopts;
+        dopts.payload_search_paths = t.search;
+        const DependencyReport deps = analyze_dependencies(t.root, dopts);
+        if (deps.root_info.is_elf) {
+            const Core1VerifyResult r =
+                verify_against_profile(deps, tux32_core_1());
+            std::cout << "  portability:   ";
+            if (r.conformant()) {
+                std::cout << "conformant with Tux32 " << r.profile_id << "\n";
+            } else {
+                std::cout << to_string(r.verdict) << " (not Core 1 portable)\n"
+                          << "                 " << r.detail << "\n"
+                          << "                 Details: `lexe sdk verify "
+                          << project.string() << "`\n";
+            }
+        }
+    } catch (const std::exception&) {
+        // Not analyzable — say nothing rather than guess.
+    }
+
     if (injected_key) {
         std::cout << "  filled in publisher.publicKey in "
                   << manifest_file.string() << "\n";

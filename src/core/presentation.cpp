@@ -2,6 +2,10 @@
 
 #include "core/presentation.hpp"
 
+#include <algorithm>
+#include <cstdio>
+#include <iterator>
+
 namespace lexe::presentation {
 
 const char* to_string(AuthenticityView::Severity s) {
@@ -183,6 +187,75 @@ IsolationView present_isolation(const IsolationCapabilities& caps) {
         {"seccomp syscall filter", "not implemented"},
     };
     return v;
+}
+
+// ------------------------------------------------- package display fields
+
+std::string format_size(std::uint64_t bytes) {
+    static const char* const kUnits[] = {"B", "KB", "MB", "GB", "TB", "PB"};
+    double value = static_cast<double>(bytes);
+    std::size_t unit = 0;
+    while (value >= 1000.0 && unit + 1 < std::size(kUnits)) {
+        value /= 1000.0;
+        ++unit;
+    }
+    char buf[64];
+    if (unit == 0) {
+        std::snprintf(buf, sizeof(buf), "%llu B",
+                      static_cast<unsigned long long>(bytes));
+    } else if (value < 10.0) {
+        std::snprintf(buf, sizeof(buf), "%.1f %s", value, kUnits[unit]);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.0f %s", value, kUnits[unit]);
+    }
+    return buf;
+}
+
+std::string application_type_line(const std::string& application_type,
+                                  const std::vector<std::string>& architectures,
+                                  const std::string& host_arch) {
+    const std::string type =
+        application_type == "native" ? "Native Linux" : application_type;
+    // The host architecture alone when this package runs here; otherwise name
+    // every architecture it does offer, so "why not here" is visible.
+    if (std::find(architectures.begin(), architectures.end(), host_arch) !=
+        architectures.end()) {
+        return type + " — " + host_arch;
+    }
+    std::string joined;
+    for (const std::string& a : architectures) {
+        if (!joined.empty()) joined += ", ";
+        joined += a;
+    }
+    return type + " — " +
+           (joined.empty() ? std::string("unknown architecture") : joined);
+}
+
+std::string install_scope_line(const std::string& scope) {
+    if (scope == "user") return "Current user only";
+    if (scope == "system") return "All users (system-wide)";
+    return scope;
+}
+
+std::string updates_line(bool enabled, const std::string& manifest_url,
+                         const std::string& channel) {
+    if (!enabled || manifest_url.empty()) return "No automatic updates";
+    return "Automatically check " + manifest_url + " (channel: " + channel + ")";
+}
+
+std::string source_line(const std::string& install_mode,
+                        const std::string& package_filename) {
+    if (install_mode == "bundled") {
+        return "Bundled package — all application files are contained in " +
+               package_filename;
+    }
+    return install_mode + " (unsupported in Lexe 0.1)";
+}
+
+std::string install_size_line(std::uint64_t estimated_size,
+                              std::uint64_t payload_bytes) {
+    const std::uint64_t size = estimated_size > 0 ? estimated_size : payload_bytes;
+    return size > 0 ? format_size(size) : std::string();
 }
 
 } // namespace lexe::presentation

@@ -18,6 +18,8 @@
 #include "core/manifest.hpp"
 #include "core/package.hpp"
 #include "core/paths.hpp"
+#include "core/permissions.hpp"
+#include "core/presentation.hpp"
 #include "core/trust.hpp"
 #include "core/verify.hpp"
 
@@ -123,8 +125,51 @@ TEST_CASE("format_updates states the source + channel, or that updates are off")
     TempLexeHome home;
     CHECK(contains(lexe::gui::format_updates(true, "https://e/u.json", "stable"),
                    "Automatically check"));
+    // "No automatic updates" rather than "updates are disabled": a package can
+    // have updates enabled and simply no manifest URL to check, and this line
+    // has to be true in both cases.
     CHECK(lexe::gui::format_updates(false, "https://e/u.json", "stable") ==
-          "Updates are disabled for this package.");
+          "No automatic updates");
+    CHECK(lexe::gui::format_updates(true, "", "stable") == "No automatic updates");
+}
+
+// --- one wording, both frontends ------------------------------------------
+//
+// The CLI and the Installer each used to format these facts themselves, and the
+// copies drifted: the Installer called a permission "Access to files you select"
+// where the vocabulary said "choose", wrote an em dash in the type line where
+// the CLI wrote a hyphen, and said "All users (system-wide)" where the CLI said
+// "System-wide". These lock every frontend to core/presentation so a future
+// change cannot re-fork the wording without failing here.
+
+TEST_CASE("the GUI formats package facts through core/presentation, not its own") {
+    TempLexeHome home;
+    namespace pres = lexe::presentation;
+
+    CHECK(lexe::gui::format_size(125829120) == pres::format_size(125829120));
+    CHECK(lexe::gui::describe_permission("user-files-selected") ==
+          pres::describe_permission("user-files-selected"));
+    CHECK(lexe::gui::format_application_type("native", {"x86_64"}, "x86_64") ==
+          pres::application_type_line("native", {"x86_64"}, "x86_64"));
+    CHECK(lexe::gui::format_updates(true, "https://e/u.json", "stable") ==
+          pres::updates_line(true, "https://e/u.json", "stable"));
+    CHECK(lexe::gui::format_source("bundled", "app.lexe") ==
+          pres::source_line("bundled", "app.lexe"));
+    CHECK(contains(lexe::gui::format_install("user", 125829120),
+                   pres::install_scope_line("user")));
+}
+
+TEST_CASE("permission wording comes from the frozen vocabulary, not a copy") {
+    TempLexeHome home;
+    // Every id in the vocabulary must render through the GUI exactly as the
+    // vocabulary titles it — the Installer previously carried its own list,
+    // including nine permissions that do not exist in 0.1 at all.
+    for (const lexe::PermissionSpec& spec : lexe::permission_vocabulary()) {
+        INFO("permission: " << spec.id);
+        CHECK(lexe::gui::describe_permission(spec.id) == spec.title);
+        CHECK(contains(lexe::gui::format_permissions({spec.id}, linux_caps()),
+                       spec.title));
+    }
 }
 
 TEST_CASE("channel options cover stable/beta/nightly and keep custom channels") {

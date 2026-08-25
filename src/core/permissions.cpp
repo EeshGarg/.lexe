@@ -17,7 +17,7 @@ const std::vector<PermissionSpec>& permission_vocabulary() {
         {"network", "Network access",
          "Outbound and inbound network sockets",
          PermissionBaseline::Enforceable, true},
-        {"user-files-selected", "Access to files you choose",
+        {"user-files-selected", "Access to files you select",
          "Files the user explicitly selects at runtime (no ambient file access)",
          PermissionBaseline::Advisory, true},
     };
