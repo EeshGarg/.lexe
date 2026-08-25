@@ -70,6 +70,21 @@ AuthenticityView present_authenticity(const TrustEvaluation& eval,
         v.headline = "Refused — the signing key has changed";
         v.key_text = "Publisher key: DIFFERENT from the key associated with this "
                      "application. There is no authenticated key rotation in 0.1.";
+        // Both fingerprints, so there is something to compare — and the
+        // procedure that actually clears this. Removing the application alone
+        // does NOT: it leaves the local trust record in place and the next
+        // install is refused identically.
+        if (eval.expected.has_value()) {
+            v.expected_fingerprint_grouped = eval.expected->grouped;
+        }
+        v.remedy =
+            "Confirm with the publisher — not with the package — that they "
+            "rotated their key.\n"
+            "To accept the new key you must remove the application AND clear "
+            "its local trust record, which deletes its data:\n"
+            "  lexe remove " + eval.app_id + " --purge-data\n"
+            "  lexe trust forget " + eval.app_id + "\n"
+            "Installing under a different App ID keeps the existing one.";
         break;
     case PublisherKeyState::Blocked:
         v.severity = AuthenticityView::Severity::Danger;

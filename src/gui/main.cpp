@@ -138,6 +138,8 @@ struct TrustLines {
     std::string signature;
     std::string key;
     std::string fingerprint;
+    std::string expected_fingerprint; // set only when the key CHANGED
+    std::string remedy;               // what the user can do about a refusal
     std::string caveat;
     std::string severity = "danger";
     bool allowed = false;
@@ -156,6 +158,8 @@ inline TrustLines format_trust(const std::optional<TrustEvaluation>& eval) {
     t.signature = v.signature_text;
     t.key = v.key_text;
     t.fingerprint = v.fingerprint_grouped;
+    t.expected_fingerprint = v.expected_fingerprint_grouped;
+    t.remedy = v.remedy;
     t.caveat = v.identity_caveat;
     t.severity = presentation::to_string(v.severity);
     t.allowed = v.can_proceed;
@@ -229,6 +233,8 @@ struct ViewModel {
     std::string signature_text;   // "Signature: valid (Ed25519)" etc.
     std::string key_text;         // the local key-state sentence
     std::string fingerprint_text; // grouped signing-key fingerprint
+    std::string expected_fingerprint_text; // the bound key, when it differs
+    std::string trust_remedy;     // what to do about a trust refusal
     std::string identity_caveat;  // TOFU caveat (always present when readable)
     std::string trust_severity;   // "ok" | "caution" | "danger" (banner color)
     bool verified = false;        // the §6 report passed (authenticity only)
@@ -290,6 +296,8 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
     vm.signature_text = trust.signature;
     vm.key_text = trust.key;
     vm.fingerprint_text = trust.fingerprint;
+    vm.expected_fingerprint_text = trust.expected_fingerprint;
+    vm.trust_remedy = trust.remedy;
     vm.identity_caveat = trust.caveat;
     vm.trust_severity = trust.severity;
     vm.isolation_text = format_isolation(caps);
@@ -699,10 +707,21 @@ GtkWidget* build_details_page(AppState* st) {
         std::string trust_body = vm.signature_text;
         if (!vm.key_text.empty()) trust_body += "\n" + vm.key_text;
         if (!vm.fingerprint_text.empty()) {
-            trust_body += "\nSigning key fingerprint: " + vm.fingerprint_text;
+            // When the key CHANGED, label the two so they can be compared. A
+            // lone fingerprint on a screen that says "the signing key has
+            // changed" gives the reader nothing to compare it against.
+            trust_body +=
+                vm.expected_fingerprint_text.empty()
+                    ? "\nSigning key fingerprint: " + vm.fingerprint_text
+                    : "\nExpected (already installed): " +
+                          vm.expected_fingerprint_text +
+                          "\nPresented (this package):  " + vm.fingerprint_text;
         }
         if (!vm.identity_caveat.empty()) trust_body += "\n" + vm.identity_caveat;
         add_section(box, "Authenticity & local trust:", trust_body);
+    }
+    if (!vm.trust_remedy.empty()) {
+        add_section(box, "What you can do:", vm.trust_remedy);
     }
 
     add_section(box, "Source:", vm.source_text);

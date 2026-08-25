@@ -37,6 +37,13 @@ struct AuthenticityView {
     std::string publisher_display;   // the free-form publisher string (unverified)
     std::string fingerprint_grouped; // display fingerprint of the presented key
     std::string fingerprint_full;    // full fingerprint (for structured output)
+    /// The fingerprint this App ID is bound to, when it DIFFERS from the
+    /// presented one ("" otherwise). A changed-key screen that shows only the
+    /// key in front of you gives you nothing to compare it against.
+    std::string expected_fingerprint_grouped;
+    /// What the user can actually do about a refusal ("" when there is nothing
+    /// to do, or nothing was refused). Never a way to bypass the decision.
+    std::string remedy;
     bool can_proceed = false;        // the trust decision allows proceeding
 };
 const char* to_string(AuthenticityView::Severity s);

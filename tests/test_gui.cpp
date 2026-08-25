@@ -237,9 +237,25 @@ TEST_CASE("format_trust presents authenticity + local trust, first-seen is cauti
     lexe::TrustEvaluation changed = fs_eval;
     changed.key_state = lexe::PublisherKeyState::Changed;
     changed.decision = lexe::TrustDecision::RejectChangedKey;
+    changed.app_id = "com.example.hello";
+    changed.expected = lexe::key_fingerprint(lexe::test::make_keypair().public_key);
     const lexe::gui::TrustLines ch = lexe::gui::format_trust(changed);
     CHECK(ch.severity == "danger");
     CHECK_FALSE(ch.allowed);
+
+    // A "the signing key has changed" screen showed only the key in front of
+    // you, so there was nothing to compare it against, and offered no way
+    // forward at all. Both fingerprints, and the procedure that actually
+    // clears it — removing the application ALONE does not, because the local
+    // trust record survives.
+    CHECK_FALSE(ch.expected_fingerprint.empty());
+    CHECK(ch.expected_fingerprint != ch.fingerprint);
+    CHECK(contains(ch.remedy, "lexe remove com.example.hello --purge-data"));
+    CHECK(contains(ch.remedy, "lexe trust forget com.example.hello"));
+
+    // A key that has NOT changed has nothing to compare and nothing to remedy.
+    CHECK(fs_lines.expected_fingerprint.empty());
+    CHECK(fs_lines.remedy.empty());
 
     // No evaluation (unreadable package): danger, cannot establish authenticity.
     const lexe::gui::TrustLines none = lexe::gui::format_trust(std::nullopt);
