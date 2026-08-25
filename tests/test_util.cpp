@@ -8,7 +8,12 @@
 
 #include <cctype>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 using namespace lexe;
 namespace fs = std::filesystem;
@@ -222,5 +227,61 @@ TEST_CASE("now_utc_string is RFC 3339 UTC") {
     }
     CHECK(t.substr(0, 2) == "20"); // sanity: this century
 }
+
+TEST_CASE("slurp refuses a directory instead of allocating a nonsense size") {
+    // Opening a directory SUCCEEDS on glibc and reports INT64_MAX as its size,
+    // so sizing a buffer from the stream threw std::bad_alloc — which surfaced
+    // as "lexe: std::bad_alloc" whenever anyone pointed a package command at a
+    // project folder. It must be refused by kind instead.
+    const fs::path work = test::unique_temp_dir("lexe-slurp-dir-");
+    fs::create_directories(work);
+    CHECK_THROWS_AS(util::slurp(work), lexe::Error);
+    try {
+        util::slurp(work);
+    } catch (const lexe::Error& e) {
+        const std::string what = e.what();
+        CHECK(what.find("directory") != std::string::npos);
+    }
+    fs::remove_all(work);
+}
+
+TEST_CASE("slurp still reports a missing file as not found") {
+    const fs::path work = test::unique_temp_dir("lexe-slurp-missing-");
+    fs::create_directories(work);
+    CHECK_THROWS_AS(util::slurp(work / "absent.bin"), lexe::NotFoundError);
+    fs::remove_all(work);
+}
+
+TEST_CASE("slurp round-trips ordinary and empty files") {
+    const fs::path work = test::unique_temp_dir("lexe-slurp-ok-");
+    fs::create_directories(work);
+    const std::string body(200000, 'x'); // larger than one read buffer
+    util::spit(work / "big.bin", std::string_view(body));
+    CHECK(util::slurp_text(work / "big.bin") == body);
+    util::spit(work / "empty.bin", std::string_view(""));
+    CHECK(util::slurp(work / "empty.bin").empty());
+    fs::remove_all(work);
+}
+
+#ifndef _WIN32
+TEST_CASE("slurp refuses a FIFO instead of blocking forever") {
+    // Opening a FIFO for reading blocks until a writer appears, so `lexe verify
+    // <fifo>` hung indefinitely. Refuse it by kind, before opening.
+    const fs::path work = test::unique_temp_dir("lexe-slurp-fifo-");
+    fs::create_directories(work);
+    const fs::path fifo = work / "pipe";
+    REQUIRE(::mkfifo(fifo.string().c_str(), 0600) == 0);
+    CHECK_THROWS_AS(util::slurp(fifo), lexe::Error);
+    fs::remove_all(work);
+}
+
+TEST_CASE("slurp reads an unseekable regular file whose size reads as zero") {
+    // Every /proc entry is a regular file that reports st_size 0 and refuses a
+    // seek to the end; the read loop, not the reported size, decides length.
+    const std::string stat = util::slurp_text("/proc/self/stat");
+    CHECK_FALSE(stat.empty());
+    CHECK(stat.find(')') != std::string::npos);
+}
+#endif
 
 } // TEST_SUITE("util")

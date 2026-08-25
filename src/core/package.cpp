@@ -220,10 +220,41 @@ PackageReader::PackageReader(const fs::path& lexe_file)
     impl_->file = lexe_file;
     // Bound the package size BEFORE loading it into memory (HARDENING.md §F):
     // check the on-disk size so a hostile multi-gigabyte file is never slurped.
+    // The bound is FAIL-CLOSED: a path whose size cannot be established is not
+    // a package, so it is refused here rather than slipping past the limit.
     {
         std::error_code ec;
+        // A missing path keeps its own NotFoundError from slurp() below, so the
+        // "file not found" message a mistyped path deserves is not replaced by
+        // the kind check.
+        if (!fs::exists(lexe_file, ec)) {
+            throw NotFoundError("file not found: " + lexe_file.string());
+        }
+        if (!fs::is_regular_file(lexe_file, ec)) {
+            // A directory is the common form of this mistake — a developer
+            // pointing a package command at the project folder — so say so.
+            std::error_code dir_ec;
+            if (fs::is_directory(lexe_file, dir_ec)) {
+                // Both halves matter: `lexe verify` shows only the message,
+                // while the top-level CLI shows the hint. Without a hint here
+                // the generic "re-download the package" advice for a failed
+                // verification would appear, which is wrong for a folder.
+                throw VerificationError(
+                    "package: " + lexe_file.string() +
+                    " is a directory, not a .lexe package file",
+                    "Build a project folder into a package first: `lexe build " +
+                        lexe_file.string() + "`.");
+            }
+            throw VerificationError(
+                "package: not a regular file: " + lexe_file.string(),
+                "A .lexe package is a single file. Check the path.");
+        }
         const auto on_disk = fs::file_size(lexe_file, ec);
-        if (!ec && on_disk > limits::kMaxPackageBytes) {
+        if (ec) {
+            throw VerificationError("package: cannot determine the size of " +
+                                    lexe_file.string() + ": " + ec.message());
+        }
+        if (on_disk > limits::kMaxPackageBytes) {
             throw VerificationError(
                 "package: file is " + std::to_string(on_disk) +
                 " bytes, exceeds the " +

@@ -163,28 +163,66 @@ std::vector<std::uint8_t> base64_decode(std::string_view b64) {
 
 // ---------------------------------------------------------------- file IO
 
+namespace {
+
+/// Plain-language name for a non-regular filesystem entry, so an error can say
+/// what the path actually is instead of only what it is not.
+std::string describe_file_kind(const fs::file_status& st) {
+    switch (st.type()) {
+    case fs::file_type::directory: return "a directory";
+    case fs::file_type::symlink:   return "a dangling symlink";
+    case fs::file_type::block:     return "a block device";
+    case fs::file_type::character: return "a character device";
+    case fs::file_type::fifo:      return "a named pipe";
+    case fs::file_type::socket:    return "a socket";
+    default:                       return "not a regular file";
+    }
+}
+
+} // namespace
+
 std::vector<std::uint8_t> slurp(const fs::path& file) {
     std::error_code ec;
-    if (!fs::exists(file, ec)) {
+    const fs::file_status st = fs::status(file, ec); // follows symlinks
+    if (ec || !fs::exists(st)) {
         throw NotFoundError("file not found: " + file.string());
     }
+    // Only a REGULAR file may be read whole. Anything else is refused by kind,
+    // before a descriptor is opened, because the alternatives all misbehave:
+    // a directory opens successfully and reports a nonsense size (tellg returns
+    // INT64_MAX on glibc, so a naive resize() throws std::bad_alloc); a FIFO or
+    // socket blocks forever with no reader on the other end; a character device
+    // such as /dev/zero is unbounded. Naming the kind also turns the common
+    // "pointed the tool at a project folder" mistake into a clear message.
+    if (!fs::is_regular_file(st)) {
+        throw Error("not a regular file (" + describe_file_kind(st) + "): " +
+                    file.string());
+    }
+
     std::ifstream in(file, std::ios::binary);
     if (!in) {
         throw Error("cannot open file for reading: " + file.string());
     }
+
+    // Size the buffer from the filesystem, never from a seek: some regular
+    // files are unseekable and report st_size 0 while still yielding bytes
+    // (every /proc entry, for one), so the reported size is a HINT for the
+    // initial reserve and the read loop below is what actually decides length.
     std::vector<std::uint8_t> data;
-    in.seekg(0, std::ios::end);
-    const std::streamoff size = in.tellg();
-    if (size < 0) {
-        throw Error("cannot determine file size: " + file.string());
-    }
-    in.seekg(0, std::ios::beg);
-    data.resize(static_cast<std::size_t>(size));
-    if (size > 0) {
-        in.read(reinterpret_cast<char*>(data.data()), size);
-        if (!in) {
-            throw Error("read failed: " + file.string());
+    if (const auto hint = fs::file_size(file, ec); !ec && hint > 0) {
+        if (hint > static_cast<std::uintmax_t>(data.max_size())) {
+            throw Error("file is too large to read: " + file.string());
         }
+        data.reserve(static_cast<std::size_t>(hint));
+    }
+
+    char buffer[64 * 1024];
+    while (in.read(buffer, static_cast<std::streamsize>(sizeof(buffer))) ||
+           in.gcount() > 0) {
+        data.insert(data.end(), buffer, buffer + in.gcount());
+    }
+    if (in.bad()) {
+        throw Error("read failed: " + file.string());
     }
     return data;
 }
