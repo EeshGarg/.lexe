@@ -411,6 +411,35 @@ int cmd_install(const std::vector<std::string>& args) {
     const Manifest manifest =
         verify_package_or_throw(package, /*check_architecture=*/true);
 
+    // Say plainly that this REPLACES something, and whether it moves backwards.
+    // `lexe update` refuses a downgrade outright (FORMAT-0.1 §7 check 7);
+    // install allows one, because deliberately reinstalling an older build is a
+    // reasonable thing to do — but it must not happen silently. `lexe rollback`
+    // only ever moves to an OLDER retained version, so a downgrade nobody
+    // noticed leaves the newer build retained on disk with no way to reach it.
+    // Printed before the prompt AND under --yes, so it is in the transcript
+    // either way.
+    {
+        const Registry registry(paths);
+        if (registry.is_installed(manifest.id)) {
+            const std::string installed = registry.current_version(manifest.id);
+            if (installed == manifest.version) {
+                std::cout << "Reinstalling " << manifest.name << " " << installed
+                          << " over the same version.\n";
+            } else if (version_less(manifest.version, installed)) {
+                std::cout << "Downgrade: this replaces the installed version "
+                          << installed << " with the older " << manifest.version
+                          << ".\n"
+                          << "  `lexe rollback` moves to an older version, so it "
+                             "cannot bring "
+                          << installed << " back afterwards.\n";
+            } else {
+                std::cout << "This replaces the installed version " << installed
+                          << " with " << manifest.version << ".\n";
+            }
+        }
+    }
+
     if (parsed.flags.count("--yes") == 0) {
         std::uint64_t size = manifest.install_estimated_size;
         if (size == 0) {

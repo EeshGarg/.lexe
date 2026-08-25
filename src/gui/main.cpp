@@ -37,6 +37,7 @@
 #include "core/presentation.hpp"
 #include "core/trust.hpp"
 #include "core/verify.hpp"
+#include "core/versioncmp.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -216,6 +217,10 @@ struct ViewModel {
     std::string permissions_text; // "Permissions:" block (with enforcement)
     std::string permission_delta_text; // new-permissions-on-update ("" when none)
     bool permission_expansion = false;  // this update requests NEW permissions
+    /// What this install REPLACES, when the application is already installed
+    /// ("" for a fresh install). The window used to give no sign at all that it
+    /// was about to replace something, including when it moved backwards.
+    std::string replacement_text;
     std::string install_text;     // "Installation:" block (scope + size)
     std::string updates_text;     // "Updates:" block
     std::string isolation_text;   // "Isolation on this platform" block
@@ -262,7 +267,8 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                   const std::optional<TrustEvaluation>& eval,
                                   const IsolationCapabilities& caps,
                                   const PermissionDelta& delta = {},
-                                  std::uint64_t payload_bytes = 0) {
+                                  std::uint64_t payload_bytes = 0,
+                                  const std::string& installed_version = "") {
     ViewModel vm;
     const std::string filename = package_path.filename().string();
     vm.verified = report.ok();
@@ -304,6 +310,27 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
         vm.permissions_text = format_permissions(m.permissions, caps);
         vm.permission_delta_text = format_permission_delta(delta);
         vm.permission_expansion = delta.expands();
+        if (!installed_version.empty()) {
+            // `lexe rollback` only ever moves to an OLDER retained version, so a
+            // downgrade nobody noticed strands the newer build on disk with no
+            // way to reach it. Say so before, not after.
+            if (installed_version == m.version) {
+                vm.replacement_text = "Version " + m.version +
+                                      " is already installed. Installing again "
+                                      "replaces it with this copy.";
+            } else if (version_less(m.version, installed_version)) {
+                vm.replacement_text =
+                    "Downgrade: version " + installed_version +
+                    " is installed, and this is the older " + m.version +
+                    ".\nGoing back to " + installed_version +
+                    " afterwards means installing that package again — "
+                    "\"rollback\" moves to an older version, not a newer one.";
+            } else {
+                vm.replacement_text = "This replaces the installed version " +
+                                      installed_version + " with " + m.version +
+                                      ".";
+            }
+        }
         vm.install_text = format_install(m.install_scope,
                                          m.install_estimated_size,
                                          payload_bytes);
@@ -622,6 +649,9 @@ GtkWidget* build_details_page(AppState* st) {
     if (!vm.refusal_text.empty()) {
         add_section(box, "Why this package was refused:", vm.refusal_text);
     }
+    if (!vm.replacement_text.empty()) {
+        add_section(box, "Already installed:", vm.replacement_text);
+    }
 
     // Authenticity & local trust: two dimensions, the fingerprint, and the
     // always-present "not real-world identity" caveat.
@@ -896,6 +926,7 @@ int main(int argc, char** argv) {
     // builder just formats them.
     std::optional<lexe::TrustEvaluation> eval;
     lexe::PermissionDelta delta;
+    std::string installed_version; // "" when this is a fresh install
     if (manifest.has_value()) {
         try {
             const lexe::SignatureState sig =
@@ -922,6 +953,7 @@ int main(int argc, char** argv) {
                 delta = lexe::permission_delta(
                     lexe::normalized_from_ids(rec.approved_permissions),
                     lexe::normalize_permissions(manifest->permissions));
+                installed_version = registry.current_version(manifest->id);
             }
         } catch (const std::exception&) {
             // Leave eval empty (banner shows a danger "cannot establish
@@ -936,7 +968,8 @@ int main(int argc, char** argv) {
 
     st->vm = lexe::gui::build_view_model(manifest, report, st->package_path,
                                          st->paths, lexe::host_architecture(),
-                                         eval, caps, delta, payload_bytes);
+                                         eval, caps, delta, payload_bytes,
+                                         installed_version);
     if (!st->vm.channels.empty()) {
         st->selected_channel =
             st->vm.channels[static_cast<std::size_t>(st->vm.active_channel)];
