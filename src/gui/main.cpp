@@ -363,6 +363,30 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
     // allows it (a valid-but-first-seen key is allowed, but a changed/blocked/
     // corrupt key disables Install even though the signature is valid).
     vm.can_install = vm.verified && manifest.has_value() && trust.allowed;
+
+    // A package may verify perfectly and still be impossible for this runtime
+    // to install: the 0.1 permission vocabulary is frozen, and the installer
+    // refuses an id outside it (`lexe install` exits 3 with "unknown permission
+    // ... (not in the 0.1 vocabulary)"). The window used to show the ordinary
+    // caution banner with Install ENABLED, so the only way to discover that was
+    // to press it — and the failure that came back was reported off-screen.
+    // Nothing downstream catches it either: `lexe build`, `lexe verify` and
+    // `lexe info` all accept these ids.
+    if (manifest.has_value()) {
+        try {
+            (void)normalize_permissions(manifest->permissions);
+        } catch (const std::exception& e) {
+            vm.can_install = false;
+            vm.trust_severity = "danger";
+            vm.status_text = "Refused — this runtime cannot grant a permission "
+                             "this package requires";
+            vm.refusal_text =
+                std::string(e.what()) +
+                "\nThe 0.1 permission vocabulary is frozen. A package may only "
+                "request permissions this runtime knows how to enforce or "
+                "record, so there is nothing to consent to here.";
+        }
+    }
     return vm;
 }
 
@@ -613,19 +637,35 @@ void on_accept_permissions_toggled(GtkToggleButton*, gpointer user_data) {
     update_install_sensitivity(static_cast<AppState*>(user_data));
 }
 
+/// The authenticity + local-trust banner (severity-coloured, never a plain
+/// green "verified" for a first-seen key), and the place every install failure
+/// is reported. Built separately from the details page so build_ui can pin it
+/// ABOVE the scroller: a message the user has to go looking for is a message
+/// they do not get.
+GtkWidget* build_banner(AppState* st) {
+    st->banner_label = gtk_label_new(nullptr);
+    gtk_label_set_xalign(GTK_LABEL(st->banner_label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(st->banner_label), TRUE);
+    gtk_widget_set_margin_start(st->banner_label, 16);
+    gtk_widget_set_margin_end(st->banner_label, 16);
+    gtk_widget_set_margin_top(st->banner_label, 12);
+    gtk_widget_set_margin_bottom(st->banner_label, 8);
+    set_banner(st, st->vm.trust_severity, st->vm.status_text);
+    return st->banner_label;
+}
+
 /// Primary screen — mirrors the SPEC "Opening a .lexe File" mock.
 GtkWidget* build_details_page(AppState* st) {
     const lexe::gui::ViewModel& vm = st->vm;
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width(GTK_CONTAINER(box), 16);
 
-    // Authenticity + local-trust banner (severity-coloured, never a plain green
-    // "verified" for a first-seen key).
-    st->banner_label = gtk_label_new(nullptr);
-    gtk_label_set_xalign(GTK_LABEL(st->banner_label), 0.0f);
-    gtk_label_set_line_wrap(GTK_LABEL(st->banner_label), TRUE);
-    gtk_box_pack_start(GTK_BOX(box), st->banner_label, FALSE, FALSE, 0);
-    set_banner(st, vm.trust_severity, vm.status_text);
+    // The banner is NOT packed here — see build_banner(), which pins it above
+    // the scroller. It used to be the first child of the scrolled content, so
+    // an install failure wrote its message to the top of a page roughly two
+    // viewports long while the user was at the bottom, next to the pinned
+    // Install button they had just pressed. The window came back looking
+    // completely unchanged, and pressing Install again failed again, silently.
 
     // Application name (user-controlled: escape before markup).
     GtkWidget* name_label = gtk_label_new(nullptr);
@@ -826,6 +866,13 @@ void build_ui(AppState* st) {
     // [Install] is visible the moment the window opens however long the
     // package's details run.
     GtkWidget* details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    // Banner pinned above, action bar pinned below, details scrolling between:
+    // the state of the package and the button that acts on it are both always
+    // on screen, whatever the scroll position.
+    gtk_box_pack_start(GTK_BOX(details), build_banner(st), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(details), gtk_separator_new(
+                                             GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(details), scroller, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(details), gtk_separator_new(
                                              GTK_ORIENTATION_HORIZONTAL),
