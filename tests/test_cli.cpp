@@ -498,6 +498,93 @@ TEST_CASE("verify --json reports every stage; tampering exits 3") {
               .exit_code == 3);
 }
 
+TEST_CASE("verify keeps its OK verdict and exit code but notes that install "
+          "would refuse a package whose key conflicts locally") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    // One App ID, two publisher keys. The second package passes §6 in full and
+    // is nevertheless refused outright by `lexe install` (exit 7), because this
+    // App ID is bound here to the first key. Before this note, `lexe verify`
+    // said "OK" and the user only learned otherwise from the failed install.
+    const fs::path installed =
+        make_versioned_package(work.dir, test::make_keypair(), "1.0.0");
+    const fs::path other =
+        make_versioned_package(work.dir, test::make_keypair(), "2.0.0");
+    REQUIRE(run_cli({"install", installed.string(), "--yes"}).exit_code == 0);
+
+    const auto human = run_cli({"verify", other.string()});
+    // §6 is about the PACKAGE: verdict and exit code are untouched. Exit codes
+    // are a documented compatibility promise, and 7 belongs to `lexe install`.
+    CHECK(human.exit_code == 0);
+    CHECK(contains(human.stdout_text, "verification: OK (signature valid, Ed25519)"));
+    // The local consequence, clearly separated from that verdict.
+    CHECK(contains(human.stdout_text, "Local trust on this machine"));
+    CHECK(contains(human.stdout_text, "NOT part of the verification result above"));
+    CHECK(contains(human.stdout_text,
+                   "`lexe install` will refuse this package (exit 7)"));
+    // Both fingerprints, under the install screen's labels — one alone gives
+    // the reader nothing to compare against.
+    CHECK(contains(human.stdout_text, "Expected (already installed):"));
+    CHECK(contains(human.stdout_text, "Presented (this package):"));
+    // The way out is the one the refusal itself names, not a second wording:
+    // removing the application alone leaves the trust record and fails again.
+    CHECK(contains(human.stdout_text,
+                   "lexe remove " + std::string(kId) + " --purge-data"));
+    CHECK(contains(human.stdout_text,
+                   "lexe trust forget " + std::string(kId)));
+
+    const auto machine = run_cli({"verify", other.string(), "--json"});
+    CHECK(machine.exit_code == 0);
+    const json j = json::parse(machine.stdout_text);
+    CHECK(j.at("ok") == true);                  // still the §6 verdict
+    CHECK(j.at("signatureState") == "valid");
+    CHECK(j.at("localTrust").at("installWouldRefuse") == true);
+    CHECK(j.at("localTrust").at("keyState") == "changed");
+    CHECK(j.at("localTrust").at("appId") == kId);
+
+    // The note is only useful if it predicts what install really does.
+    CHECK(run_cli({"install", other.string(), "--yes"}).exit_code == 7);
+}
+
+TEST_CASE("verify says nothing about local trust when there is no conflict") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path pkg = make_versioned_package(work.dir, key, "1.0.0");
+
+    // Nothing installed: the App ID is first-seen, install would proceed, and
+    // the human screen stays a verification screen.
+    const auto fresh = run_cli({"verify", pkg.string()});
+    CHECK(fresh.exit_code == 0);
+    CHECK_FALSE(contains(fresh.stdout_text, "Local trust on this machine"));
+    // --json states it either way, so a script never reads an absent field as
+    // consent.
+    const json fj = json::parse(
+        run_cli({"verify", pkg.string(), "--json"}).stdout_text);
+    CHECK(fj.at("localTrust").at("installWouldRefuse") == false);
+    CHECK(fj.at("localTrust").at("keyState") == "first-seen");
+
+    // Installed under the SAME key: still no conflict, still no note.
+    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
+    const auto known = run_cli({"verify", pkg.string()});
+    CHECK(known.exit_code == 0);
+    CHECK_FALSE(contains(known.stdout_text, "Local trust on this machine"));
+    const json kj = json::parse(
+        run_cli({"verify", pkg.string(), "--json"}).stdout_text);
+    CHECK(kj.at("localTrust").at("keyState") == "known-matching");
+    CHECK(kj.at("localTrust").at("installWouldRefuse") == false);
+
+    // A package that does not verify is a §6 failure and nothing else: local
+    // trust is moot, and the failure must not be diluted by a second heading.
+    test::tamper_entry(pkg, "payload/data.txt",
+                       [](std::vector<std::uint8_t>& bytes) {
+                           bytes.at(0) ^= 0xFF;
+                       });
+    const auto bad = run_cli({"verify", pkg.string()});
+    CHECK(bad.exit_code == 3);
+    CHECK_FALSE(contains(bad.stdout_text, "Local trust on this machine"));
+}
+
 // -------------------------------------------------------------------- info
 
 TEST_CASE("info on a package file, human and --json") {
@@ -521,6 +608,33 @@ TEST_CASE("info on a package file, human and --json") {
     CHECK(j.at("manifest").at("id") == kId);
     CHECK(j.at("manifest").at("version") == "1.0.0");
     CHECK(j.at("package").at("payloadSize").get<std::uint64_t>() > 0);
+}
+
+TEST_CASE("every CLI location label says which location it is") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path update_json = work.dir / "update.json";
+    const fs::path pkg =
+        make_versioned_package(work.dir, key, "1.0.0", update_json.string());
+    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
+
+    const auto info = run_cli({"info", kId});
+    CHECK(info.exit_code == 0);
+    // "Source:" is the Installer's label for the packaging MODE, so the CLI
+    // must not spend it on a location. This screen prints two DIFFERENT
+    // locations on adjacent lines — the package the install came from and the
+    // update manifest to check — and an unqualified "Source:" directly above
+    // "Update source:" read as though the two described one thing.
+    CHECK_FALSE(contains(info.stdout_text, "Source:"));
+    CHECK(contains(info.stdout_text, "Installed from:"));
+    CHECK(contains(info.stdout_text, pkg.string()));
+    CHECK(contains(info.stdout_text, "Update source:"));
+
+    // The human labels say what --json has always called these two fields.
+    const json j = json::parse(run_cli({"info", kId, "--json"}).stdout_text);
+    CHECK(j.at("installed").at("packageSource") == pkg.string());
+    CHECK(j.at("installed").at("updateUrl") == update_json.string());
 }
 
 TEST_CASE("info on something neither a file nor installed -> exit 4") {
@@ -596,7 +710,12 @@ TEST_CASE("install without --yes shows the SPEC primary screen and honors "
     CHECK(contains(yes.stdout_text, "Hello App"));
     CHECK(contains(yes.stdout_text, "Published by Test Publisher"));
     CHECK(contains(yes.stdout_text, "Version 1.0.0"));
-    CHECK(contains(yes.stdout_text, "Source:"));
+    // The package's PATH, labelled as a path. A bare "Source:" here named the
+    // same thing the Installer's "Source:" block names — the packaging MODE
+    // ("Bundled package — all application files are contained in <file>") — so
+    // one label stood for two unrelated facts across the two frontends.
+    CHECK(contains(yes.stdout_text, "Package file:"));
+    CHECK_FALSE(contains(yes.stdout_text, "Source:"));
     CHECK(contains(yes.stdout_text, pkg.string()));
     CHECK(contains(yes.stdout_text, "Application Type:"));
     CHECK(contains(yes.stdout_text, "x86_64"));

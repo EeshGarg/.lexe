@@ -47,6 +47,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -272,6 +273,109 @@ std::optional<std::string> retained_data_owner(const Registry& registry,
     return prior;
 }
 
+/// Whether `lexe install` would refuse an already-verified package for a purely
+/// LOCAL reason, plus the shared wording for saying so.
+///
+/// `lexe verify` and `lexe inspect` report the FORMAT-0.1 §6 pipeline, which is
+/// deliberately about the PACKAGE — structure, signatures, hashes — and never
+/// about this machine. That must not change: making `verify` FAIL for a local
+/// reason would collapse two different concepts into one, and its exit codes
+/// (0/3) are a documented compatibility promise scripts already depend on. But
+/// a package can pass §6 in full and still be refused outright by `lexe install`
+/// (exit 7) because its App ID is already bound HERE to a different signing key.
+/// A user who was told "verification: OK", then could not install, was misled by
+/// an omission rather than by the verdict. So the verdict and the exit code stay
+/// exactly as they are, and a clearly separated note is printed beside them.
+struct LocalInstallConflict {
+    std::string app_id;
+    std::string key_state;  // to_string(PublisherKeyState)
+    std::string detail;     // the core's typed reason (trust.cpp)
+    bool refuses = false;   // install would refuse for this LOCAL reason
+    presentation::AuthenticityView view; // shared wording — never re-typed here
+};
+
+/// Evaluate a package that PASSED §6 against this machine's trust state.
+/// Returns nullopt when that state cannot be read at all: this is an advisory
+/// note attached to a verdict that must not depend on local state, so an absent
+/// or unreadable LEXE_HOME must never change what `lexe verify` prints about the
+/// package, nor the code it exits with.
+std::optional<LocalInstallConflict>
+local_install_conflict(const Manifest& manifest) {
+    try {
+        const Paths paths = Paths::detect();
+        const Registry registry(paths);
+        // Only reached for a package whose signature already verified, so
+        // evaluate() weighs the LOCAL key relationship alone — the same
+        // evaluation, from the same store, that install will perform.
+        const TrustEvaluation eval = TrustStore(paths).evaluate(
+            manifest.id, manifest.decoded_public_key(), SignatureState::Valid,
+            retained_data_owner(registry, manifest.id));
+        LocalInstallConflict c;
+        c.app_id = manifest.id;
+        c.key_state = to_string(eval.key_state);
+        c.detail = eval.detail;
+        c.refuses = !eval.allowed();
+        c.view =
+            presentation::present_authenticity(eval, manifest.publisher_name);
+        return c;
+    } catch (const std::exception&) {
+        return std::nullopt; // local state never perturbs the §6 verdict
+    }
+}
+
+/// Print the note beside a PASSING verification verdict. Nothing is printed when
+/// install would not refuse: this block exists to warn, and a "local trust is
+/// fine" line on every `lexe verify` would blur the very boundary its heading is
+/// drawing. `--json` states it either way, so a script never has to read an
+/// absent field as consent.
+void print_local_install_conflict(
+    const std::optional<LocalInstallConflict>& conflict) {
+    if (!conflict.has_value() || !conflict->refuses) return;
+    const presentation::AuthenticityView& view = conflict->view;
+    std::cout << "\nLocal trust on this machine (NOT part of the verification "
+                 "result above):\n"
+              << "  `lexe install` will refuse this package (exit 7).\n"
+              << "  " << view.key_text << "\n";
+    // Both fingerprints, under the labels the install screen already uses: one
+    // fingerprint on a "the key is different" note gives nothing to compare it
+    // against, and a second set of labels for the same two values would be a
+    // third wording of one fact.
+    if (!view.expected_fingerprint_grouped.empty()) {
+        std::cout << "  Expected (already installed): "
+                  << view.expected_fingerprint_grouped << "\n"
+                  << "  Presented (this package):     "
+                  << view.fingerprint_grouped << "\n";
+    }
+    // presentation::remedy verbatim — the SAME way out the Installer renders in
+    // this same situation and the install refusal names. A pointer alone will
+    // not do: no command prints this procedure, so `lexe trust show` would send
+    // the reader somewhere that does not answer them. Re-typing it here is how
+    // the copies drift apart, so it is rendered from the one shared source.
+    if (!view.remedy.empty()) {
+        std::istringstream remedy(view.remedy);
+        std::string line;
+        while (std::getline(remedy, line)) std::cout << "  " << line << "\n";
+    }
+    std::cout << "  See `lexe trust show " << conflict->app_id
+              << "` for this App ID's local trust record.\n";
+}
+
+/// The same fact for `--json`. Emitted for every package that verified, refused
+/// or not, so a script branches on a field instead of on an absence.
+ordered_json local_install_conflict_json(const LocalInstallConflict& conflict) {
+    ordered_json j;
+    j["appId"] = conflict.app_id;
+    j["keyState"] = conflict.key_state;
+    // The one field to branch on. `ok` and the exit code stay about the PACKAGE;
+    // this stays about this machine.
+    j["installWouldRefuse"] = conflict.refuses;
+    j["detail"] = conflict.detail;
+    if (!conflict.view.expected_fingerprint_grouped.empty()) {
+        j["expectedFingerprint"] = conflict.view.expected_fingerprint_grouped;
+    }
+    return j;
+}
+
 /// The install confirmation screen — a TRUTHFUL two-dimensional authenticity +
 /// local-trust view (never a single "verified" line), truthful per-permission
 /// enforcement, and the real isolation state for this platform. The signature
@@ -314,8 +418,16 @@ TrustEvaluation print_primary_screen(const Manifest& manifest,
                   << "  Presented (this package):    "
                   << auth.fingerprint_grouped << "\n";
     }
+    // "Package file:", not "Source:". The Installer's "Source:" block states the
+    // packaging MODE — "Bundled package — all application files are contained in
+    // <file>" (presentation::source_line, from SPEC "Opening a .lexe File") —
+    // while this line is a filesystem PATH. One label on two unrelated facts
+    // left a reader who had seen both screens unable to tell which one "Source"
+    // meant, and SPEC fixes the GUI's meaning, so the CLI's label is the one
+    // that moves. It also matches the "Package: <path>" header `lexe info` and
+    // `lexe inspect` already print for the same value.
     std::cout << "  " << auth.identity_caveat << "\n\n"
-              << "Source:\n  " << package.string() << "\n\n"
+              << "Package file:\n  " << package.string() << "\n\n"
               << "Application Type:\n  "
               << presentation::application_type_line(
                      manifest.application_type, manifest.architectures,
@@ -1268,7 +1380,14 @@ int cmd_info(const std::vector<std::string>& args) {
         print_kv("Signing key:", fp.grouped);
         print_kv("Local trust:", presentation::local_trust_label(trust_state));
         print_kv("Channel:", record.channel);
-        print_kv("Source:", record.source);
+        // "Installed from:", not "Source:" — the same collision the install
+        // screen's label had (the Installer's "Source:" is the packaging mode,
+        // not a location) and one this screen made worse: an unqualified
+        // "Source:" sat directly above "Update source:", so the two lines read
+        // as a pair describing one thing when they name two different
+        // locations. `--json` has always called this field "packageSource"; the
+        // human label now says the same thing it does.
+        print_kv("Installed from:", record.source);
         print_kv("Update source:",
                  record.update_url.empty() ? "(none)" : record.update_url);
         print_kv("Installed at:", record.installed_at);
@@ -1330,6 +1449,12 @@ int cmd_inspect(const std::vector<std::string>& args) {
         return vr.ok() ? 0 : 3;
     }
 
+    // Passing §6 is not the same as being installable here. Gated on vr.ok()
+    // because when §6 failed, that failure is the whole story and install would
+    // refuse on authenticity long before it reached local trust.
+    std::optional<LocalInstallConflict> conflict;
+    if (vr.ok()) conflict = local_install_conflict(manifest);
+
     // Scratch extraction for the dependency/compatibility/Tux32 analysis.
     const fs::path scratch =
         fs::temp_directory_path() / ("lexe-inspect-" + pkg_sha.substr(0, 16));
@@ -1373,6 +1498,11 @@ int cmd_inspect(const std::vector<std::string>& args) {
                 {{"name", s.name}, {"ok", s.ok}, {"detail", s.detail}});
         }
         j["verification"] = {{"ok", vr.ok()}, {"stages", std::move(stages)}};
+        // Kept OUT of j["verification"]: this is local state, not a §6 stage,
+        // and a script must not be able to mistake it for one.
+        if (conflict.has_value()) {
+            j["localTrust"] = local_install_conflict_json(*conflict);
+        }
         if (analysis_error.empty()) {
             j["report"] = build_report_json(report);
         } else {
@@ -1399,6 +1529,9 @@ int cmd_inspect(const std::vector<std::string>& args) {
                                       vr.first_failure()->detail
                                 : std::string("see `lexe verify`")));
     print_kv("Checksum:", "sha256:" + pkg_sha);
+    // Directly under the verdict, where a reader who stops after "PASSED" still
+    // sees that install will not accept this package here.
+    print_local_install_conflict(conflict);
 
     // Permissions, explained (human titles; enforcement detail is shown at
     // install time, where the isolation backend is probed). "None requested" is
@@ -1441,12 +1574,18 @@ int cmd_verify(const std::vector<std::string>& args) {
     // publisher's real-world identity or local trust for any App ID.
     std::optional<Fingerprint> fp;
     std::string signing_key;
+    // Passing §6 is not the same as being installable here: `lexe install` can
+    // still refuse this package (exit 7) over LOCAL trust state. The verdict and
+    // the exit code below are unchanged by this — it is reported separately.
+    std::optional<LocalInstallConflict> conflict;
     std::error_code fec;
     if (fs::is_regular_file(file, fec)) {
         try {
             const Manifest m = Manifest::parse(PackageReader(file).read_entry("lexe.json"));
             signing_key = m.publisher_public_key;
             fp = key_fingerprint(m.decoded_public_key());
+            // Only for a package that verified; a §6 failure is the whole story.
+            if (report.ok()) conflict = local_install_conflict(m);
         } catch (const Error&) {
         }
     }
@@ -1465,6 +1604,11 @@ int cmd_verify(const std::vector<std::string>& args) {
         j["identityVerified"] = false;
         j["note"] = "Verification checks package integrity and signature "
                     "(authenticity), NOT the publisher's real-world identity.";
+        // A sibling of "ok", never a member of it: `ok` is the §6 verdict on the
+        // package and must keep meaning exactly that.
+        if (conflict.has_value()) {
+            j["localTrust"] = local_install_conflict_json(*conflict);
+        }
         ordered_json stages = ordered_json::array();
         for (const VerificationStage& stage : report.stages) {
             stages.push_back({{"name", stage.name},
@@ -1493,7 +1637,11 @@ int cmd_verify(const std::vector<std::string>& args) {
                       << (failure != nullptr ? failure->name : "unknown")
                       << ")\n";
         }
+        print_local_install_conflict(conflict);
     }
+    // Unchanged: 0/3 is the §6 verdict on the PACKAGE. A local conflict is a
+    // note, never a failure — scripts treat these codes as a compatibility
+    // promise, and `lexe install` is the command that owns exit 7.
     return report.ok() ? 0 : 3;
 }
 
@@ -2165,11 +2313,20 @@ int cmd_integrate(const std::vector<std::string>& args) {
     const desktop::IntegrationResult result =
         desktop::integrate_runtime(Paths::detect());
     if (result.status == desktop::IntegrationStatus::applied) {
-        std::cout
-            << "Registered the Lexe runtime as the .lexe handler; created:\n";
+        // "Registered" is a claim about the DESKTOP, not about writing files,
+        // and it was printed either way. With LEXE_HOME set the two files land
+        // in a tree no desktop environment scans, so the command announced a
+        // handler registration that had registered nothing and double-clicking
+        // a .lexe still did nothing. Say which of the two actually happened,
+        // and print the note explaining it.
+        std::cout << (result.visible_to_desktop
+                          ? "Registered the Lexe runtime as the .lexe handler; "
+                            "created:\n"
+                          : "Wrote the .lexe handler files; created:\n");
         for (const std::string& file : result.created_files) {
             std::cout << "  " << file << "\n";
         }
+        if (!result.note.empty()) std::cout << "\n" << result.note << "\n";
     } else {
         std::cout << "desktop integration skipped: not available on this "
                      "platform\n";
