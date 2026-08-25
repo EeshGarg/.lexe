@@ -35,7 +35,14 @@ namespace lexe {
 /// with the presented key.
 enum class SignatureState {
     Valid,                // every signature verified over the exact signed bytes
-    Invalid,              // a signature did not verify, or signed content changed
+    Invalid,              // a signature did not verify against the signed bytes
+    ContentMismatch,      // signatures verified, but a payload file does not
+                          // match the hashes they cover (corrupt/tampered
+                          // content). Distinct from Invalid because saying
+                          // "signature is not valid" about a package whose
+                          // signature DID verify is simply untrue, and this
+                          // runtime does not tell users untrue things about
+                          // authenticity. It refuses either way.
     Malformed,            // structure / manifest / key material malformed
     UnsupportedAlgorithm, // signing algorithm is not the supported Ed25519
     Missing,              // no signature present (0.1 forbids unsigned packages)

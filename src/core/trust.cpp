@@ -24,6 +24,7 @@ const char* to_string(SignatureState s) {
     switch (s) {
     case SignatureState::Valid:                return "valid";
     case SignatureState::Invalid:              return "invalid";
+    case SignatureState::ContentMismatch:      return "content-mismatch";
     case SignatureState::Malformed:            return "malformed";
     case SignatureState::UnsupportedAlgorithm: return "unsupported-algorithm";
     case SignatureState::Missing:              return "missing";
@@ -80,10 +81,13 @@ SignatureState signature_state_from_report(const VerificationReport& report) {
     // A failed signature stage, or content that no longer matches the signed
     // hashes, is an authenticity failure; earlier structural/manifest/key
     // failures mean the package is malformed.
-    if (f->name == "manifest-signature" || f->name == "payload-signature" ||
-        f->name == "hashes") {
+    if (f->name == "manifest-signature" || f->name == "payload-signature") {
         return SignatureState::Invalid;
     }
+    // The signatures verified; a covered file does not match the hashes they
+    // sign. Still an authenticity failure, still refused — but reported as what
+    // it is.
+    if (f->name == "hashes") return SignatureState::ContentMismatch;
     return SignatureState::Malformed;
 }
 

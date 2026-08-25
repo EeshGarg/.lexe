@@ -296,7 +296,7 @@ TEST_CASE("verified first-seen package yields an installable, cautioned screen")
     CHECK(contains(vm.isolation_text, "seccomp"));
 }
 
-TEST_CASE("tampered payload disables Install (signature not valid)") {
+TEST_CASE("tampered payload disables Install and says what actually failed") {
     TempLexeHome home;
     const Paths paths = Paths::detect();
     const auto key = lexe::test::make_keypair();
@@ -317,7 +317,36 @@ TEST_CASE("tampered payload disables Install (signature not valid)") {
     CHECK_FALSE(vm.verified);
     CHECK_FALSE(vm.can_install);
     CHECK(vm.trust_severity == "danger");
-    CHECK(contains(vm.status_text, "signature is not valid"));
+
+    // The security property: refused, whatever it is called.
+    CHECK_FALSE(vm.can_install);
+
+    // The honesty property: the signatures over this package DID verify — a
+    // covered file no longer matches the hashes they sign. Saying "signature is
+    // not valid" here was simply untrue, and this runtime does not tell users
+    // untrue things about authenticity.
+    CHECK(contains(vm.status_text, "contents do not match"));
+    CHECK_FALSE(contains(vm.status_text, "signature is not valid"));
+    CHECK(contains(vm.signature_text, "valid, but the package contents"));
+
+    // And it must name the stage that failed, the way `lexe verify` does —
+    // a missing file, a corrupt payload and a bad signature used to render
+    // an identical screen.
+    CHECK(contains(vm.refusal_text, "hashes"));
+    CHECK_FALSE(vm.refusal_text.empty());
+}
+
+TEST_CASE("a package that verifies has nothing to explain") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const auto key = lexe::test::make_keypair();
+    const fs::path package = lexe::test::make_test_package(home.path(), key);
+    const VerificationReport report = lexe::verify_package(package, true);
+    REQUIRE(report.ok());
+    const std::optional<Manifest> manifest = try_read_manifest(package);
+    const lexe::gui::ViewModel vm = make_vm(manifest, report, package, paths);
+    CHECK(vm.verified);
+    CHECK(vm.refusal_text.empty());
 }
 
 TEST_CASE("unreadable package still yields a safe, uninstallable screen") {

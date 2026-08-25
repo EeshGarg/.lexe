@@ -125,6 +125,14 @@ std::string updates_line(bool enabled, const std::string& manifest_url,
 std::string source_line(const std::string& install_mode,
                         const std::string& package_filename);
 
+/// The canonical short label for a LOCAL trust state ("blocked",
+/// "explicitly-trusted", "corrupt", "known", "first-seen"). One place, because
+/// `lexe apps` and `lexe info` each wrote their own and disagreed: apps labelled
+/// an explicitly-trusted key "trusted locally (first-use)" — appending
+/// "(first-use)" to every state including the one that is not first use —
+/// directly contradicting `lexe info` and `lexe trust show`.
+std::string local_trust_label(const std::string& state);
+
 /// The install size to display: the manifest's estimate when it declares one,
 /// otherwise the package's actual uncompressed payload size. Either may be 0
 /// (unknown), which yields an empty string rather than a fabricated figure.

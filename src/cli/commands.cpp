@@ -204,6 +204,11 @@ std::uint64_t payload_size(const PackageReader& reader) {
     return total;
 }
 
+/// Total size (bytes) of a directory tree; defined with `lexe apps`, which is
+/// where it is also used. Declared here so `lexe info` can report the SAME disk
+/// figure for an installed application instead of the manifest's estimate.
+std::uint64_t dir_size(const fs::path& dir);
+
 /// The size shown for a package: manifest estimate when given, else the
 /// uncompressed payload size.
 std::uint64_t display_size(const Manifest& manifest,
@@ -345,7 +350,13 @@ void print_kv(const std::string& label, const std::string& value) {
 }
 
 /// Shared manifest block of `lexe info` (package and installed modes).
-void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes) {
+/// `updates_override` replaces the manifest's update-policy line. An INSTALLED
+/// application's effective policy lives in its registry record, not in the
+/// manifest: `lexe source set` can add an update URL the manifest never had, and
+/// without this the same screen printed "No automatic updates" four lines above
+/// the configured "Update source:".
+void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes,
+                         const std::string& updates_override = "") {
     print_kv("Name:", manifest.name);
     print_kv("Id:", manifest.id);
     print_kv("Version:", manifest.version);
@@ -375,7 +386,9 @@ void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes) {
     print_kv("Permissions:", permission_titles.empty()
                                  ? "(none)"
                                  : join(permission_titles, ", "));
-    print_kv("Updates:", update_policy_text(manifest));
+    print_kv("Updates:", updates_override.empty()
+                            ? update_policy_text(manifest)
+                            : updates_override);
 }
 
 /// manifest.to_json() re-parsed so it can be embedded in --json documents.
@@ -1176,20 +1189,20 @@ int cmd_info(const std::vector<std::string>& args) {
         std::cout << j.dump(2) << "\n";
     } else {
         std::cout << "Installed application: " << record.id << "\n";
-        print_manifest_info(manifest, manifest.install_estimated_size);
+        // The size on disk, the same figure `lexe apps` reports — not the
+        // manifest's estimate, which is 0 whenever a manifest omits it and
+        // printed "Size: 0 B" for an application occupying real space.
+        print_manifest_info(
+            manifest,
+            dir_size(registry.app_dir(record.id)) +
+                dir_size(registry.app_data_dir(record.id)) +
+                dir_size(registry.app_cache_dir(record.id)),
+            presentation::updates_line(!record.update_url.empty(),
+                                       record.update_url, record.channel));
         print_kv("Current:", current);
         print_kv("Versions:", join(versions, ", "));
         print_kv("Signing key:", fp.grouped);
-        print_kv("Local trust:",
-                 trust_state == "blocked"
-                     ? "BLOCKED locally"
-                     : trust_state == "explicitly-trusted"
-                           ? "explicitly trusted locally (not external identity)"
-                           : trust_state == "corrupt"
-                                 ? "CORRUPT (fail closed)"
-                                 : trust_state == "known"
-                                       ? "known key, accepted for this App ID"
-                                       : "first-seen (identity not verified)");
+        print_kv("Local trust:", presentation::local_trust_label(trust_state));
         print_kv("Channel:", record.channel);
         print_kv("Source:", record.source);
         print_kv("Update source:",
@@ -1720,11 +1733,7 @@ std::uint64_t dir_size(const fs::path& dir) {
 
 // A friendly LOCAL-trust label. Never presented as external identity.
 std::string trust_label(const std::string& state) {
-    if (state == "blocked") return "blocked locally";
-    if (state == "explicitly-trusted") return "trusted locally (first-use)";
-    if (state == "corrupt") return "CORRUPT (fail closed)";
-    if (state == "known") return "known key (first-use)";
-    return "first-seen (first-use)";
+    return presentation::local_trust_label(state);
 }
 
 // The installed-application manager (DX4): a richer `list` — publisher, version,

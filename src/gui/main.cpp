@@ -227,6 +227,10 @@ struct ViewModel {
     std::string identity_caveat;  // TOFU caveat (always present when readable)
     std::string trust_severity;   // "ok" | "caution" | "danger" (banner color)
     bool verified = false;        // the §6 report passed (authenticity only)
+    // WHY a package was refused, named the way `lexe verify` names it. Without
+    // this the window showed the same screen for a missing file, a corrupt
+    // payload and a bad signature, and never told the user which stage failed.
+    std::string refusal_text;
     bool can_install = false;     // §6 passed AND trust allows AND manifest read
     std::vector<std::string> channels;  // Advanced Options channel combo
     int active_channel = 0;             // preselected combo index
@@ -259,6 +263,18 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
     ViewModel vm;
     const std::string filename = package_path.filename().string();
     vm.verified = report.ok();
+    if (!report.ok()) {
+        if (const VerificationStage* f = report.first_failure(); f != nullptr) {
+            vm.refusal_text = "Verification failed at the \"" + f->name +
+                              "\" stage.";
+            if (!f->detail.empty()) vm.refusal_text += "\n" + f->detail;
+        } else {
+            vm.refusal_text = "This package did not pass verification.";
+        }
+        vm.refusal_text +=
+            "\nRe-download it from the original source, or inspect it with "
+            "`lexe verify`.";
+    }
 
     const TrustLines trust = format_trust(eval);
     vm.status_text = trust.headline;
@@ -596,6 +612,12 @@ GtkWidget* build_details_page(AppState* st) {
 
     add_body_label(box, vm.publisher_line);
     add_body_label(box, vm.version_line);
+
+    // The reason first, directly under the banner: when a package is refused
+    // the user's only question is "why, and what do I do now".
+    if (!vm.refusal_text.empty()) {
+        add_section(box, "Why this package was refused:", vm.refusal_text);
+    }
 
     // Authenticity & local trust: two dimensions, the fingerprint, and the
     // always-present "not real-world identity" caveat.

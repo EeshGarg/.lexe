@@ -23,6 +23,8 @@ std::string signature_label(SignatureState s) {
     switch (s) {
     case SignatureState::Valid:                return "valid (Ed25519)";
     case SignatureState::Invalid:              return "NOT valid";
+    case SignatureState::ContentMismatch:
+        return "valid, but the package contents do not match it";
     case SignatureState::Malformed:            return "malformed package";
     case SignatureState::UnsupportedAlgorithm: return "unsupported algorithm";
     case SignatureState::Missing:              return "missing";
@@ -91,7 +93,9 @@ AuthenticityView present_authenticity(const TrustEvaluation& eval,
     // the local key relationship.
     if (eval.signature != SignatureState::Valid) {
         v.severity = AuthenticityView::Severity::Danger;
-        v.headline = "Refused — signature is not valid";
+        v.headline = eval.signature == SignatureState::ContentMismatch
+                         ? "Refused — the contents do not match the signature"
+                         : "Refused — signature is not valid";
         v.can_proceed = false;
     }
     return v;
@@ -250,6 +254,14 @@ std::string source_line(const std::string& install_mode,
                package_filename;
     }
     return install_mode + " (unsupported in Lexe 0.1)";
+}
+
+std::string local_trust_label(const std::string& state) {
+    if (state == "blocked") return "blocked locally";
+    if (state == "explicitly-trusted") return "explicitly trusted locally";
+    if (state == "corrupt") return "CORRUPT (fail closed)";
+    if (state == "known") return "known key, accepted for this App ID";
+    return "first-seen (identity not verified)";
 }
 
 std::string install_size_line(std::uint64_t estimated_size,
