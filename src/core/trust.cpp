@@ -247,15 +247,30 @@ void TrustEvaluation::throw_if_rejected() const {
         throw VerificationError("package signature is not valid (" +
                                 std::string(to_string(signature)) + ")" + where);
     case TrustDecision::RejectChangedKey: {
+        // The "…" matters: these are the first five groups of a sixteen-group
+        // fingerprint, and every other surface prints all sixteen. An
+        // unmarked prefix next to a full fingerprint reads as a DIFFERENT
+        // fingerprint, which is precisely the comparison a user makes here.
         std::string msg = "refusing: signed by a different key than the one "
                           "bound to this App ID" + where;
         if (expected.has_value()) {
-            msg += "; expected key " + expected->short_id;
+            msg += "; expected key " + expected->short_id + "…";
         }
+        // The procedure below is the one that actually works, verified end to
+        // end. This message used to say "remove the application and its data to
+        // accept a new publisher" — and that alone does NOT work: `lexe remove
+        // --purge-data` leaves the local trust record in place, so the next
+        // install is refused identically and the user has followed the
+        // instructions for nothing. Clearing the trust record is the missing
+        // step.
         msg += ", presented key " + presented.short_id +
-               ". FORMAT 0.1 has no authenticated key rotation — remove the "
-               "application and its data to accept a new publisher, or install "
-               "under a different App ID.";
+               "…. FORMAT 0.1 has no authenticated key rotation. Compare both "
+               "fingerprints in full with `lexe trust show " + app_id +
+               "`. To accept a new publisher key you must remove the "
+               "application AND clear its local trust record: `lexe remove " +
+               app_id + " --purge-data` then `lexe trust forget " + app_id +
+               "` — this deletes the application's data. Installing under a "
+               "different App ID keeps the existing one.";
         throw ChangedKeyError(msg);
     }
     case TrustDecision::RejectBlocked:

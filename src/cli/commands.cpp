@@ -373,7 +373,11 @@ void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes,
     print_kv("Entrypoint:", manifest.entrypoint_executable);
     print_kv("Install:",
              manifest.install_mode + ", " + manifest.install_scope + " scope");
-    print_kv("Size:", format_size(size_bytes));
+    // "Install size", not "Size": the header line above already prints the
+    // .lexe FILE size, and two unlabelled figures that disagree (11 KB
+    // compressed, 27 KB installed) invite the reader to assume one of them is
+    // wrong.
+    print_kv("Install size:", format_size(size_bytes));
     // Human titles, as `lexe inspect` and the install screen show them — this
     // line used to print raw ids ("user-files-selected"), so the one command a
     // user runs to decide whether to trust a package named its permissions
@@ -2002,6 +2006,22 @@ int cmd_build(const std::vector<std::string>& args) {
     // Validate the manifest (friendly early error) and confirm the publisher
     // key matches the signing key — otherwise the package can never verify.
     const Manifest manifest = Manifest::parse(util::slurp(manifest_file));
+
+    // Refuse to BUILD a package nothing can install. The 0.1 permission
+    // vocabulary is frozen and the installer rejects an id outside it, but
+    // build, verify and info all accepted one — so a developer could ship a
+    // package that signs, verifies and inspects perfectly, and fails for every
+    // user at install with `unknown permission "camera"`. Catch it here, where
+    // the developer can still fix the manifest.
+    try {
+        (void)normalize_permissions(manifest.permissions);
+    } catch (const Error& e) {
+        throw Error(
+            std::string(e.what()) + " in " + manifest_file.string(),
+            "The 0.1 permission vocabulary is frozen: only \"network\" and "
+            "\"user-files-selected\" may be requested. A package asking for "
+            "anything else is refused at install time.");
+    }
     if (manifest.decoded_public_key() != key.public_key) {
         throw Error(
             "manifest publisher.publicKey (" + manifest.publisher_public_key +

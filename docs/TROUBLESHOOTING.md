@@ -46,8 +46,31 @@ bare confirmation never grants new authority.
 ### "install refused: signed by a different key"
 
 The package is signed by a **different key** than the one bound to this App ID
-locally. This Alpha has no authenticated key rotation, so it is refused. Inspect
-with `lexe trust show <id>`; only proceed if you understand why the key changed.
+locally. This Alpha has no authenticated key rotation, so it is refused — and
+there is **no way to proceed past it**. That is deliberate: a changed signing key
+is indistinguishable from someone else publishing under the same App ID.
+
+Inspect both fingerprints first:
+
+```sh
+lexe trust show <id>          # the key bound locally, in full
+lexe inspect <new.lexe>       # the key this package presents, in full
+```
+
+If you have established that the publisher genuinely rotated their key — from
+the publisher themselves, not from the package — the only route is to remove the
+application **and clear its local trust record**, so the new key is accepted as
+first-seen. Both steps are required; removing alone leaves the trust record in
+place and the next install is refused identically:
+
+```sh
+lexe remove <id> --purge-data   # retained data is bound to the old key
+lexe trust forget <id>          # without this, the install is still refused
+lexe install <new.lexe> --trust
+```
+
+You will lose that application's data. Installing under a **different App ID** is
+the alternative if you need to keep the old installation alongside it.
 
 ## Building and packaging
 

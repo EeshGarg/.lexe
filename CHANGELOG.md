@@ -212,6 +212,36 @@ prose** (a selectable body label took focus). Focus starts on Close — which al
 puts the dialog's default where a consent dialog's default belongs, matching
 `lexe install`'s `[y/N]` prompt.
 
+### The changed-key refusal told users to do something that does not work
+Refusing a package signed by a different key is correct and deliberate — a
+rotated key is indistinguishable from someone else publishing under the same App
+ID. But the refusal said to "remove the application and its data to accept a new
+publisher", and **that alone does not work**: `lexe remove --purge-data` leaves
+the local trust record in place, so the next install is refused identically. A
+user following the instructions exactly ends up back where they started with no
+indication why.
+
+Verified end to end: remove + purge alone is still refused; adding
+`lexe trust forget <id>` succeeds. The refusal now names both commands with the
+App ID filled in, warns that it deletes the application's data, and points at
+`lexe trust show` for the full fingerprints. TROUBLESHOOTING.md carried the same
+wrong advice ("only proceed if you understand why the key changed", implying a
+way to proceed that did not exist) and now documents the verified sequence. A
+test asserts the message names the step that actually works.
+
+Also in this pass:
+- Both fingerprints in that message are five-group PREFIXES of the sixteen-group
+  fingerprint every other surface prints, and nothing said so — an unmarked
+  prefix next to a full fingerprint reads as a different key, which is exactly
+  the comparison the user is making. They end in "…" now.
+- `lexe build` refuses to build a package requesting a permission outside the
+  frozen 0.1 vocabulary. Build, verify and info all accepted one, so a developer
+  could ship a package that signs, verifies and inspects perfectly and fails for
+  every user at install with `unknown permission "camera"`.
+- `lexe info` labels the payload figure "Install size", since the header line
+  above it already prints the .lexe file size and two unlabelled figures that
+  disagree invite the reader to assume one is wrong.
+
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
 notably: Linux-only isolation (Windows is a build/test host), isolation requires

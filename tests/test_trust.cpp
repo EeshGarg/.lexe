@@ -193,6 +193,26 @@ TEST_CASE("evaluate: a changed key is rejected without a bypass") {
     CHECK(e.expected->full == key_fingerprint(a.public_key).full);
     CHECK(e.presented.full == key_fingerprint(b.public_key).full);
     CHECK_THROWS_AS(e.throw_if_rejected(), ChangedKeyError);
+
+    // The refusal must describe the procedure that ACTUALLY clears this. It
+    // used to say "remove the application and its data to accept a new
+    // publisher" — and that alone does not work: `lexe remove --purge-data`
+    // leaves the local trust record in place, so the next install is refused
+    // identically and the user has followed the instructions for nothing.
+    // Verified end to end: remove --purge-data alone is still refused; adding
+    // `lexe trust forget` succeeds.
+    try {
+        e.throw_if_rejected();
+        FAIL("a changed key must be refused");
+    } catch (const ChangedKeyError& err) {
+        const std::string what = err.what();
+        CHECK(what.find("lexe trust forget") != std::string::npos);
+        CHECK(what.find("--purge-data") != std::string::npos);
+        // Both fingerprints are shown as PREFIXES; say so, or the reader
+        // compares five groups against the sixteen every other surface prints
+        // and concludes they are different keys.
+        CHECK(what.find("…") != std::string::npos);
+    }
 }
 
 TEST_CASE("evaluate: a locally blocked App ID is rejected for any key") {
