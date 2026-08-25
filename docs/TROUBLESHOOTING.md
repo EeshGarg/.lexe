@@ -37,7 +37,7 @@ The runtime links libsodium for Ed25519. Install it:
 (Fedora), or `sudo pacman -S libsodium` (Arch). Rebuilding after installing it
 enables the libsodium provider; otherwise the vendored fallback is used.
 
-### An update was refused: "requests additional permissions …"
+### An update was refused: "requests permissions you have not approved …"
 
 The new version wants a capability you did not previously approve. Review the
 listed permissions, then re-run with `--accept-permissions` to grant them. A

@@ -49,6 +49,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -676,7 +677,10 @@ ResolvedTarget resolve_binary_target(const fs::path& target, const char* noun) {
                                 "directory)");
         }
     } else {
-        throw NotFoundError("no such file or directory: " + target.string());
+        throw NotFoundError(
+            "no such file or directory: " + target.string(),
+            "Pass an executable, a project folder, or a payload folder to "
+            "analyze.");
     }
     return out;
 }
@@ -875,12 +879,13 @@ int cmd_version(const std::vector<std::string>& args) {
     return 0;
 }
 
-constexpr const char* kCompletionUsage = "usage: lexe completion [bash]";
+constexpr const char* kCompletionUsage =
+    "usage: lexe completion [bash | zsh]";
 
-// Shell-completion groundwork (DX6): emit a minimal, dependency-free bash
-// completion for the top-level commands. `source <(lexe completion bash)`.
+// Shell completion (DX6): emit a minimal, dependency-free completion script
+// for bash or zsh. `source <(lexe completion bash)`.
 // The full top-level command surface — the single source of truth for the shell
-// completion word list and the "did you mean" suggester.
+// completion word lists, the "did you mean" suggester, and per-command help.
 const std::vector<std::string>& known_commands() {
     static const std::vector<std::string> k = {
         "install", "run",  "list",   "apps",        "info",      "inspect",
@@ -919,37 +924,91 @@ std::string suggest_command(const std::string& input) {
     return best;
 }
 
-int cmd_completion(const std::vector<std::string>& args) {
-    const Parsed parsed =
-        parse_arguments(args, {}, {}, false, kCompletionUsage);
-    const std::string shell =
-        parsed.positionals.empty() ? "bash" : parsed.positionals[0];
-    if (shell != "bash") {
-        throw UsageError("unsupported shell \"" + shell +
-                         "\" (supported: bash)\n" + kCompletionUsage);
-    }
+/// The subcommand word list for each grouped command — the single source of
+/// truth shared by every shell's completion script, so they cannot drift apart.
+const std::vector<std::pair<std::string, std::string>>& subcommand_groups() {
+    static const std::vector<std::pair<std::string, std::string>> k = {
+        {"sdk", "verify"},
+        {"trust", "show block unblock forget"},
+        {"config", "list get set reset path"},
+        {"source", "set"},
+        {"completion", "bash zsh"},
+    };
+    return k;
+}
+
+/// The top-level command words, space-separated.
+std::string command_words() {
     std::string cmds;
     for (const std::string& c : known_commands()) {
         cmds += (cmds.empty() ? "" : " ") + c;
     }
-    std::cout <<
+    return cmds;
+}
+
+std::string bash_completion_script() {
+    std::string out =
         "# lexe bash completion. Load it with:\n"
         "#   source <(lexe completion bash)\n"
         "_lexe() {\n"
         "  local cur\n"
         "  cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
         "  if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
-        "    COMPREPLY=( $(compgen -W \"" + cmds + "\" -- \"$cur\") ); return\n"
+        "    COMPREPLY=( $(compgen -W \"" +
+        command_words() +
+        "\" -- \"$cur\") ); return\n"
         "  fi\n"
-        "  case \"${COMP_WORDS[1]}\" in\n"
-        "    sdk)    COMPREPLY=( $(compgen -W \"verify\" -- \"$cur\") );;\n"
-        "    trust)  COMPREPLY=( $(compgen -W \"show block unblock forget\" -- \"$cur\") );;\n"
-        "    config) COMPREPLY=( $(compgen -W \"list get set reset path\" -- \"$cur\") );;\n"
-        "    source) COMPREPLY=( $(compgen -W \"set\" -- \"$cur\") );;\n"
+        "  case \"${COMP_WORDS[1]}\" in\n";
+    for (const auto& [group, subs] : subcommand_groups()) {
+        out += "    " + group + ") COMPREPLY=( $(compgen -W \"" + subs +
+               "\" -- \"$cur\") );;\n";
+    }
+    out +=
         "  esac\n"
         "}\n"
         "complete -F _lexe lexe\n";
-    return 0;
+    return out;
+}
+
+std::string zsh_completion_script() {
+    std::string out =
+        "#compdef lexe\n"
+        "# lexe zsh completion. Load it with:\n"
+        "#   source <(lexe completion zsh)\n"
+        "# (or save it as _lexe in a directory on your $fpath)\n"
+        "_lexe() {\n"
+        "  if (( CURRENT == 2 )); then\n"
+        "    compadd " +
+        command_words() +
+        "\n"
+        "    return\n"
+        "  fi\n"
+        "  case \"${words[2]}\" in\n";
+    for (const auto& [group, subs] : subcommand_groups()) {
+        out += "    " + group + ") compadd " + subs + " ;;\n";
+    }
+    out +=
+        "  esac\n"
+        "}\n"
+        "compdef _lexe lexe\n";
+    return out;
+}
+
+int cmd_completion(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {}, false, kCompletionUsage);
+    const std::string shell =
+        parsed.positionals.empty() ? "bash" : parsed.positionals[0];
+    if (shell == "bash") {
+        std::cout << bash_completion_script();
+        return 0;
+    }
+    if (shell == "zsh") {
+        std::cout << zsh_completion_script();
+        return 0;
+    }
+    throw UsageError("unsupported shell \"" + shell +
+                     "\" (supported: bash, zsh)\n" + kCompletionUsage);
 }
 
 constexpr const char* kConfigUsage =
@@ -1174,7 +1233,10 @@ int cmd_inspect(const std::vector<std::string>& args) {
     const fs::path pkg(parsed.positionals[0]);
     std::error_code ec;
     if (!fs::is_regular_file(pkg, ec)) {
-        throw NotFoundError("no such package file: " + pkg.string());
+        throw NotFoundError(
+            "no such package file: " + pkg.string(),
+            "`lexe inspect` takes a .lexe file. Use `lexe info <id>` for an "
+            "installed application.");
     }
 
     const PackageReader reader(pkg);
@@ -1825,7 +1887,10 @@ int cmd_build(const std::vector<std::string>& args) {
     const fs::path project(parsed.positionals[0]);
 
     if (!fs::is_directory(project)) {
-        throw NotFoundError("no such project directory: " + project.string());
+        throw NotFoundError(
+            "no such project directory: " + project.string(),
+            "`lexe build` takes the folder that holds your lexe.json and "
+            "payload/.");
     }
     // A Lexe project folder is: lexe.json + payload/ (+ optional icons/,
     // metadata/). "Drop your app files into payload/, describe them in
@@ -2055,7 +2120,7 @@ std::string usage_text() {
            "settings\n"
            "  integrate                                register .lexe handling "
            "for the runtime\n"
-           "  completion [bash]                        print a shell-completion "
+           "  completion [bash | zsh]                  print a shell-completion "
            "script\n"
            "  version [--json]                         show runtime, format and "
            "Tux32 versions\n"
@@ -2072,6 +2137,114 @@ std::string usage_text() {
            "Learn more: docs/TUTORIAL.md and docs/README.md\n";
 }
 
+// ------------------------------------------------------- per-command help
+
+/// One line of "what this command is for", plus its usage. Every entry in
+/// known_commands() has a row here (asserted by tests/test_cli_ux.cpp), so
+/// `lexe <command> --help` can never fall through to the full banner.
+struct CommandHelp {
+    const char* summary;
+    const char* usage;
+};
+
+const std::map<std::string, CommandHelp>& command_help() {
+    static const std::map<std::string, CommandHelp> k = {
+        {"install",
+         {"Verify a .lexe package and install it for the current user.",
+          kInstallUsage}},
+        {"run",
+         {"Launch an installed application under the isolation sandbox.",
+          kRunUsage}},
+        {"list", {"List installed applications, one compact line each.",
+                  kListUsage}},
+        {"apps",
+         {"Manage installed applications (version, disk, trust, last run).",
+          kAppsUsage}},
+        {"info",
+         {"Show what a package or installed application is, before you trust it.",
+          kInfoUsage}},
+        {"inspect",
+         {"Inspect a package in full: identity, dependencies and every check.",
+          kInspectUsage}},
+        {"update", {"Apply, or check for, updates to an installed application.",
+                    kUpdateUsage}},
+        {"rollback",
+         {"Return an application to its previous installed version.",
+          kRollbackUsage}},
+        {"repair",
+         {"Re-verify an installation and restore any file that fails its hash.",
+          kRepairUsage}},
+        {"remove", {"Uninstall an application, optionally purging its data.",
+                    kRemoveUsage}},
+        {"gc", {"Reclaim disk from old versions (keeps the active one plus n).",
+                kGcUsage}},
+        {"build",
+         {"Build a signed .lexe from a project folder containing lexe.json.",
+          kBuildUsage}},
+        {"analyze",
+         {"Read an ELF binary's dependencies and explain its host compatibility.",
+          kAnalyzeUsage}},
+        {"sdk",
+         {"Check a binary against the Tux32 Core 1 portability contract.",
+          kSdkUsage}},
+        {"pack",
+         {"Build a signed package from an explicit manifest (low-level).",
+          kPackUsage}},
+        {"keygen", {"Generate an Ed25519 signing keypair into a key file.",
+                    kKeygenUsage}},
+        {"sign-update",
+         {"Sign an update manifest, writing <update.json>.sig beside it.",
+          kSignUpdateUsage}},
+        {"verify",
+         {"Run the FORMAT-0.1 verification pipeline over a package and report "
+          "each stage.",
+          kVerifyUsage}},
+        {"trust",
+         {"Inspect or set the LOCAL publisher-trust record for an application.",
+          kTrustUsage}},
+        {"source", {"Set where an installed application looks for updates.",
+                    kSourceUsage}},
+        {"config", {"View or change persisted runtime settings.", kConfigUsage}},
+        {"integrate",
+         {"Register .lexe file handling and desktop entries for this user.",
+          kIntegrateUsage}},
+        {"completion", {"Print a shell-completion script for bash or zsh.",
+                        kCompletionUsage}},
+        {"version",
+         {"Show the runtime, package-format and Tux32 baseline versions.",
+          kVersionUsage}},
+        {"help", {"Show the command list, or the help for one command.",
+                  "usage: lexe help [command]"}},
+    };
+    return k;
+}
+
+/// Print the help for one command. An unrecognised name is a usage error that
+/// suggests the closest real command, exactly like dispatch() does.
+int print_command_help(const std::string& command) {
+    const auto it = command_help().find(command);
+    if (it == command_help().end()) {
+        std::string msg = "unknown command \"" + command + "\"";
+        if (const std::string sug = suggest_command(command); !sug.empty()) {
+            msg += " — did you mean \"" + sug + "\"?";
+        }
+        throw UsageError(msg + "\n\n" + usage_text());
+    }
+    std::cout << it->second.summary << "\n\n" << it->second.usage << "\n";
+    return 0;
+}
+
+/// Whether the user asked for this command's help. Only tokens BEFORE a literal
+/// "--" count, so `lexe run <id> -- --help` still passes --help to the
+/// application rather than printing our own help.
+bool asked_for_help(const std::vector<std::string>& rest) {
+    for (const std::string& a : rest) {
+        if (a == "--") break;
+        if (a == "--help" || a == "-h") return true;
+    }
+    return false;
+}
+
 int dispatch(const std::vector<std::string>& args) {
     if (args.empty()) {
         throw UsageError(usage_text());
@@ -2080,8 +2253,21 @@ int dispatch(const std::vector<std::string>& args) {
     const std::vector<std::string> rest(args.begin() + 1, args.end());
 
     if (command == "help" || command == "--help" || command == "-h") {
+        // `lexe help <command>` answers about that one command; `lexe help
+        // --help` asks about `help` itself rather than treating its own flag
+        // as a topic name.
+        if (!rest.empty() && rest[0] != "--") {
+            const bool self = rest[0] == "--help" || rest[0] == "-h";
+            return print_command_help(self ? "help" : rest[0]);
+        }
         std::cout << usage_text();
         return 0;
+    }
+    // `lexe <command> --help` / `-h` — the affordance every CLI is expected to
+    // have. Handled before the command runs so it never becomes "unknown
+    // option", and only for real commands so a typo still gets a suggestion.
+    if (command_help().count(command) != 0 && asked_for_help(rest)) {
+        return print_command_help(command);
     }
     if (command == "version" || command == "--version" || command == "-V") {
         return cmd_version(rest);

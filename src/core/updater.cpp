@@ -49,6 +49,18 @@ using nlohmann::json;
     throw VerificationError(message);
 }
 
+/// A MALFORMED update manifest, as opposed to a failed check on a well-formed
+/// one. The publisher wrote this file, so the actionable step is the format —
+/// not the "re-download the package" advice a verification failure otherwise
+/// earns.
+[[noreturn]] void fail_shape(const std::string& message) {
+    throw VerificationError(
+        message,
+        "update.json must follow FORMAT-0.1 §7: a top-level \"channels\" "
+        "object whose channel entry carries \"version\" and a \"package\" "
+        "{url, sha256}. Sign it with `lexe sign-update`.");
+}
+
 /// Strict member lookup; JSON null counts as absent.
 const json* find_member(const json& object, const char* key) {
     const auto it = object.find(key);
@@ -62,8 +74,8 @@ std::string require_string(const json& object, const char* key,
     const json* value = find_member(object, key);
     if (value == nullptr || !value->is_string() ||
         value->get<std::string>().empty()) {
-        fail("update.json: " + where + " \"" + key +
-             "\" must be a non-empty string");
+        fail_shape("update.json: " + where + " \"" + key +
+                   "\" must be a non-empty string");
     }
     return value->get<std::string>();
 }
@@ -109,7 +121,10 @@ UpdateCheck Updater::check(const std::string& id) {
     const Registry registry(paths_);
     const InstallationRecord record = registry.read_record(id);
     if (record.update_url.empty()) {
-        throw NotFoundError("no update source configured for " + id);
+        throw NotFoundError(
+            "no update source configured for " + id,
+            "Point it at an update manifest with `lexe source set " + id +
+                " <url>`.");
     }
 
     // Fetch update.json and its detached signature at the same URL + ".sig"
@@ -144,14 +159,14 @@ UpdateCheck Updater::check(const std::string& id) {
                              update_bytes.size()),
             "update.json", limits::kMaxUpdateJsonBytes);
     } catch (const Error& e) {
-        fail(e.what()); // json_strict already prefixes with "update.json: "
+        fail_shape(e.what()); // json_strict already prefixes "update.json: "
     }
     if (!manifest.is_object()) {
-        fail("update.json: top level must be a JSON object");
+        fail_shape("update.json: top level must be a JSON object");
     }
     if (const json* v = find_member(manifest, "lexeVersion")) {
         if (!v->is_string() || v->get<std::string>() != "0.1") {
-            fail("update.json: unsupported lexeVersion (expected \"0.1\")");
+            fail_shape("update.json: unsupported lexeVersion (expected \"0.1\")");
         }
     }
 
@@ -167,22 +182,23 @@ UpdateCheck Updater::check(const std::string& id) {
         record.channel.empty() ? std::string("stable") : record.channel;
     const json* channels = find_member(manifest, "channels");
     if (channels == nullptr || !channels->is_object()) {
-        fail("update.json: missing \"channels\" object (check 3)");
+        fail_shape("update.json: missing \"channels\" object (check 3)");
     }
     const json* entry = find_member(*channels, channel.c_str());
     if (entry == nullptr) {
-        fail("update.json has no entry for channel \"" + channel +
-             "\" (check 3)");
+        fail_shape("update.json has no entry for channel \"" + channel +
+                   "\" (check 3)");
     }
     if (!entry->is_object()) {
-        fail("update.json: channel \"" + channel +
-             "\" entry must be an object (check 3)");
+        fail_shape("update.json: channel \"" + channel +
+                   "\" entry must be an object (check 3)");
     }
     const std::string where = "channel \"" + channel + "\"";
     const std::string available = require_string(*entry, "version", where);
     const json* package = find_member(*entry, "package");
     if (package == nullptr || !package->is_object()) {
-        fail("update.json: " + where + " is missing the \"package\" object");
+        fail_shape("update.json: " + where +
+                   " is missing the \"package\" object");
     }
     const std::string url =
         require_string(*package, "url", where + " package");

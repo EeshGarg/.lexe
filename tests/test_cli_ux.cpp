@@ -75,8 +75,80 @@ TEST_CASE("completion offers subcommands for grouped commands") {
     CHECK(has(s, "list get set reset path"));   // config
 }
 
+TEST_CASE("completion emits a sourceable zsh script") {
+    const util::ProcessResult r = run({"completion", "zsh"});
+    CHECK(r.exit_code == 0);
+    CHECK(has(r.stdout_text, "#compdef lexe"));
+    CHECK(has(r.stdout_text, "compdef _lexe lexe"));
+    CHECK(has(r.stdout_text, "compadd"));
+}
+
+TEST_CASE("both shells complete the same command and subcommand words") {
+    const std::string bash = run({"completion", "bash"}).stdout_text;
+    const std::string zsh = run({"completion", "zsh"}).stdout_text;
+    // One shared table drives both, so neither can silently miss a command.
+    for (const char* word : {"install", "run", "apps", "inspect", "sdk",
+                             "trust", "config", "completion", "version"}) {
+        CHECK(has(bash, word));
+        CHECK(has(zsh, word));
+    }
+    CHECK(has(zsh, "show block unblock forget")); // trust subcommands
+    CHECK(has(zsh, "list get set reset path"));   // config subcommands
+}
+
 TEST_CASE("completion rejects an unsupported shell as a usage error") {
-    CHECK(run({"completion", "zsh"}).exit_code == 2);
+    CHECK(run({"completion", "tcsh"}).exit_code == 2);
+    CHECK(run({"completion", "powershell"}).exit_code == 2);
+}
+
+// --- per-command help -------------------------------------------------------
+
+TEST_CASE("every command answers --help with its own usage, not the banner") {
+    // The full command surface, from the CLI's own list.
+    for (const char* cmd :
+         {"install", "run", "list", "apps", "info", "inspect", "update",
+          "rollback", "repair", "remove", "gc", "build", "analyze", "sdk",
+          "pack", "keygen", "sign-update", "verify", "trust", "source",
+          "config", "integrate", "completion", "version", "help"}) {
+        const util::ProcessResult r = run({cmd, "--help"});
+        INFO("command: " << std::string(cmd));
+        CHECK(r.exit_code == 0);
+        // Its own usage line, and NOT the whole banner.
+        CHECK(has(r.stdout_text, "usage: lexe "));
+        CHECK(has(r.stdout_text, cmd));
+        CHECK_FALSE(has(r.stdout_text, "Linux applications, made simple."));
+    }
+}
+
+TEST_CASE("-h is accepted wherever --help is") {
+    const util::ProcessResult r = run({"install", "-h"});
+    CHECK(r.exit_code == 0);
+    CHECK(has(r.stdout_text, "usage: lexe install"));
+}
+
+TEST_CASE("`lexe help <command>` answers about that one command") {
+    const util::ProcessResult r = run({"help", "inspect"});
+    CHECK(r.exit_code == 0);
+    CHECK(has(r.stdout_text, "usage: lexe inspect"));
+    CHECK_FALSE(has(r.stdout_text, "Linux applications, made simple."));
+}
+
+TEST_CASE("`lexe help <typo>` is a usage error, like any unknown command") {
+    CHECK(run({"help", "instal"}).exit_code == 2);
+}
+
+TEST_CASE("bare `lexe help` still shows the full grouped help") {
+    const util::ProcessResult r = run({"help"});
+    CHECK(r.exit_code == 0);
+    CHECK(has(r.stdout_text, "Linux applications, made simple."));
+}
+
+TEST_CASE("--help after `--` belongs to the application, not to lexe") {
+    // `lexe run <id> -- --help` must not print lexe's help; the id is not
+    // installed here, so it fails as not-found (exit 4) having passed --help on.
+    const util::ProcessResult r = run({"run", "org.example.absent", "--", "--help"});
+    CHECK(r.exit_code == 4);
+    CHECK_FALSE(has(r.stdout_text, "usage: lexe run"));
 }
 
 TEST_CASE("a mistyped command is a usage error (with a suggestion on stderr)") {

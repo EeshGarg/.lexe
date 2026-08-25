@@ -351,12 +351,14 @@ InstallResult Installer::install(const fs::path& lexe_file,
                 if (!added.empty()) added += ", ";
                 added += id;
             }
+            // The message states the problem; the fix rides along as the hint,
+            // so the CLI does not print the same instruction twice.
             throw PermissionError(
                 manifest.name + " " + manifest.version +
-                " requests additional permissions compared to the version you "
-                "previously approved: " + added +
-                ". Review the new permissions before continuing, then re-run "
-                "with --accept-permissions to grant them.");
+                    " requests permissions you have not approved for it: " +
+                    added,
+                "Review what those permissions allow, then re-run with "
+                "--accept-permissions to grant them.");
         }
     }
 
@@ -748,8 +750,11 @@ void Installer::rollback(const std::string& id) {
         }
     }
     if (!target.has_value()) {
-        throw NotFoundError("no previous version of " + id +
-                            " to roll back to (current is " + current + ")");
+        throw NotFoundError(
+            "no previous version of " + id + " to roll back to (current is " +
+                current + ")",
+            "Rollback returns to the version an update replaced, and only while "
+            "it is still on disk. `lexe gc` removes retained versions.");
     }
 
     registry.set_current_version(id, *target);
