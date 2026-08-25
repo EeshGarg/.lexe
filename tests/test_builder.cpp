@@ -397,4 +397,65 @@ TEST_CASE("the build progress shows meaningful stages, not logs") {
     CHECK(stages.back() == "Finalizing");
 }
 
+TEST_CASE("an entrypoint that cannot start anything is rejected") {
+    // Pointing the Builder at a folder with no executable used to pre-select
+    // the first candidate alphabetically and build it: a signed package whose
+    // entrypoint was a text file, reported as "Build succeeded" and
+    // "Verification: PASSED" — because a package verifies against its own
+    // hashes whether or not its entrypoint can run. The break only showed up
+    // when a user installed it and pressed Launch.
+    lexe::test::TempLexeHome home;
+    const fs::path folder = home.path() / "src";
+    fs::create_directories(folder);
+
+    lexe::util::spit(folder / "data.txt", std::string_view("just some data\n"));
+    CHECK_FALSE(lexe::gui::entrypoint_looks_runnable(folder, "data.txt"));
+
+    // A shebang script counts, even without an execute bit (copies and
+    // FAT/NTFS mounts routinely lose it).
+    lexe::util::spit(folder / "run.sh", std::string_view("#!/bin/sh\nexec true\n"));
+    CHECK(lexe::gui::entrypoint_looks_runnable(folder, "run.sh"));
+
+    // So does an ELF binary.
+    lexe::test::ElfSpec app;
+    app.needed = {"libc.so.6"};
+    lexe::test::write_elf(folder / "bin", app);
+    CHECK(lexe::gui::entrypoint_looks_runnable(folder, "bin"));
+
+    // Nothing selected, or something that is not there at all.
+    CHECK_FALSE(lexe::gui::entrypoint_looks_runnable(folder, ""));
+    CHECK_FALSE(lexe::gui::entrypoint_looks_runnable(folder, "absent"));
+}
+
+TEST_CASE("'generate a new key' never destroys the key already at that path") {
+    // The Builder used to generate + write unconditionally. Its default key
+    // path is ~/<app-id>.key.json, so the SECOND build of the same application
+    // overwrote the first build's key — and with no authenticated key rotation
+    // in 0.1, that permanently ends the ability to ship an update for that App
+    // ID: the installed copy refuses the next package as "signed by a different
+    // key". `lexe build` already reuses a project's existing key.json.
+    lexe::test::TempLexeHome home;
+    const fs::path dir = home.path() / "keys";
+    fs::create_directories(dir);
+
+    // Nothing there yet: a new key is correct.
+    CHECK_FALSE(lexe::gui::should_reuse_existing_key(dir / "absent.key.json"));
+
+    // A key IS there: it must be reused, never rewritten.
+    const fs::path existing = dir / "com.example.app.key.json";
+    const lexe::crypto::KeyPair original = lexe::crypto::generate_keypair();
+    lexe::crypto::write_keyfile(existing, original);
+    const std::string before = lexe::util::slurp_text(existing);
+    CHECK(lexe::gui::should_reuse_existing_key(existing));
+
+    // And reusing really does yield the same identity, byte-for-byte on disk.
+    const lexe::crypto::KeyPair reused = lexe::crypto::read_keyfile(existing);
+    CHECK(reused.public_key == original.public_key);
+    CHECK(lexe::util::slurp_text(existing) == before);
+
+    // A directory is not a key file, and an empty path is not one either.
+    CHECK_FALSE(lexe::gui::should_reuse_existing_key(dir));
+    CHECK_FALSE(lexe::gui::should_reuse_existing_key(fs::path{}));
+}
+
 } // TEST_SUITE("builder")

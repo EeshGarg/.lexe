@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -480,6 +481,63 @@ inline ProfileGate evaluate_profile_gate(RuntimeProfile profile,
 
 // --------------------------------------------------- first-run welcome (DX8)
 
+/// Whether `relative` inside `folder` could plausibly START an application: an
+/// ELF binary, a script with a shebang, or a file carrying an execute bit.
+///
+/// The Builder used to pre-select the FIRST candidate alphabetically whenever
+/// detection found no runnable executable, so pointing it at a folder of plain
+/// files happily produced a signed package whose entrypoint was `data.txt` —
+/// reported as "Build succeeded" and "Verification: PASSED", because a package
+/// verifies against its own hashes regardless of whether its entrypoint can
+/// run. Nothing downstream catches this: the failure surfaces only when a user
+/// installs the package and tries to launch it.
+inline bool entrypoint_looks_runnable(const std::filesystem::path& folder,
+                                      const std::string& relative) {
+    if (relative.empty()) return false;
+    const std::filesystem::path file = folder / relative;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec)) return false;
+
+    const std::filesystem::perms p =
+        std::filesystem::status(file, ec).permissions();
+    if (!ec && (p & (std::filesystem::perms::owner_exec |
+                     std::filesystem::perms::group_exec |
+                     std::filesystem::perms::others_exec)) !=
+                   std::filesystem::perms::none) {
+        return true;
+    }
+
+    // No execute bit (a fresh copy or a FAT/NTFS mount often loses it): accept
+    // anything whose first bytes say it is a program.
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    char magic[4] = {0, 0, 0, 0};
+    in.read(magic, 4);
+    const std::streamsize got = in.gcount();
+    if (got >= 4 && magic[0] == '\x7f' && magic[1] == 'E' && magic[2] == 'L' &&
+        magic[3] == 'F') {
+        return true;
+    }
+    return got >= 2 && magic[0] == '#' && magic[1] == '!';
+}
+
+/// Whether "Generate a new signing key" must REUSE the key already at `path`
+/// rather than writing a new one over it.
+///
+/// It must, whenever the file exists. A signing key is the durable identity of
+/// every application signed with it, and this runtime has no authenticated key
+/// rotation — replacing the file permanently ends the ability to ship an update
+/// for that App ID, and the installed copy would refuse the next package as
+/// "signed by a different key". The Builder's default path is
+/// ~/<app-id>.key.json, so the SECOND build of the same application lands
+/// exactly on the first build's key. `lexe build` already reuses a project's
+/// existing key.json; this is the same rule.
+inline bool should_reuse_existing_key(const std::filesystem::path& path) {
+    if (path.empty()) return false;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec);
+}
+
 /// The marker whose presence means "the welcome screen has been dismissed".
 inline std::filesystem::path welcome_marker(const Paths& paths) {
     return paths.home() / "builder-welcome-seen";
@@ -648,6 +706,10 @@ struct BuilderState {
     // Captured on Build (main thread) → worker.
     lexe::gui::BuilderForm form;
     bool generate_key = true;
+    /// Set when "Generate a new signing key" found a key already at that path
+    /// and reused it instead of destroying it. Reported on the result screen so
+    /// the developer knows which key signed the package.
+    bool reused_existing_key = false;
     std::string existing_key_path;
     std::string generated_key_path;
     std::string output_path;
@@ -867,7 +929,12 @@ void run_detection(BuilderState* st) {
             break;
         }
     }
-    if (!st->detection.entrypoints.empty()) {
+    // Only pre-select when detection actually FOUND a runnable executable.
+    // Defaulting to index 0 otherwise silently nominated the first file
+    // alphabetically — a README or a data file — as the thing that starts the
+    // application, and the build went through.
+    if (!st->detection.entrypoints.empty() &&
+        !st->detection.main_executable.empty()) {
         gtk_combo_box_set_active(GTK_COMBO_BOX(st->entrypoint_combo), active);
     }
 
@@ -963,12 +1030,18 @@ gpointer build_worker(gpointer user_data) {
         lexe::crypto::KeyPair key;
         if (st->generate_key) {
             const fs::path keyfile(st->generated_key_path);
-            if (keyfile.has_parent_path()) {
-                std::error_code ec;
-                fs::create_directories(keyfile.parent_path(), ec);
+            if (lexe::gui::should_reuse_existing_key(keyfile)) {
+                key = lexe::crypto::read_keyfile(keyfile);
+                st->reused_existing_key = true;
+            } else {
+                if (keyfile.has_parent_path()) {
+                    std::error_code ec;
+                    fs::create_directories(keyfile.parent_path(), ec);
+                }
+                key = lexe::crypto::generate_keypair();
+                lexe::crypto::write_keyfile(keyfile, key);
+                st->reused_existing_key = false;
             }
-            key = lexe::crypto::generate_keypair();
-            lexe::crypto::write_keyfile(keyfile, key);
         } else {
             key = lexe::crypto::read_keyfile(fs::path(st->existing_key_path));
         }
@@ -1056,8 +1129,23 @@ gboolean on_build_finished(gpointer user_data) {
         "succeeded</span>");
     gtk_label_set_markup(GTK_LABEL(st->result_heading), heading);
     g_free(heading);
-    gtk_label_set_text(GTK_LABEL(st->result_report),
-                       lexe::render_build_report_text(st->report).c_str());
+    // Say WHICH key signed this, and where it lives. The signing key is the
+    // application's durable identity and the developer has to keep it; a build
+    // that never names the file leaves them with nothing to keep.
+    std::string report_text = lexe::render_build_report_text(st->report);
+    if (st->generate_key) {
+        report_text +=
+            st->reused_existing_key
+                ? "\nSigning key:   reused the existing key at " +
+                      st->generated_key_path +
+                      "\n               (a new key would have ended updates for "
+                      "this App ID)\n"
+                : "\nSigning key:   a NEW key was written to " +
+                      st->generated_key_path +
+                      "\n               Keep it safe and out of version "
+                      "control: it is the identity of every future update.\n";
+    }
+    gtk_label_set_text(GTK_LABEL(st->result_report), report_text.c_str());
     gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "result");
     return G_SOURCE_REMOVE;
 }
@@ -1105,6 +1193,18 @@ void start_build(BuilderState* st) {
     const lexe::gui::ValidationResult v = lexe::gui::validate_form(st->form);
     if (!v.ok) {
         set_banner(st, false, v.error);
+        return;
+    }
+    // A package whose entrypoint cannot start anything verifies perfectly well
+    // against its own hashes — the failure only appears when a user installs it
+    // and tries to launch. Catch it here instead.
+    if (!lexe::gui::entrypoint_looks_runnable(fs::path(st->folder),
+                                              st->form.entrypoint)) {
+        set_banner(st, false,
+                   "\"" + st->form.entrypoint +
+                       "\" does not look like a program: it is not an "
+                       "executable, and has no #! line. Choose the file that "
+                       "starts your application on the Installer step.");
         return;
     }
     st->generate_key =
