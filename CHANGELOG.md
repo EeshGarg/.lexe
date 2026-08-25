@@ -229,6 +229,17 @@ wrong advice ("only proceed if you understand why the key changed", implying a
 way to proceed that did not exist) and now documents the verified sequence. A
 test asserts the message names the step that actually works.
 
+The same correction reached both surfaces that show it:
+- The Installer's changed-key screen printed ONE fingerprint — the key in front
+  of you — with nothing to compare it against and no way forward offered. It now
+  labels both, "Expected (already installed)" against "Presented (this package)",
+  and carries a "What you can do:" section with the verified procedure.
+- `lexe install` printed the whole details screen, including "Refused — the
+  signing key has changed", and then asked "Install …? [y/N]" anyway. Answering
+  y produced the refusal that had already been decided before the screen was
+  drawn. It now refuses immediately after rendering, with the same typed error
+  and exit 7.
+
 Also in this pass:
 - Both fingerprints in that message are five-group PREFIXES of the sixteen-group
   fingerprint every other surface prints, and nothing said so — an unmarked

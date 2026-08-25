@@ -1233,6 +1233,12 @@ int cmd_info(const std::vector<std::string>& args) {
             {"installedAt", record.installed_at},
             {"lastRunAt", record.last_run_at},
             {"lastExitCode", record.last_exit_code},
+            // Same field name and same sum as `lexe apps --json`. The human
+            // view reports a disk figure and this carried none at all, so a
+            // script could not read what the terminal was showing it.
+            {"diskBytes", dir_size(registry.app_dir(record.id)) +
+                              dir_size(registry.app_data_dir(record.id)) +
+                              dir_size(registry.app_cache_dir(record.id))},
         };
         j["signingKey"] = record.publisher_key;
         j["fingerprint"] = {
