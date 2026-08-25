@@ -851,6 +851,15 @@ int main(int argc, char** argv) {
 
     build_ui(st);
     gtk_widget_show_all(st->window);
+    // Start focus on Close, not on a body label. Two reasons: a selectable
+    // label that holds focus draws a blinking text caret, so the window opened
+    // with a cursor sitting in read-only prose; and this dialog asks for
+    // consent, so the safe action is the one that should be armed — matching
+    // `lexe install`, whose prompt defaults to No ("[y/N]"). Install stays one
+    // click or one Tab away.
+    if (st->details_close_button != nullptr) {
+        gtk_widget_grab_focus(st->details_close_button);
+    }
     gtk_main();
     return 0;
 }
