@@ -20,6 +20,7 @@
 #include "core/paths.hpp"
 #include "core/permissions.hpp"
 #include "core/presentation.hpp"
+#include "core/transaction.hpp"
 #include "core/trust.hpp"
 #include "core/verify.hpp"
 
@@ -261,6 +262,194 @@ TEST_CASE("format_trust presents authenticity + local trust, first-seen is cauti
     const lexe::gui::TrustLines none = lexe::gui::format_trust(std::nullopt);
     CHECK(none.severity == "danger");
     CHECK(contains(none.headline, "could not be read"));
+}
+
+// --- never a heading over an empty body -----------------------------------
+//
+// format_trust(nullopt) used to set the headline ALONE, leaving signature, key,
+// fingerprint and caveat empty — so the details page drew the bold
+// "Authenticity & local trust:" heading with nothing whatsoever under it. It
+// read as a label that had failed to render, and it left unanswered the only
+// question that section exists to answer: was a signing key checked at all?
+
+TEST_CASE("an absent trust evaluation still fills the authenticity section") {
+    TempLexeHome home;
+
+    // Undecodable file: no manifest, therefore no key to check anything against.
+    const lexe::gui::TrustLines unreadable = lexe::gui::format_trust(std::nullopt);
+    CHECK(unreadable.severity == "danger");
+    CHECK_FALSE(unreadable.allowed);          // still fails closed
+    CHECK_FALSE(unreadable.signature.empty()); // the defect: these were empty
+    CHECK_FALSE(unreadable.key.empty());
+    CHECK(contains(unreadable.headline, "could not be read"));
+    // It must say a key was never obtained, not stay silent about it.
+    CHECK(contains(unreadable.key, "could not be read"));
+    // Nothing may be claimed about a key that was never seen.
+    CHECK(unreadable.fingerprint.empty());
+    CHECK(unreadable.expected_fingerprint.empty());
+    CHECK(unreadable.caveat.empty());
+
+    // The other way an evaluation goes missing: the manifest read fine and
+    // TrustStore::evaluate failed. Describing that with "this package could not
+    // be read" would be untrue — the package read perfectly.
+    const lexe::gui::TrustLines no_record =
+        lexe::gui::format_trust(std::nullopt, /*manifest_readable=*/true);
+    CHECK(no_record.severity == "danger");
+    CHECK_FALSE(no_record.allowed);
+    CHECK_FALSE(no_record.signature.empty());
+    CHECK_FALSE(no_record.key.empty());
+    CHECK_FALSE(contains(no_record.headline, "package could not be read"));
+    CHECK(contains(no_record.headline, "trust could not be evaluated"));
+}
+
+TEST_CASE("the authenticity section body is never empty, for any package") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const auto key = lexe::test::make_keypair();
+
+    // (1) A package that verifies.
+    const fs::path good = lexe::test::make_test_package(home.path(), key);
+    const VerificationReport good_report = lexe::verify_package(good, true);
+    const lexe::gui::ViewModel good_vm =
+        make_vm(try_read_manifest(good), good_report, good, paths);
+    CHECK_FALSE(lexe::gui::trust_section_body(good_vm).empty());
+    CHECK(contains(lexe::gui::trust_section_body(good_vm),
+                   good_vm.signature_text));
+    CHECK(contains(lexe::gui::trust_section_body(good_vm),
+                   good_vm.fingerprint_text));
+
+    // (2) A package whose payload was tampered with (signature valid, contents
+    //     do not match) — an evaluation exists.
+    const fs::path bad_dir = home.path() / "tampered";
+    fs::create_directories(bad_dir);
+    const fs::path bad = lexe::test::make_test_package(bad_dir, key);
+    lexe::test::tamper_entry(bad, "payload/data.txt",
+                             [](std::vector<std::uint8_t>& bytes) {
+                                 REQUIRE_FALSE(bytes.empty());
+                                 bytes[0] ^= 0xFF;
+                             });
+    const VerificationReport bad_report = lexe::verify_package(bad, true);
+    const lexe::gui::ViewModel bad_vm =
+        make_vm(try_read_manifest(bad), bad_report, bad, paths);
+    CHECK_FALSE(lexe::gui::trust_section_body(bad_vm).empty());
+
+    // (3) The defect's own case: an undecodable file. No manifest, no
+    //     evaluation, and previously an entirely empty section body.
+    const fs::path junk = home.path() / "undecodable.lexe";
+    lexe::util::spit(junk, std::string_view("\x7f\xde\xad\xbe\xef not a zip"));
+    const VerificationReport junk_report = lexe::verify_package(junk, true);
+    const std::optional<Manifest> junk_manifest = try_read_manifest(junk);
+    REQUIRE_FALSE(junk_manifest.has_value());
+    const lexe::gui::ViewModel junk_vm =
+        make_vm(junk_manifest, junk_report, junk, paths);
+
+    const std::string body = lexe::gui::trust_section_body(junk_vm);
+    CHECK_FALSE(body.empty());
+    CHECK_FALSE(junk_vm.signature_text.empty());
+    CHECK_FALSE(junk_vm.key_text.empty());
+    // Fails closed, exactly as before.
+    CHECK_FALSE(junk_vm.can_install);
+    CHECK(junk_vm.trust_severity == "danger");
+
+    // The page already has a "Why this package was refused:" section that names
+    // the failing pipeline stage. This section must not say it a second time.
+    REQUIRE_FALSE(junk_vm.refusal_text.empty());
+    REQUIRE(junk_report.first_failure() != nullptr);
+    CHECK(contains(junk_vm.refusal_text, junk_report.first_failure()->name));
+    CHECK_FALSE(contains(body, junk_report.first_failure()->name));
+    CHECK_FALSE(contains(body, "Verification failed"));
+}
+
+// --- progress: the stage that is actually running --------------------------
+//
+// The progress screen was a spinner over one fixed line, so a five-second
+// install and a wedged one looked identical. Installer::install() takes no
+// progress callback, but it does write every phase transition to the
+// transaction journal before doing that phase's work — so the stage the GUI
+// names is read from the installer's own on-disk state, never guessed from a
+// timer.
+
+TEST_CASE("every transaction phase maps to the stage that phase performs") {
+    TempLexeHome home;
+    using lexe::TxnPhase;
+    using lexe::gui::InstallStage;
+    using lexe::gui::install_stage_from_phase;
+
+    // No journal yet: what runs before InstallTransaction::begin() is the §6
+    // pipeline and the trust/permission gates.
+    CHECK(install_stage_from_phase(TxnPhase::None) == InstallStage::Verifying);
+    CHECK(install_stage_from_phase(TxnPhase::Preparing) ==
+          InstallStage::Extracting);
+    CHECK(install_stage_from_phase(TxnPhase::Staged) == InstallStage::Rechecking);
+    CHECK(install_stage_from_phase(TxnPhase::Verified) == InstallStage::Placing);
+    CHECK(install_stage_from_phase(TxnPhase::Promoted) ==
+          InstallStage::Activating);
+    CHECK(install_stage_from_phase(TxnPhase::RecordUpdated) ==
+          InstallStage::Finishing);
+
+    // The screen only ever moves forward, so the ranks must increase in the
+    // order the phases actually occur. The journal is DELETED on commit, which
+    // reads back as TxnPhase::None; without a strict ordering the screen would
+    // announce "verifying" again at the instant the install succeeded.
+    const TxnPhase order[] = {TxnPhase::None,     TxnPhase::Preparing,
+                              TxnPhase::Staged,   TxnPhase::Verified,
+                              TxnPhase::Promoted, TxnPhase::RecordUpdated};
+    for (std::size_t i = 1; i < std::size(order); ++i) {
+        INFO("phase: " << lexe::to_string(order[i]));
+        CHECK(lexe::gui::install_stage_rank(install_stage_from_phase(order[i])) >
+              lexe::gui::install_stage_rank(
+                  install_stage_from_phase(order[i - 1])));
+    }
+}
+
+TEST_CASE("each stage says something, and no two stages say the same thing") {
+    TempLexeHome home;
+    using lexe::gui::InstallStage;
+    const InstallStage stages[] = {
+        InstallStage::Verifying, InstallStage::Extracting,
+        InstallStage::Rechecking, InstallStage::Placing,
+        InstallStage::Activating, InstallStage::Finishing};
+    std::vector<std::string> seen;
+    for (const InstallStage stage : stages) {
+        const std::string text = lexe::gui::install_stage_text(stage);
+        CHECK_FALSE(text.empty());
+        // No percentage, no ETA, no "N%" — the installer publishes phases, not
+        // byte counts, and a fraction here would be an invention.
+        CHECK_FALSE(contains(text, "%"));
+        CHECK(std::find(seen.begin(), seen.end(), text) == seen.end());
+        seen.push_back(text);
+    }
+    // install_stage_rank must index install_stage_text: on_progress_tick stores
+    // the rank and casts it back to a stage.
+    for (const InstallStage stage : stages) {
+        CHECK(lexe::gui::install_stage_text(static_cast<InstallStage>(
+                  lexe::gui::install_stage_rank(stage))) ==
+              lexe::gui::install_stage_text(stage));
+    }
+}
+
+TEST_CASE("elapsed time is rendered as a clock, and never runs backwards") {
+    TempLexeHome home;
+    CHECK(lexe::gui::format_elapsed(0) == "0:00");
+    CHECK(lexe::gui::format_elapsed(7) == "0:07");
+    CHECK(lexe::gui::format_elapsed(70) == "1:10");
+    CHECK(lexe::gui::format_elapsed(599) == "9:59");
+    CHECK(lexe::gui::format_elapsed(3600) == "1:00:00");
+    CHECK(lexe::gui::format_elapsed(3930) == "1:05:30");
+    // A monotonic clock cannot go backwards, but a defensive clamp keeps a
+    // negative from formatting as "0:-5" if one ever did.
+    CHECK(lexe::gui::format_elapsed(-5) == "0:00");
+}
+
+TEST_CASE("the progress note explains the wait without offering an unsafe stop") {
+    TempLexeHome home;
+    const std::string note = lexe::gui::install_progress_note();
+    CHECK_FALSE(note.empty());
+    // It must say WHY waiting is safe: nothing is switched over until the whole
+    // staged tree has been re-checked (HARDENING.md §A).
+    CHECK(contains(note, "re-checked"));
+    // And it must be honest that there is no cancel, rather than implying one.
+    CHECK(contains(note, "no Cancel"));
 }
 
 TEST_CASE("format_isolation states the truthful control set") {

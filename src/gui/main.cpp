@@ -35,6 +35,7 @@
 #include "core/manifest.hpp"
 #include "core/paths.hpp"
 #include "core/presentation.hpp"
+#include "core/transaction.hpp"
 #include "core/trust.hpp"
 #include "core/verify.hpp"
 #include "core/versioncmp.hpp"
@@ -144,12 +145,49 @@ struct TrustLines {
     std::string severity = "danger";
     bool allowed = false;
 };
-inline TrustLines format_trust(const std::optional<TrustEvaluation>& eval) {
+/// `manifest_readable` distinguishes the two ways an evaluation goes missing —
+/// see the no-evaluation branch. It is NOT a trust input: an absent evaluation
+/// refuses the install either way.
+inline TrustLines format_trust(const std::optional<TrustEvaluation>& eval,
+                               bool manifest_readable = false) {
     TrustLines t;
     if (!eval.has_value()) {
-        t.headline = "This package could not be read — authenticity cannot be "
-                     "established. Installation is disabled.";
+        // With no evaluation there is no signature state, no key and no
+        // fingerprint — so this branch used to set the headline ONLY, and the
+        // details page printed the "Authenticity & local trust:" heading over
+        // four empty strings: a bold heading above a blank gap. That reads as a
+        // broken renderer, and it leaves the one question the section exists to
+        // answer ("was a key checked?") unanswered — the reader cannot tell
+        // whether a key was found and rejected or never obtained at all. State
+        // which, in the section itself.
+        //
+        // The two ways to get here are different facts and must not be
+        // described with the same sentence: either the file could not be
+        // decoded (no manifest, therefore no key), or the manifest read fine
+        // and TrustStore::evaluate failed (a key exists; the local record it
+        // must be compared against could not be read).
         t.severity = "danger";
+        if (manifest_readable) {
+            t.headline = "Local trust could not be evaluated — authenticity "
+                         "cannot be established. Installation is disabled.";
+            t.signature = "Signature: not presented — this application's local "
+                          "trust record could not be read, so the outcome of "
+                          "the signature check cannot be reported here.";
+            t.key = "Signing key: not compared — until that record can be read, "
+                    "a changed publisher key cannot be told apart from the key "
+                    "this application is already bound to.";
+        } else {
+            t.headline = "This package could not be read — authenticity cannot "
+                         "be established. Installation is disabled.";
+            t.signature = "Signature: not checked — the file could not be "
+                          "decoded, so there are no signed bytes to check.";
+            t.key = "Signing key: none — the manifest that carries the "
+                    "publisher's key could not be read from this file.";
+        }
+        // Deliberately no fingerprint, no expected fingerprint and no TOFU
+        // caveat: each is a statement about a key that was never obtained. The
+        // stage that actually failed is named once, by the page's "Why this
+        // package was refused:" section; it is not repeated here.
         return t;
     }
     const presentation::AuthenticityView v =
@@ -291,7 +329,7 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
             "`lexe verify`.";
     }
 
-    const TrustLines trust = format_trust(eval);
+    const TrustLines trust = format_trust(eval, manifest.has_value());
     vm.status_text = trust.headline;
     vm.signature_text = trust.signature;
     vm.key_text = trust.key;
@@ -398,6 +436,134 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
     return vm;
 }
 
+/// The body of the details page's "Authenticity & local trust:" section, in one
+/// pure place so the "heading over an empty body" defect is testable rather than
+/// only visible on screen: build_view_model guarantees a signature line for every
+/// input, and this composes the rest around it. Never returns an empty string.
+inline std::string trust_section_body(const ViewModel& vm) {
+    std::string body = vm.signature_text;
+    const auto add = [&body](const std::string& line) {
+        if (line.empty()) return;
+        if (!body.empty()) body += '\n';
+        body += line;
+    };
+    add(vm.key_text);
+    if (!vm.fingerprint_text.empty()) {
+        // When the key CHANGED, label the two so they can be compared. A lone
+        // fingerprint on a screen that says "the signing key has changed" gives
+        // the reader nothing to compare it against.
+        add(vm.expected_fingerprint_text.empty()
+                ? "Signing key fingerprint: " + vm.fingerprint_text
+                : "Expected (already installed): " + vm.expected_fingerprint_text +
+                      "\nPresented (this package):  " + vm.fingerprint_text);
+    }
+    add(vm.identity_caveat);
+    return body;
+}
+
+// ---------------------------------------------------------------------------
+// Progress reporting for an install in flight.
+//
+// Installer::install() takes no progress callback, so the GUI cannot be told
+// where it has got to — but it can READ it: every phase transition of the
+// staged install is written to apps/<id>/txn.json before the work of that phase
+// starts (HARDENING.md §A, core/transaction.hpp). Polling that journal names the
+// stage that is genuinely running. It is the real state on disk, not a timer
+// pretending to be one, and there is deliberately no percentage or bar: the
+// installer publishes phases, not byte counts, and a fraction here would be an
+// invention.
+// ---------------------------------------------------------------------------
+
+/// The stages an install passes through, in order. Ordering is meaningful: the
+/// on-screen stage only ever moves FORWARD (see install_stage_rank).
+enum class InstallStage {
+    Verifying,  // §6 pipeline, trust + permission gates: before any txn exists
+    Extracting, // TxnPhase::Preparing
+    Rechecking, // TxnPhase::Staged
+    Placing,    // TxnPhase::Verified
+    Activating, // TxnPhase::Promoted
+    Finishing,  // TxnPhase::RecordUpdated
+};
+
+/// Monotonic position of a stage. The journal is DELETED on commit, so a naive
+/// reading of the phase snaps back to "no transaction" just as the install
+/// succeeds; ranking lets the screen refuse to walk backwards and claim it is
+/// verifying again at the very end.
+inline int install_stage_rank(InstallStage stage) {
+    return static_cast<int>(stage);
+}
+
+/// Map a transaction journal phase to the stage to show. TxnPhase::None means
+/// no transaction has begun yet, which during an install is the §6 verification
+/// and the trust/permission gates that run before InstallTransaction::begin().
+inline InstallStage install_stage_from_phase(TxnPhase phase) {
+    switch (phase) {
+        case TxnPhase::Preparing:     return InstallStage::Extracting;
+        case TxnPhase::Staged:        return InstallStage::Rechecking;
+        case TxnPhase::Verified:      return InstallStage::Placing;
+        case TxnPhase::Promoted:      return InstallStage::Activating;
+        case TxnPhase::RecordUpdated: return InstallStage::Finishing;
+        case TxnPhase::None:          break;
+    }
+    return InstallStage::Verifying;
+}
+
+/// What the stage is doing, in the user's terms. Each sentence describes work
+/// the installer actually performs in that phase — nothing is promised about
+/// how long it takes.
+inline std::string install_stage_text(InstallStage stage) {
+    switch (stage) {
+        case InstallStage::Extracting:
+            return "Extracting the application into a staging area.";
+        case InstallStage::Rechecking:
+            return "Re-checking the extracted files against their signed hashes.";
+        case InstallStage::Placing:
+            return "Putting the new version into place.";
+        case InstallStage::Activating:
+            return "Making the new version the active one.";
+        case InstallStage::Finishing:
+            return "Finishing up.";
+        case InstallStage::Verifying:
+            break;
+    }
+    return "Checking the package: signatures first, then every file against its "
+           "signed hashes.";
+}
+
+/// "0:07" / "3:42" / "1:05:30". Shown next to the stage so a long extraction is
+/// visibly RUNNING: a spinner alone is indistinguishable from a hung process,
+/// and this screen has no other moving part that reflects real elapsed work.
+inline std::string format_elapsed(std::int64_t seconds) {
+    if (seconds < 0) seconds = 0;
+    const std::int64_t hours = seconds / 3600;
+    const std::int64_t minutes = (seconds % 3600) / 60;
+    const std::int64_t secs = seconds % 60;
+    char buffer[32];
+    if (hours > 0) {
+        std::snprintf(buffer, sizeof(buffer), "%lld:%02lld:%02lld",
+                      static_cast<long long>(hours),
+                      static_cast<long long>(minutes),
+                      static_cast<long long>(secs));
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "%lld:%02lld",
+                      static_cast<long long>(minutes),
+                      static_cast<long long>(secs));
+    }
+    return std::string(buffer);
+}
+
+/// The standing explanation under the progress spinner. It answers the two
+/// questions the old screen left open — "is it stuck?" and "how do I stop it?" —
+/// without offering a stop that cannot be performed safely.
+inline std::string install_progress_note() {
+    return "Nothing is switched over until every file has been extracted and "
+           "re-checked, so this can be left to finish — the previous state stays "
+           "active until then.\n"
+           "There is no Cancel: once files are being written there is no point "
+           "this runtime can stop at without leaving the install half-applied, "
+           "so the window stays put until the install finishes or fails.";
+}
+
 } // namespace lexe::gui
 
 // ===========================================================================
@@ -444,6 +610,9 @@ struct AppState {
     bool accept_permissions = false; // read on the main thread, before the worker
     GtkWidget* spinner = nullptr;
     GtkWidget* progress_label = nullptr;
+    GtkWidget* progress_stage_label = nullptr;
+    GtkWidget* progress_elapsed_label = nullptr;
+    GtkWidget* progress_note_label = nullptr;
     GtkWidget* success_label = nullptr;
     GtkWidget* launch_button = nullptr;
     GtkWidget* launch_status_label = nullptr;
@@ -453,6 +622,21 @@ struct AppState {
     std::string install_error;
     std::string installed_id;
     std::string installed_version;
+
+    // Progress screen (main thread only). The stage is not pushed by the
+    // worker — the worker touches no GTK API and Installer::install() reports
+    // nothing back until it returns — it is polled off the transaction journal
+    // the installer writes to disk. See lexe::gui's progress section.
+    bool installing = false;       // an install worker is in flight
+    guint progress_timer = 0;      // g_timeout_add id, 0 when not running
+    gint64 progress_started_us = 0;
+    int progress_stage_rank = 0;   // highest stage shown so far (never rewinds)
+    /// The journal timestamp present BEFORE this install started, if any. A
+    /// leftover journal from an earlier interrupted run is still on disk while
+    /// install() recovers it, and reporting its phase as this install's progress
+    /// would name a stage that is not running. Ignore that journal until the
+    /// timestamp changes, i.e. until begin() writes a new one.
+    std::string pre_txn_started_at;
 
     // Launch worker -> main loop.
     std::string launch_error;
@@ -491,6 +675,15 @@ GtkWidget* add_body_label(GtkWidget* box, const std::string& text) {
 /// contain markup metacharacters (e.g. the "&" in "Authenticity & local trust"),
 /// which would otherwise fail to parse and render the heading blank.
 void add_section(GtkWidget* box, const char* heading, const std::string& body) {
+    // A heading with nothing under it is not a section, it is a rendering bug
+    // the user has to interpret — the "Authenticity & local trust:" heading over
+    // an empty body (an unreadable package leaves no key, signature or
+    // fingerprint to print) looked exactly like a label that had failed to
+    // render, and said nothing about whether a key had been checked. The view
+    // model now always supplies a body for that section; this is the structural
+    // guarantee that no future section can reintroduce the defect. Dropping a
+    // heading with no content hides nothing: there was nothing to show.
+    if (body.empty()) return;
     GtkWidget* head = gtk_label_new(nullptr);
     gchar* escaped = g_markup_escape_text(heading, -1);
     gchar* markup = g_strdup_printf("<b>%s</b>", escaped);
@@ -505,6 +698,31 @@ void add_section(GtkWidget* box, const char* heading, const std::string& body) {
 void on_window_destroy(GtkWidget*, gpointer) { gtk_main_quit(); }
 
 void on_close_clicked(GtkButton*, gpointer) { gtk_main_quit(); }
+
+/// The window manager's close button, while an install is in flight.
+///
+/// This WAS the unsafe cancel the progress screen is careful not to offer:
+/// "destroy" quits the main loop, main() returns, and the process exits with
+/// the install worker still extracting into apps/<id>/.txn-staging or midway
+/// through desktop integration. Nothing is corrupted — that is what the
+/// transaction journal is for — but it strands a pending transaction that only
+/// a later `lexe` run will unwind, and it does so on an accidental click, with
+/// no warning, in the one window where the user has just been told the install
+/// cannot be interrupted safely. Refuse the close and say why; the details
+/// [Close] button is already insensitive for the same reason, and both come
+/// back the moment the install finishes or fails.
+gboolean on_window_delete(GtkWidget*, GdkEvent*, gpointer user_data) {
+    AppState* st = static_cast<AppState*>(user_data);
+    if (!st->installing) return FALSE; // not installing: close normally
+    if (st->progress_note_label != nullptr) {
+        const std::string text =
+            "Closing now would stop the installation while files are being "
+            "written, so it was ignored.\n" +
+            lexe::gui::install_progress_note();
+        gtk_label_set_text(GTK_LABEL(st->progress_note_label), text.c_str());
+    }
+    return TRUE; // TRUE == handled: do not destroy the window
+}
 
 // --------------------------------------------------------------- installing
 
@@ -538,10 +756,52 @@ gpointer install_worker(gpointer user_data) {
     return nullptr;
 }
 
+/// Poll the install's real progress. Runs on the main loop once a second while
+/// an install is in flight; see the AppState progress fields and the lexe::gui
+/// progress section for why the stage is read from disk rather than pushed.
+gboolean on_progress_tick(gpointer user_data) {
+    AppState* st = static_cast<AppState*>(user_data);
+    if (!st->installing) return G_SOURCE_REMOVE;
+
+    const gint64 elapsed_us = g_get_monotonic_time() - st->progress_started_us;
+    const std::string elapsed =
+        "Running for " + lexe::gui::format_elapsed(elapsed_us / G_USEC_PER_SEC);
+    gtk_label_set_text(GTK_LABEL(st->progress_elapsed_label), elapsed.c_str());
+
+    // Reading the journal is plain, bounded file I/O on a small JSON file the
+    // installer writes atomically (temp + rename), so a poll never observes a
+    // half-written phase. A failure to read it must not disturb the install:
+    // the screen simply keeps the last stage it knew.
+    try {
+        const lexe::TransactionJournal journal =
+            lexe::read_journal(st->paths, st->vm.app_id);
+        if (!journal.started_at.empty() &&
+            journal.started_at != st->pre_txn_started_at) {
+            const int rank = lexe::gui::install_stage_rank(
+                lexe::gui::install_stage_from_phase(journal.phase));
+            if (rank > st->progress_stage_rank) st->progress_stage_rank = rank;
+        }
+    } catch (const std::exception&) {
+    }
+    const std::string stage = lexe::gui::install_stage_text(
+        static_cast<lexe::gui::InstallStage>(st->progress_stage_rank));
+    gtk_label_set_text(GTK_LABEL(st->progress_stage_label), stage.c_str());
+    return G_SOURCE_CONTINUE;
+}
+
+void stop_progress_tracking(AppState* st) {
+    st->installing = false;
+    if (st->progress_timer != 0) {
+        g_source_remove(st->progress_timer);
+        st->progress_timer = 0;
+    }
+    gtk_spinner_stop(GTK_SPINNER(st->spinner));
+}
+
 /// Main-loop continuation of install_worker.
 gboolean on_install_finished(gpointer user_data) {
     AppState* st = static_cast<AppState*>(user_data);
-    gtk_spinner_stop(GTK_SPINNER(st->spinner));
+    stop_progress_tracking(st);
     if (!st->install_error.empty()) {
         // Back to the details screen with the failure in the banner; the
         // user may retry (verification state is unchanged).
@@ -574,8 +834,30 @@ void on_install_clicked(GtkButton*, gpointer user_data) {
 
     gtk_widget_set_sensitive(st->install_button, FALSE);
     gtk_widget_set_sensitive(st->details_close_button, FALSE);
+
+    // Note any journal that is ALREADY on disk before the worker starts, so a
+    // leftover transaction from an earlier interrupted run (which install()
+    // recovers before it begins its own) is not reported as this install's
+    // progress. Anything install() writes from here on carries a new timestamp.
+    st->pre_txn_started_at.clear();
+    try {
+        st->pre_txn_started_at =
+            lexe::read_journal(st->paths, st->vm.app_id).started_at;
+    } catch (const std::exception&) {
+    }
+    st->installing = true;
+    st->progress_started_us = g_get_monotonic_time();
+    st->progress_stage_rank =
+        lexe::gui::install_stage_rank(lexe::gui::InstallStage::Verifying);
+    gtk_label_set_text(
+        GTK_LABEL(st->progress_stage_label),
+        lexe::gui::install_stage_text(lexe::gui::InstallStage::Verifying).c_str());
+    gtk_label_set_text(GTK_LABEL(st->progress_elapsed_label), "Running for 0:00");
+    gtk_label_set_text(GTK_LABEL(st->progress_note_label),
+                       lexe::gui::install_progress_note().c_str());
     gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "progress");
     gtk_spinner_start(GTK_SPINNER(st->spinner));
+    st->progress_timer = g_timeout_add(1000, on_progress_tick, st);
 
     GThread* thread = g_thread_new("lexe-install", install_worker, st);
     g_thread_unref(thread);
@@ -702,24 +984,12 @@ GtkWidget* build_details_page(AppState* st) {
     }
 
     // Authenticity & local trust: two dimensions, the fingerprint, and the
-    // always-present "not real-world identity" caveat.
-    {
-        std::string trust_body = vm.signature_text;
-        if (!vm.key_text.empty()) trust_body += "\n" + vm.key_text;
-        if (!vm.fingerprint_text.empty()) {
-            // When the key CHANGED, label the two so they can be compared. A
-            // lone fingerprint on a screen that says "the signing key has
-            // changed" gives the reader nothing to compare it against.
-            trust_body +=
-                vm.expected_fingerprint_text.empty()
-                    ? "\nSigning key fingerprint: " + vm.fingerprint_text
-                    : "\nExpected (already installed): " +
-                          vm.expected_fingerprint_text +
-                          "\nPresented (this package):  " + vm.fingerprint_text;
-        }
-        if (!vm.identity_caveat.empty()) trust_body += "\n" + vm.identity_caveat;
-        add_section(box, "Authenticity & local trust:", trust_body);
-    }
+    // always-present "not real-world identity" caveat. Composed by the pure
+    // layer (lexe::gui::trust_section_body) so the "never a heading over an
+    // empty body" rule is covered by tests/test_gui.cpp rather than only by
+    // looking at the window.
+    add_section(box, "Authenticity & local trust:",
+                lexe::gui::trust_section_body(vm));
     if (!vm.trust_remedy.empty()) {
         add_section(box, "What you can do:", vm.trust_remedy);
     }
@@ -816,6 +1086,25 @@ GtkWidget* build_action_bar(AppState* st) {
     return bar;
 }
 
+/// The progress screen. A spinner with one fixed line ("Installing X…") was
+/// indistinguishable from a hung process: it never changed, whether the install
+/// was five seconds from done or wedged. It now carries the stage that is
+/// actually running (polled off the installer's own transaction journal — see
+/// on_progress_tick) and a ticking elapsed time, so the screen visibly moves
+/// while real work happens.
+///
+/// There is deliberately NO [Cancel] button. Installer::install() is a single
+/// blocking call with no cancellation point: the §6 verification, the payload
+/// extraction and the staged re-hash all run to completion inside it, and
+/// nothing short of killing the process can stop them from outside. That is
+/// precisely the mid-flight abort HARDENING.md §A is built to SURVIVE, not to
+/// invite — it strands a txn.json journal and a .txn-staging tree for the next
+/// run's recovery to unwind, and leaves the app's desktop integration in
+/// whatever state the kill caught it in. A button whose only implementation is
+/// "kill the process and hope recovery runs later" is not a cancel, so the
+/// screen explains the situation instead of offering one. Adding a real one
+/// needs a cancellation token threaded through core/installer, which is not
+/// this file's to change.
 GtkWidget* build_progress_page(AppState* st) {
     GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_container_set_border_width(GTK_CONTAINER(box), 24);
@@ -827,9 +1116,45 @@ GtkWidget* build_progress_page(AppState* st) {
     gtk_box_pack_start(GTK_BOX(box), st->spinner, FALSE, FALSE, 0);
 
     const std::string text = "Installing " + st->vm.app_name + "…";
-    st->progress_label = gtk_label_new(text.c_str());
+    st->progress_label = gtk_label_new(nullptr);
+    {
+        gchar* escaped = g_markup_escape_text(text.c_str(), -1);
+        gchar* markup = g_strdup_printf("<b>%s</b>", escaped);
+        gtk_label_set_markup(GTK_LABEL(st->progress_label), markup);
+        g_free(markup);
+        g_free(escaped);
+    }
+    gtk_label_set_line_wrap(GTK_LABEL(st->progress_label), TRUE);
+    gtk_label_set_justify(GTK_LABEL(st->progress_label), GTK_JUSTIFY_CENTER);
     gtk_widget_set_halign(st->progress_label, GTK_ALIGN_CENTER);
     gtk_box_pack_start(GTK_BOX(box), st->progress_label, FALSE, FALSE, 0);
+
+    // The stage the installer is genuinely in. Its initial text is the first
+    // stage rather than a placeholder, so the screen is never blank for the
+    // second between showing it and the first tick.
+    st->progress_stage_label = gtk_label_new(
+        lexe::gui::install_stage_text(lexe::gui::InstallStage::Verifying).c_str());
+    gtk_label_set_line_wrap(GTK_LABEL(st->progress_stage_label), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(st->progress_stage_label), 46);
+    gtk_label_set_justify(GTK_LABEL(st->progress_stage_label),
+                          GTK_JUSTIFY_CENTER);
+    gtk_widget_set_halign(st->progress_stage_label, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(box), st->progress_stage_label, FALSE, FALSE, 0);
+
+    st->progress_elapsed_label = gtk_label_new("Running for 0:00");
+    gtk_widget_set_halign(st->progress_elapsed_label, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(box), st->progress_elapsed_label, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(box),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE,
+                       FALSE, 8);
+
+    st->progress_note_label =
+        gtk_label_new(lexe::gui::install_progress_note().c_str());
+    gtk_label_set_line_wrap(GTK_LABEL(st->progress_note_label), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(st->progress_note_label), 46);
+    gtk_label_set_xalign(GTK_LABEL(st->progress_note_label), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), st->progress_note_label, FALSE, FALSE, 0);
 
     return box;
 }
@@ -873,6 +1198,9 @@ void build_ui(AppState* st) {
     gtk_window_set_default_size(GTK_WINDOW(st->window), 520, 640);
     g_signal_connect(st->window, "destroy", G_CALLBACK(on_window_destroy),
                      nullptr);
+    // Vetoes the [X] while an install is running — see on_window_delete.
+    g_signal_connect(st->window, "delete-event", G_CALLBACK(on_window_delete),
+                     st);
 
     st->stack = gtk_stack_new();
 
