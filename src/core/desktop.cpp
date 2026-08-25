@@ -232,23 +232,42 @@ std::string mime_xml_text(const Manifest& manifest) {
     return mime_info_document(types, manifest.name + " document");
 }
 
+/// The runtime's own desktop entry. Byte-identical to
+/// packaging/lexe-installer.desktop — asserted by tests/test_desktop.cpp —
+/// because `lexe integrate` and packaging/install.sh both write that file and
+/// used to write DIFFERENT contents, so which one you got depended on which ran
+/// last. No Icon= line: this repository ships no icon of any name, and the two
+/// copies named two different ones that do not exist.
 std::string runtime_desktop_entry_text() {
     return "[Desktop Entry]\n"
            "Type=Application\n"
            "Name=Lexe Installer\n"
            "Comment=Install Lexe application packages\n"
            "Exec=lexe-installer %f\n"
-           "Icon=lexe\n"
            "Terminal=false\n"
            "NoDisplay=true\n"
            "Categories=System;PackageManager;\n"
            "MimeType=application/x-lexe;\n";
 }
 
+/// The runtime's own MIME definition. Byte-identical to
+/// packaging/application-x-lexe.xml — asserted by tests/test_desktop.cpp —
+/// because `lexe integrate` and packaging/install.sh both write it and used to
+/// write DIFFERENT documents under different names, leaving whichever ran
+/// second to win and whichever ran first orphaned.
 std::string runtime_mime_xml_text() {
-    return mime_info_document(
-        {{"application/x-lexe", {"*.lexe"}}},
-        "Lexe application package");
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           "<mime-info xmlns=\"http://www.freedesktop.org/standards/"
+           "shared-mime-info\">\n"
+           "  <mime-type type=\"application/x-lexe\">\n"
+           "    <comment>Lexe application package</comment>\n"
+           "    <!-- A .lexe file is a signed ZIP archive; declaring the parent "
+           "type lets\n"
+           "         tools that understand ZIP fall back gracefully. -->\n"
+           "    <sub-class-of type=\"application/zip\"/>\n"
+           "    <glob pattern=\"*.lexe\"/>\n"
+           "  </mime-type>\n"
+           "</mime-info>\n";
 }
 
 IntegrationResult integrate_app(const Paths& paths, const Manifest& manifest,
@@ -296,7 +315,12 @@ void remove_integration(const Paths& paths,
 IntegrationResult integrate_runtime(const Paths& paths) {
     const fs::path desktop_file =
         paths.applications_dir() / "lexe-installer.desktop";
-    const fs::path mime_file = paths.mime_dir() / "packages" / "lexe.xml";
+    // application-x-lexe.xml, NOT lexe.xml: packaging/install.sh installs that
+    // name and packaging/uninstall.sh removes it. Writing a different name left
+    // the file behind on uninstall while the script reported the MIME type
+    // removed.
+    const fs::path mime_file =
+        paths.mime_dir() / "packages" / "application-x-lexe.xml";
 
     IntegrationResult result;
     result.created_files = {desktop_file.string(), mime_file.string()};

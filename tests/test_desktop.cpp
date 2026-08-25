@@ -339,9 +339,13 @@ TEST_CASE("integrate_runtime returns the runtime's would-create list") {
 
     const auto result = lexe::desktop::integrate_runtime(paths);
 
+    // application-x-lexe.xml, NOT lexe.xml: this is the name
+    // packaging/install.sh installs and packaging/uninstall.sh removes. Writing
+    // a different name left the file behind on uninstall while the script
+    // reported the MIME type removed.
     const std::vector<std::string> expected = {
         (paths.applications_dir() / "lexe-installer.desktop").string(),
-        (paths.mime_dir() / "packages" / "lexe.xml").string(),
+        (paths.mime_dir() / "packages" / "application-x-lexe.xml").string(),
     };
     check_lists_equal(result.created_files, expected);
     for (const auto& f : result.created_files) {
@@ -359,9 +363,31 @@ TEST_CASE("integrate_runtime returns the runtime's would-create list") {
     CHECK_EQ(lexe::util::slurp_text(paths.applications_dir() /
                                     "lexe-installer.desktop"),
              lexe::desktop::runtime_desktop_entry_text());
-    CHECK_EQ(lexe::util::slurp_text(paths.mime_dir() / "packages" / "lexe.xml"),
+    CHECK_EQ(lexe::util::slurp_text(paths.mime_dir() / "packages" /
+                                    "application-x-lexe.xml"),
              lexe::desktop::runtime_mime_xml_text());
 #endif
+}
+
+TEST_CASE("`lexe integrate` and packaging/ install the very same files") {
+    // Two implementations wrote the runtime's desktop integration: this code,
+    // and the files packaging/install.sh copies. They had drifted — different
+    // Icon= values, Categories on one only, different MIME filenames, and a
+    // <sub-class-of> the generated document lacked — so what you ended up with
+    // depended on which of the two ran last. They are one definition now, and
+    // this asserts they stay one.
+    lexe::test::TempLexeHome home;
+    const fs::path packaging = fs::path(LEXE_SOURCE_DIR) / "packaging";
+
+    CHECK_EQ(lexe::util::slurp_text(packaging / "lexe-installer.desktop"),
+             lexe::desktop::runtime_desktop_entry_text());
+    CHECK_EQ(lexe::util::slurp_text(packaging / "application-x-lexe.xml"),
+             lexe::desktop::runtime_mime_xml_text());
+
+    // And the shipped entry must not promise an icon this repository does not
+    // contain: both copies used to name one, and neither name existed.
+    const std::string entry = lexe::desktop::runtime_desktop_entry_text();
+    CHECK(entry.find("\nIcon=") == std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
