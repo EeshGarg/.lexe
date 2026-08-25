@@ -234,6 +234,9 @@ struct ViewModel {
     bool can_install = false;     // §6 passed AND trust allows AND manifest read
     std::vector<std::string> channels;  // Advanced Options channel combo
     int active_channel = 0;             // preselected combo index
+    /// Whether this package actually declares somewhere to check for updates.
+    /// The channel selector is meaningless without one.
+    bool has_update_source = false;
     std::string advanced_dirs_text;     // Advanced Options directory summary
     // Plain-language answer to "where does this go, and can I undo it?"
     std::string after_install_text =
@@ -312,6 +315,7 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                          m.updates_channel);
         vm.channels = channel_options(m.updates_channel);
         vm.active_channel = channel_active_index(vm.channels, m.updates_channel);
+        vm.has_update_source = m.updates_enabled && !m.updates_manifest_url.empty();
         vm.advanced_dirs_text = format_advanced_directories(paths, m.id);
     } else {
         vm.app_name = filename.empty() ? std::string("Unknown application")
@@ -659,6 +663,16 @@ GtkWidget* build_details_page(AppState* st) {
     }
     gtk_combo_box_set_active(GTK_COMBO_BOX(st->channel_combo),
                              vm.active_channel);
+    // A package with no update source has no channel to choose. Offering a
+    // working selector next to a screen that says "No automatic updates" asked
+    // the user to make a decision that could not have an effect.
+    if (!vm.has_update_source) {
+        gtk_widget_set_sensitive(st->channel_combo, FALSE);
+        gtk_widget_set_tooltip_text(
+            st->channel_combo,
+            "This package declares no update source, so there is no channel to "
+            "choose.");
+    }
     gtk_box_pack_start(GTK_BOX(channel_row), st->channel_combo, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(advanced), channel_row, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(expander), advanced);

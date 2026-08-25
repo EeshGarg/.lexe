@@ -1337,9 +1337,15 @@ int cmd_inspect(const std::vector<std::string>& args) {
     print_kv("Checksum:", "sha256:" + pkg_sha);
 
     // Permissions, explained (human titles; enforcement detail is shown at
-    // install time, where the isolation backend is probed).
-    if (!manifest.permissions.empty()) {
-        std::cout << "\nPermissions:\n";
+    // install time, where the isolation backend is probed). "None requested" is
+    // stated rather than left out: a package asking for nothing is worth saying
+    // out loud, and every other surface says it — omitting the section made
+    // "requests no permissions" indistinguishable from "this view forgot to
+    // mention permissions".
+    std::cout << "\nPermissions:\n";
+    if (manifest.permissions.empty()) {
+        std::cout << "  (none requested)\n";
+    } else {
         for (const std::string& id : manifest.permissions) {
             std::cout << "  - " << presentation::describe_permission(id) << "\n";
         }

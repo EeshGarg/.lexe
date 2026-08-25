@@ -498,6 +498,9 @@ inline bool entrypoint_looks_runnable(const std::filesystem::path& folder,
     std::error_code ec;
     if (!std::filesystem::is_regular_file(file, ec)) return false;
 
+#ifndef _WIN32
+    // POSIX only. Windows has no execute bit, and std::filesystem reports one
+    // for every ordinary file there — which would make a .txt "runnable".
     const std::filesystem::perms p =
         std::filesystem::status(file, ec).permissions();
     if (!ec && (p & (std::filesystem::perms::owner_exec |
@@ -506,6 +509,7 @@ inline bool entrypoint_looks_runnable(const std::filesystem::path& folder,
                    std::filesystem::perms::none) {
         return true;
     }
+#endif
 
     // No execute bit (a fresh copy or a FAT/NTFS mount often loses it): accept
     // anything whose first bytes say it is a program.
