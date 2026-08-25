@@ -53,7 +53,7 @@ explicit operator action (see [docs/ALPHA.md](docs/ALPHA.md)).
   update-check, developer mode, diagnostics); cosmetic only, never a security
   toggle.
 - CLI polish: grouped example-rich help, terminal styling (TTY-only, NO_COLOR
-  aware), friendlier errors with actionable hints, `lexe completion bash`.
+  aware), friendlier errors with actionable hints, `lexe completion bash`/`zsh`.
 - Builder: a first-run welcome screen (remembered) and staged build progress.
 - Installer: an "After install" plain-language section (where it goes, how to
   remove it, what happens to data). install.sh / uninstall.sh get a banner,
@@ -74,6 +74,44 @@ explicit operator action (see [docs/ALPHA.md](docs/ALPHA.md)).
   podman.
 - `packaging/install.sh` and `packaging/uninstall.sh` made executable so the
   README's install step works on a fresh clone.
+
+### Alpha acceptance fixes
+Found by driving the documented paths end to end on a real Linux host, rather
+than by reading the code:
+- **A directory or FIFO handed to a package command no longer crashes or
+  hangs.** `util::slurp` refused nothing but missing files, so a directory —
+  which opens successfully and reports `INT64_MAX` as its size — ended in
+  `lexe: std::bad_alloc`, and a FIFO blocked forever waiting for a writer. Whole
+  file reads now require a regular file and read to EOF rather than trusting a
+  seek (which also fixes reading unseekable `/proc` entries). `PackageReader`
+  additionally fails **closed**: the 2 GiB package bound used to be skipped
+  entirely whenever the size could not be determined.
+- **`lexe analyze` reported the build host's glibc requirement as the
+  application's.** `max_glibc_version()` aggregated across the whole dependency
+  graph, so the host's own `libc`/`libm` internals (`GLIBC_2.36` on Ubuntu
+  24.04) were attributed to the package — contradicting the Tux32 verifier's
+  answer for the same binary in the same output, and making the compatibility
+  verdict depend on the machine that ran the analysis. It is now the package's
+  own requirement (root executable + bundled libraries), matching Tux32, so the
+  CLI, the build report and the Builder all agree.
+- **Actionable hints are now accurate.** Errors can carry their own hint, and
+  the ones that were wrong were fixed: "no update source configured" said to
+  re-check the path instead of naming `lexe source set`; a malformed
+  `update.json` said to re-download the package instead of pointing at the
+  FORMAT-0.1 §7 shape; `analyze`/`build`/`inspect` path errors and a rollback
+  with no previous version all suggested `lexe apps`. The permission-expansion
+  refusal no longer prints its fix twice.
+
+### Alpha acceptance polish
+- `lexe <command> --help` / `-h` and `lexe help <command>` now print that
+  command's own summary and usage, instead of "unknown option" (exit 2) or the
+  full banner.
+- `lexe completion zsh`, alongside bash; both scripts are generated from one
+  shared command/subcommand table so they cannot drift.
+- `scripts/gui-smoke.sh` tolerates the `gdk_seat_get_keyboard` assertion a
+  just-started virtual X server produces — verified environmental (a stock GTK
+  window reproduces it 3/3 against a cold Xvfb; both GUIs are clean 8/8 against
+  a warm one), so the race no longer fails CI.
 
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most

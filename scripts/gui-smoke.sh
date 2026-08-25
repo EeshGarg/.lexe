@@ -40,11 +40,20 @@ trap 'rm -rf "$WORK"' EXIT
 # Lines that indicate a real GUI defect. The allowlist strips environment noise
 # that a headless X server / missing a11y bus legitimately produces and that is
 # NOT an application bug.
+#
+# On `gdk_seat_get_keyboard: assertion 'GDK_IS_SEAT (seat)' failed`: a virtual X
+# server that has just started has no input devices yet, so GDK's default seat
+# is briefly absent and any GTK program that touches it logs this. It was
+# verified to be environmental rather than ours: a stock GTK window (one plain
+# label, no lexe code at all) reproduces it 3/3 times against a freshly started
+# Xvfb, while both lexe GUIs are clean 8/8 against a warm one. Allowlisting the
+# assertion stops that race from failing CI without hiding any GTK warning the
+# GUIs actually emit.
 offending() {
     grep -aE \
       '(Gtk|Gdk|GLib|GLib-GObject|GdkPixbuf|Pango|Gnome)-(WARNING|CRITICAL|ERROR)|CRITICAL \*\*|assertion .*failed|due to error parsing markup|Segmentation fault|core dumped|Trace/breakpoint trap' \
       "$1" 2>/dev/null \
-      | grep -avE 'dbind-WARNING|AT-SPI|at-spi|atk-bridge|Failed to connect to|session (manager|bus)|Theme parsing error|Gtk-Message|accessibility bus|Unable to init server|cannot open display: after|Could not load a pixbuf|pixbuf from .*(theme|icon|symbolic|Adwaita)|Error loading (theme )?icon' \
+      | grep -avE 'dbind-WARNING|AT-SPI|at-spi|atk-bridge|Failed to connect to|session (manager|bus)|Theme parsing error|Gtk-Message|accessibility bus|Unable to init server|cannot open display: after|Could not load a pixbuf|pixbuf from .*(theme|icon|symbolic|Adwaita)|Error loading (theme )?icon|gdk_seat_get_keyboard: assertion' \
       || true
 }
 
