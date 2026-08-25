@@ -37,6 +37,16 @@ struct Manifest {
     std::string install_scope = "user";
     std::uint64_t install_estimated_size = 0;      // 0 = not provided
     std::vector<std::string> permissions;          // informational in 0.1
+    /// The runtime profile the BUILDER targeted ("core-portable",
+    /// "forward-runtime", "native-capture"), or "" when the package does not
+    /// declare one. Optional and forward-compatible: older runtimes ignore it
+    /// (FORMAT-0.1 §5 "unknown fields are ignored").
+    ///
+    /// Without it every reader re-judged every package against Core Portable,
+    /// so a package deliberately built as Native Capture — which is host-locked
+    /// BY DEFINITION — was reported as a hard portability FAILURE by the same
+    /// runtime whose Builder had just accepted it.
+    std::string runtime_profile;
 
     // updates (§7); disabled when the block is absent
     bool updates_enabled = false;

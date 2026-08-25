@@ -140,7 +140,19 @@ compatibility). Required fields for 0.1:
 
 Optional with defaults: `entrypoint.arguments` (`[]`), `install.scope` (`"user"`),
 `install.estimatedSize`, `permissions` (`[]`, informational in 0.1), `updates`
-(disabled when absent, see §7), `integration` (§9), `publisher.website`.
+(disabled when absent, see §7), `integration` (§9), `publisher.website`,
+`runtimeProfile`.
+
+`runtimeProfile` names the [runtime profile](RUNTIME_PROFILES.md) the builder
+targeted and gated the build on — `"core-portable"`, `"forward-runtime"` or
+`"native-capture"`. It is **declarative, not a promise about the payload**: a
+reader MUST still verify conformance itself rather than trusting the string.
+
+A reader that cannot resolve the value — including one naming a profile it does
+not know — MUST treat the package as declaring no profile, and MUST NOT
+substitute a default. Reading an absent or unknown declaration as
+`"core-portable"` makes a package deliberately built as `"native-capture"` —
+host-locked by definition — report as a portability failure.
 
 ## 6. Verification Pipeline (normative order)
 

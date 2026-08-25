@@ -250,6 +250,14 @@ void parse_updates(const json& root, Manifest& m) {
         *updates, "allowSourceChange", "updates.allowSourceChange", true);
 }
 
+/// The optional runtime-profile declaration. Stored as written: an id this
+/// runtime does not recognise is NOT an error (a newer builder may name a
+/// profile that did not exist yet), and readers treat anything they cannot
+/// resolve as "not declared" rather than guessing.
+void parse_runtime_profile(const json& root, Manifest& m) {
+    m.runtime_profile = optional_string(root, "runtimeProfile", "runtimeProfile", "");
+}
+
 void parse_integration(const json& root, Manifest& m) {
     const json* integration =
         optional_object(root, "integration", "integration");
@@ -386,6 +394,7 @@ Manifest Manifest::parse(std::string_view json_text) {
     m.permissions = optional_string_array(root, "permissions", "permissions");
     parse_updates(root, m);
     parse_integration(root, m);
+    parse_runtime_profile(root, m);
 
     return m;
 }
@@ -442,6 +451,9 @@ std::string Manifest::to_json() const {
     }
     integration["fileAssociations"] = std::move(associations);
     j["integration"] = std::move(integration);
+    // Emitted only when declared, so a manifest that never mentioned a profile
+    // round-trips byte-identically.
+    if (!runtime_profile.empty()) j["runtimeProfile"] = runtime_profile;
 
     return j.dump(2);
 }
