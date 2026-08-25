@@ -19,6 +19,12 @@ namespace {
 // good consumer error. Empty when the message already says everything (usage).
 std::string hint_for(const std::exception& e) {
     using namespace lexe;
+    // A hint the throw site attached always wins: it knows the specific reason,
+    // where the type-based fallbacks below only know the category.
+    if (const auto* err = dynamic_cast<const Error*>(&e);
+        err != nullptr && !err->hint().empty()) {
+        return err->hint();
+    }
     if (dynamic_cast<const UsageError*>(&e) != nullptr) return "";
     if (dynamic_cast<const ChangedKeyError*>(&e) != nullptr)
         return "The publisher's signing key changed since you installed this. "

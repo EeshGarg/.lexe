@@ -7,13 +7,28 @@
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace lexe {
 
 /// Base runtime error. CLI exit code 1.
+///
+/// An error may carry an optional HINT: one actionable sentence telling the
+/// user how to fix this specific failure. The CLI prints it under the message.
+/// Without one the CLI falls back to a hint chosen from the error's type, which
+/// is only ever as good as the type is specific — so attach a hint wherever a
+/// general type (NotFoundError, say) is thrown for a particular reason.
 class Error : public std::runtime_error {
 public:
     explicit Error(const std::string& message) : std::runtime_error(message) {}
+    Error(const std::string& message, std::string hint)
+        : std::runtime_error(message), hint_(std::move(hint)) {}
+
+    /// The actionable next step, or empty when the error has none.
+    const std::string& hint() const noexcept { return hint_; }
+
+private:
+    std::string hint_;
 };
 
 /// Package/update verification failure (FORMAT-0.1 §6). CLI exit code 3.
