@@ -60,6 +60,59 @@ printf '  dev host:   %s (newer, glibc 2.39)\n' "$DEVHOST_IMAGE"
 printf '  old runtime:%s (older conforming host)\n' "$RUNTIME_IMAGE"
 
 # -----------------------------------------------------------------------------
+# Fetch the three base images up front, with bounded retries.
+#
+# All three come from Docker Hub, which rate-limits anonymous pulls per source
+# IP — and CI runners share those addresses heavily. A throttled pull used to
+# surface as this proof "failing", indistinguishable on the runs page from the
+# portability contract actually being broken. It is not the same thing at all:
+# one is a registry having a bad minute, the other is the claim this repository
+# exists to make. So the pull is separated from the proof, retried, and given
+# its own exit code and wording.
+#
+# Retries cover ONLY fetching the images. Nothing about the portability
+# assertions themselves is retried — a Core 1 violation must fail the first
+# time and stay failed.
+pull_image() {
+    image="$1"
+    # Already present (a warm runner, or a previous run) — nothing to fetch.
+    # `image inspect` rather than podman's `image exists`, so a CONTAINER of
+    # docker works here too.
+    if "$CONTAINER" image inspect "$image" >/dev/null 2>&1; then
+        printf '  have    %s\n' "$image"
+        return 0
+    fi
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        if "$CONTAINER" pull -q "$image" >/dev/null 2>&1; then
+            printf '  pulled  %s\n' "$image"
+            return 0
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            delay=$((attempt * 10))
+            printf '  retry   %s (attempt %s failed, waiting %ss)\n' \
+                "$image" "$attempt" "$delay"
+            sleep "$delay"
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+step "0  Fetch base images"
+for image in "$SYSROOT_IMAGE" "$DEVHOST_IMAGE" "$RUNTIME_IMAGE"; do
+    if ! pull_image "$image"; then
+        printf '\n  \033[31mSKIP\033[0m could not fetch %s after 3 attempts.\n' \
+            "$image" >&2
+        printf '  The container registry is unreachable or is rate-limiting this\n' >&2
+        printf '  host. This says NOTHING about Tux32 Core 1 portability - the\n' >&2
+        printf '  proof did not run. Re-run when the registry is available, or\n' >&2
+        printf '  point SYSROOT_IMAGE / DEVHOST_IMAGE / RUNTIME_IMAGE at a mirror.\n' >&2
+        exit 75   # EX_TEMPFAIL: a transient environment failure, not a verdict
+    fi
+done
+
+# -----------------------------------------------------------------------------
 step "0a  Build the runtime + a conforming app IN the Core 1 sysroot (glibc 2.31)"
 # The runtime is built in the sysroot so it runs on the OLD host too (and, being
 # forward-compatible, on the newer host we drive from). The reference app is
