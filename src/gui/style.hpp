@@ -35,6 +35,8 @@
 
 #include <gtk/gtk.h>
 
+#include <string>
+
 namespace lexe::gui::style {
 
 /// The stylesheet for one theme. `dark` picks the palette; the metrics below are
@@ -78,21 +80,24 @@ window { background-color: @lexe_canvas; color: @lexe_text; }
 .lexe-stepbar   { background-color: @lexe_surface; padding: 20px 22px 18px 22px; }
 
 button {
-  border-radius: 10px;
-  padding: 9px 18px;
-  min-height: 24px;
+  border-radius: 999px;
+  padding: 8px 20px;
+  min-height: 22px;
   font-size: 13px;
+  font-weight: 500;
   background-image: none;
   background-color: #252932;
   color: @lexe_text;
   border: none;
   box-shadow: none;
+  transition: background-color 120ms ease-out;
 }
 button:hover { background-color: #2e333e; }
 button.lexe-primary {
   background-color: @lexe_accent;
   color: #ffffff;
   font-weight: 600;
+  padding: 8px 24px;
 }
 button.lexe-primary:hover    { background-color: #5b9bf8; }
 button.lexe-primary:disabled { background-color: #262a33; color: #616b7d; }
@@ -149,15 +154,17 @@ window { background-color: @lexe_canvas; color: @lexe_text; }
 .lexe-stepbar   { background-color: @lexe_surface; padding: 20px 22px 18px 22px; }
 
 button {
-  border-radius: 10px;
-  padding: 9px 18px;
-  min-height: 24px;
+  border-radius: 999px;
+  padding: 8px 20px;
+  min-height: 22px;
   font-size: 13px;
+  font-weight: 500;
   background-image: none;
   background-color: #eef0f4;
   color: @lexe_text;
   border: none;
   box-shadow: none;
+  transition: background-color 120ms ease-out;
 }
 button:hover { background-color: #e4e7ec; }
 button.lexe-primary {
@@ -184,6 +191,53 @@ entry:disabled { color: #9aa4b2; }
 )CSS";
 }
 
+/// Which palette to render in. `System` is the default and follows the desktop;
+/// the other two are a deliberate user override, persisted in settings.json as
+/// the `theme` preference so the GUI toggle and `lexe config set theme` are the
+/// same setting rather than two competing ones.
+enum class Theme { System, Light, Dark };
+
+inline Theme theme_from_string(const std::string& value) {
+    if (value == "light") return Theme::Light;
+    if (value == "dark") return Theme::Dark;
+    return Theme::System; // unknown values fall back to following the desktop
+}
+
+inline const char* theme_to_string(Theme t) {
+    switch (t) {
+    case Theme::Light: return "light";
+    case Theme::Dark:  return "dark";
+    case Theme::System: break;
+    }
+    return "system";
+}
+
+/// Whether `theme` should render dark right now.
+///
+/// For System this asks the desktop two ways, because neither alone is
+/// reliable: GTK's prefer-dark flag is what a settings daemon sets, but many
+/// desktops instead just select a theme whose NAME ends in "-dark" and leave the
+/// flag off. Missing the second case is how an app ends up as the one bright
+/// window on a dark desktop.
+inline bool resolve_dark(Theme theme) {
+    if (theme == Theme::Light) return false;
+    if (theme == Theme::Dark) return true;
+    GtkSettings* settings = gtk_settings_get_default();
+    if (settings == nullptr) return false;
+    gboolean prefer_dark = FALSE;
+    gchar* theme_name = nullptr;
+    g_object_get(settings, "gtk-application-prefer-dark-theme", &prefer_dark,
+                 "gtk-theme-name", &theme_name, nullptr);
+    bool dark = prefer_dark == TRUE;
+    if (!dark && theme_name != nullptr) {
+        const std::string name = theme_name;
+        dark = name.size() >= 5 &&
+               name.compare(name.size() - 5, 5, "-dark") == 0;
+    }
+    if (theme_name != nullptr) g_free(theme_name);
+    return dark;
+}
+
 /// Add `klass` to `widget`'s style context. A tiny wrapper only so call sites
 /// read as one line instead of three.
 inline void add_class(GtkWidget* widget, const char* klass) {
@@ -194,38 +248,47 @@ inline void remove_class(GtkWidget* widget, const char* klass) {
     gtk_style_context_remove_class(gtk_widget_get_style_context(widget), klass);
 }
 
-/// Install the stylesheet for the default screen. Call once, after gtk_init().
+/// Install (or REPLACE) the stylesheet for the default screen.
 ///
-/// Loaded at APPLICATION priority, which sits above the user's theme but below
-/// anything they set themselves — so a deliberate user override still wins, and
-/// a theme that happens to style `button` does not fight us.
-inline void apply() {
-    gboolean prefer_dark = FALSE;
+/// Safe to call repeatedly: one provider is kept and reloaded in place, so
+/// flipping the theme toggle restyles the live window instead of stacking a
+/// second provider on top of the first — two providers at the same priority
+/// would leave whichever loaded last winning per-property, which is how a theme
+/// switch ends up half-applied.
+///
+/// Loaded at APPLICATION priority: above the user's theme, below anything they
+/// set themselves, so a deliberate user override still wins.
+inline void apply(Theme theme = Theme::System) {
+    static GtkCssProvider* provider = nullptr;
+    if (provider == nullptr) {
+        provider = gtk_css_provider_new();
+        // Parsing errors are reported rather than swallowed: an unsupported
+        // property silently drops one rule and leaves a half-styled window,
+        // which is exactly the kind of "looks broken, nobody knows why" the
+        // headless smoke test exists to catch.
+        g_signal_connect(provider, "parsing-error",
+                         G_CALLBACK(+[](GtkCssProvider*, GtkCssSection*,
+                                        GError* error, gpointer) {
+                             g_warning("lexe stylesheet: %s",
+                                       error != nullptr ? error->message
+                                                        : "unknown parsing error");
+                         }),
+                         nullptr);
+        if (GdkScreen* screen = gdk_screen_get_default()) {
+            gtk_style_context_add_provider_for_screen(
+                screen, GTK_STYLE_PROVIDER(provider),
+                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+    }
+    const bool dark = resolve_dark(theme);
+    // Keep GTK's own widgetry (menus, tooltips, the file chooser) in step with
+    // our palette. Styling only our own widgets would leave a light chooser
+    // dialog opening out of a dark window.
     if (GtkSettings* settings = gtk_settings_get_default()) {
-        g_object_get(settings, "gtk-application-prefer-dark-theme", &prefer_dark,
-                     nullptr);
+        g_object_set(settings, "gtk-application-prefer-dark-theme",
+                     dark ? TRUE : FALSE, nullptr);
     }
-    GtkCssProvider* provider = gtk_css_provider_new();
-    // Parsing errors are reported rather than swallowed: an unsupported
-    // property silently drops one rule and leaves a half-styled window, which
-    // is exactly the kind of "looks broken, nobody knows why" the headless
-    // smoke test exists to catch.
-    g_signal_connect(provider, "parsing-error",
-                     G_CALLBACK(+[](GtkCssProvider*, GtkCssSection*,
-                                    GError* error, gpointer) {
-                         g_warning("lexe stylesheet: %s",
-                                   error != nullptr ? error->message
-                                                    : "unknown parsing error");
-                     }),
-                     nullptr);
-    gtk_css_provider_load_from_data(provider, stylesheet(prefer_dark == TRUE), -1,
-                                    nullptr);
-    if (GdkScreen* screen = gdk_screen_get_default()) {
-        gtk_style_context_add_provider_for_screen(
-            screen, GTK_STYLE_PROVIDER(provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    }
-    g_object_unref(provider);
+    gtk_css_provider_load_from_data(provider, stylesheet(dark), -1, nullptr);
 }
 
 } // namespace lexe::gui::style
