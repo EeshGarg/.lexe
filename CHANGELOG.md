@@ -5,12 +5,16 @@ Versioning follows [docs/ALPHA.md](docs/ALPHA.md): the **runtime** version is a
 distinct axis from the **package format** (`0.1`, FORMAT-0.1) and the **Tux32**
 baseline (`tux32-core-1`). Dates are UTC.
 
-## [Unreleased] — 0.1.0-alpha (Alpha candidate)
+## [0.1.0-alpha.1] — 2026-08-26
 
-The first Alpha candidate. Everything below is implemented and green on Linux
+The first tagged Alpha. Everything below is implemented and green on Linux
 (GCC) and Windows (MSVC); items marked *(CI)* are additionally proven by a
-GitHub Actions job. No release tag is created by this line — tagging is an
-explicit operator action (see [docs/ALPHA.md](docs/ALPHA.md)).
+GitHub Actions job. Source-only: there are no prebuilt binaries in this line,
+and the support contract is [docs/ALPHA.md](docs/ALPHA.md).
+
+Verified on the tagged commit: 493 test cases / 6665 assertions on Linux,
+473 / 6524 on Windows, headless GUI smoke green, and the cross-distribution
+portability proof green.
 
 ### Platform
 - Signed `.lexe` package format (FORMAT-0.1): deterministic ZIP, Ed25519 over
@@ -353,6 +357,38 @@ cannot drift apart visually the way their wording once did.
 - The Builder's **first-run welcome screen** was restyled too. It had been
   missed, so a first launch still looked entirely unchanged, and its empty step
   strip and action bar are now hidden rather than drawn blank.
+
+### Repository
+- **A security policy** ([SECURITY.md](SECURITY.md)) that routes reports to
+  GitHub's private advisory channel and states scope in this project's own
+  terms — a threat-model row, an ISOLATION guarantee, or a FORMAT-0.1 §6 stage.
+  Its out-of-scope list is the documented non-guarantees, so a restated
+  limitation gets a link rather than a fix.
+- **A code of conduct**, **issue forms** for bugs, features and portability
+  results, and a **pull-request template** whose checklist is the bar this
+  project already holds: both platforms green, a test that fails without the
+  change, HARDENING §I evidence where security-relevant, and an explicit check
+  that nothing is described as enforced where it is advisory. Blank issues are
+  disabled so a security finding is steered privately first.
+- **Dependabot** scoped to GitHub Actions only; the C++ dependencies are
+  pkg-config system libraries or pinned `third_party/` sources reviewed by hand
+  against [SBOM.md](docs/SBOM.md).
+- The README leads with the interface rather than describing it: a hero
+  screenshot, the four GUI captures in `docs/images/`, and a real captured
+  `lexe verify` transcript showing all six pipeline stages by name.
+
+### Fixed
+- **The headless GUI smoke test raced its own timeout.** It allowed a window 10
+  seconds to appear but ran the whole check under a 6-second `timeout`, so on a
+  runner slower than 6 seconds to first paint it reported "never mapped a
+  window" — an accurate message and a wrong conclusion, since it was measuring
+  runner speed rather than the GUI. Six of the last seven CI failures on `main`
+  were this, and none was a defect. The budgets are now explicit and ordered
+  (`MAP_WAIT`, `DWELL`, outer timeout derived from both), and a pass no longer
+  depends on the timeout firing: a GUI still running after the dwell is closed
+  and reported clean, while one that exits on its own has its status propagated
+  so a crash is still a crash. Locally the check went from ~18s to 5s while
+  tolerating a startup four times slower than the old ceiling.
 
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
