@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <vector>
@@ -741,6 +742,58 @@ TEST_CASE("verify_package_or_throw throws VerificationError for a missing "
     CHECK_THROWS_AS(
         (void)lexe::verify_package_or_throw(home.path() / "absent.lexe"),
         lexe::VerificationError);
+}
+
+// The pipeline reports stages as MESSAGES only, so a hint attached where the
+// error was thrown has to be carried out of it deliberately. It was not: the
+// "point `lexe build` at this folder" hint existed and was covered by a test on
+// PackageReader, but every caller going through verify_package_or_throw — which
+// is every CLI package command — saw the fallback hint for VerificationError
+// instead, telling someone who mistyped a path to re-download the package.
+TEST_CASE("verify_package_or_throw keeps the failing stage's own hint") {
+    TempLexeHome home;
+
+    SUBCASE("a project folder says how to package it, not to re-download it") {
+        const fs::path project = home.path() / "my-project";
+        fs::create_directories(project / "payload");
+        try {
+            (void)lexe::verify_package_or_throw(project);
+            FAIL("a directory must not verify as a package");
+        } catch (const lexe::VerificationError& e) {
+            CHECK(contains(e.what(), "directory"));
+            CHECK(contains(e.hint(), "lexe build"));
+        }
+    }
+
+    SUBCASE("a mistyped path points at the path") {
+        try {
+            (void)lexe::verify_package_or_throw(home.path() / "absent.lexe");
+            FAIL("a missing file must not verify as a package");
+        } catch (const lexe::VerificationError& e) {
+            CHECK(contains(e.what(), "file not found"));
+            CHECK(contains(e.hint(), "path"));
+        }
+    }
+
+    // The other half of the guarantee: a package that really is damaged
+    // carries NO hint, so the CLI's type-based fallback ("re-download it from
+    // the original source") still applies where it is the right advice.
+    // Without this, "attach a hint everywhere" would silently pass the two
+    // cases above while making the common case worse.
+    SUBCASE("a corrupt archive carries no hint, leaving the type fallback") {
+        const fs::path junk = home.path() / "junk.lexe";
+        {
+            std::ofstream out(junk, std::ios::binary);
+            out << "this is not a ZIP archive";
+        }
+        try {
+            (void)lexe::verify_package_or_throw(junk);
+            FAIL("junk must not verify as a package");
+        } catch (const lexe::VerificationError& e) {
+            CHECK(contains(e.what(), "not a valid ZIP archive"));
+            CHECK(e.hint().empty());
+        }
+    }
 }
 
 } // TEST_SUITE("verify")

@@ -228,7 +228,9 @@ PackageReader::PackageReader(const fs::path& lexe_file)
         // "file not found" message a mistyped path deserves is not replaced by
         // the kind check.
         if (!fs::exists(lexe_file, ec)) {
-            throw NotFoundError("file not found: " + lexe_file.string());
+            throw NotFoundError(
+                "file not found: " + lexe_file.string(),
+                "Check the path to the .lexe file.");
         }
         if (!fs::is_regular_file(lexe_file, ec)) {
             // A directory is the common form of this mistake — a developer

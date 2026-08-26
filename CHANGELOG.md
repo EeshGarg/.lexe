@@ -12,8 +12,8 @@ The first tagged Alpha. Everything below is implemented and green on Linux
 GitHub Actions job. Source-only: there are no prebuilt binaries in this line,
 and the support contract is [docs/ALPHA.md](docs/ALPHA.md).
 
-Verified on the tagged commit: 493 test cases / 6665 assertions on Linux,
-473 / 6524 on Windows, headless GUI smoke green, and the cross-distribution
+Verified on the tagged commit: 494 test cases / 6671 assertions on Linux,
+474 / 6530 on Windows, headless GUI smoke green, and the cross-distribution
 portability proof green.
 
 ### Platform
@@ -378,6 +378,20 @@ cannot drift apart visually the way their wording once did.
   `lexe verify` transcript showing all six pipeline stages by name.
 
 ### Fixed
+- **A mistyped path was told to re-download the package.** Every package
+  command routes through `verify_package_or_throw`, and a verification report
+  records stages as messages only — so a hint attached where the error was
+  actually thrown never left the pipeline, and the CLI fell back to the hint for
+  the *type* it throws. Pointing `lexe install` at a project folder, or at a
+  path with a typo in it, produced "Re-download it from the original source and
+  try again": advice for a corrupt download, given to someone whose download was
+  fine. The folder hint had been written deliberately, with a comment saying it
+  existed to prevent exactly this message, and a test covering it on
+  `PackageReader` — the gap was that nothing tested it survived the pipeline, so
+  it never reached a user. Stage failures now carry their own hint out, and a
+  genuinely damaged archive still carries none, so the re-download advice keeps
+  applying where it is right.
+
 - **The headless GUI smoke test raced its own timeout.** It allowed a window 10
   seconds to appear but ran the whole check under a 6-second `timeout`, so on a
   runner slower than 6 seconds to first paint it reported "never mapped a
