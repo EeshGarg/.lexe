@@ -34,8 +34,8 @@ with a frozen cross-distribution portability contract.
   severity carried by tint, a leading bar and text colour together so a
   first-seen key can never read like a verified one.
 
-Verified on the tagged commit: **494 test cases / 6671 assertions** on Linux
-(GCC), **474 / 6530** on Windows (MSVC), the headless GUI smoke test, and the
+Verified on the tagged commit: **495 test cases / 6681 assertions** on Linux
+(GCC), **475 / 6540** on Windows (MSVC), the headless GUI smoke test, and the
 end-to-end cross-distribution portability proof — all green.
 
 Full detail: [../CHANGELOG.md](../CHANGELOG.md). What is and is not claimed:

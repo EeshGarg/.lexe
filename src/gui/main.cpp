@@ -501,16 +501,24 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
     const std::string filename = package_path.filename().string();
     vm.verified = report.ok();
     if (!report.ok()) {
+        std::string remedy;
         if (const VerificationStage* f = report.first_failure(); f != nullptr) {
             vm.refusal_text = "Verification failed at the \"" + f->name +
                               "\" stage.";
             if (!f->detail.empty()) vm.refusal_text += "\n" + f->detail;
+            remedy = f->hint;
         } else {
             vm.refusal_text = "This package did not pass verification.";
         }
+        // Only fall back to "re-download" when the stage had nothing specific
+        // to say. A dropped folder or a path that names no package is not a
+        // damaged download, and telling someone to fetch it again sends them
+        // to do the one thing that cannot help.
         vm.refusal_text +=
-            "\nRe-download it from the original source, or inspect it with "
-            "`lexe verify`.";
+            "\n" + (remedy.empty()
+                        ? std::string("Re-download it from the original source, "
+                                      "or inspect it with `lexe verify`.")
+                        : remedy);
     }
 
     const TrustLines trust = format_trust(eval, manifest.has_value());

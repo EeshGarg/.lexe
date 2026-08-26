@@ -12,8 +12,8 @@ The first tagged Alpha. Everything below is implemented and green on Linux
 GitHub Actions job. Source-only: there are no prebuilt binaries in this line,
 and the support contract is [docs/ALPHA.md](docs/ALPHA.md).
 
-Verified on the tagged commit: 494 test cases / 6671 assertions on Linux,
-474 / 6530 on Windows, headless GUI smoke green, and the cross-distribution
+Verified on the tagged commit: 495 test cases / 6681 assertions on Linux,
+475 / 6540 on Windows, headless GUI smoke green, and the cross-distribution
 portability proof green.
 
 ### Platform
@@ -388,9 +388,17 @@ cannot drift apart visually the way their wording once did.
   fine. The folder hint had been written deliberately, with a comment saying it
   existed to prevent exactly this message, and a test covering it on
   `PackageReader` — the gap was that nothing tested it survived the pipeline, so
-  it never reached a user. Stage failures now carry their own hint out, and a
-  genuinely damaged archive still carries none, so the re-download advice keeps
-  applying where it is right.
+  it never reached a user.
+
+  The Installer had the same defect independently: it appended "Re-download it
+  from the original source" to *every* refusal, so dropping a project folder on
+  it — an ordinary thing to do now that it accepts drops — gave the same wrong
+  answer. Rather than fix the two surfaces separately, the remedy now rides on
+  the failing stage itself (`VerificationStage::hint`), which is the one place
+  both of them already read. A genuinely damaged archive still carries no hint,
+  so the re-download advice keeps applying where it is the right advice — and
+  the tests pin that fallback as well, because "attach a hint everywhere" would
+  have fixed the two broken cases while quietly making the common one worse.
 
 - **The headless GUI smoke test raced its own timeout.** It allowed a window 10
   seconds to appear but ran the whole check under a 6-second `timeout`, so on a

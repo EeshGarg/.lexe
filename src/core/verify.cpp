@@ -44,11 +44,12 @@ constexpr const char* kHashes = "hashes";
 constexpr const char* kCompatibility = "compatibility";
 
 void pass(VerificationReport& report, const char* name, std::string detail) {
-    report.stages.push_back({name, true, std::move(detail)});
+    report.stages.push_back({name, true, std::move(detail), {}});
 }
 
-void fail(VerificationReport& report, const char* name, std::string detail) {
-    report.stages.push_back({name, false, std::move(detail)});
+void fail(VerificationReport& report, const char* name, std::string detail,
+          std::string hint = {}) {
+    report.stages.push_back({name, false, std::move(detail), std::move(hint)});
 }
 
 std::string join(const std::vector<std::string>& parts, const char* separator) {
@@ -194,12 +195,6 @@ hash_problems(const PackageReader& reader,
 struct PipelineOutcome {
     VerificationReport report;
     std::optional<Manifest> manifest;
-    /// The failing stage's own hint, when its throw site attached one. A
-    /// VerificationReport records only messages, so without this the specific
-    /// guidance is lost and verify_package_or_throw falls back to the hint for
-    /// the *type* it throws — "re-download the package" — which is wrong for a
-    /// mistyped path or a project folder, neither of which is a bad download.
-    std::string failure_hint;
 };
 
 PipelineOutcome run_pipeline(const fs::path& lexe_file,
@@ -207,11 +202,11 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     PipelineOutcome out;
     VerificationReport& report = out.report;
 
-    // Record a stage failure AND keep whatever hint its throw site attached,
-    // so the specific advice survives the pipeline's message-only report.
-    auto fail_from = [&out](const char* stage, const Error& e) {
-        out.failure_hint = e.hint();
-        fail(out.report, stage, e.what());
+    // Record a stage failure together with whatever hint its throw site
+    // attached, so the specific advice reaches every surface that renders the
+    // report rather than dying inside the pipeline.
+    auto fail_from = [&report](const char* stage, const Error& e) {
+        fail(report, stage, e.what(), e.hint());
     };
 
     // ---- stage 1: structure (§2) --------------------------------------
@@ -354,11 +349,11 @@ Manifest verify_package_or_throw(const fs::path& lexe_file,
         const VerificationStage* failure = out.report.first_failure();
         // ok() is false only when a present stage failed (the pipeline always
         // records at least the structure stage), so failure is non-null.
-        // out.failure_hint is empty unless the failing stage's throw site
-        // attached one; VerificationError then falls back to its type hint.
+        // failure->hint is empty unless that stage's throw site attached one;
+        // VerificationError then falls back to the hint for its type.
         throw VerificationError("verification failed at stage \"" +
                                     failure->name + "\": " + failure->detail,
-                                out.failure_hint);
+                                failure->hint);
     }
     return std::move(*out.manifest);
 }

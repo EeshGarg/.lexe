@@ -357,8 +357,8 @@ More in [docs/FAQ.md](docs/FAQ.md).
 
 ## Project status
 
-**Milestone:** Developer Alpha. The full suite is green on both platforms — **494
-tests on Linux, 474 on Windows (~6,700 assertions)** — plus a headless GUI smoke
+**Milestone:** Developer Alpha. The full suite is green on both platforms — **495
+tests on Linux, 475 on Windows (~6,700 assertions)** — plus a headless GUI smoke
 test and a cross-distribution portability proof, exercised in CI on every push.
 See the **[Alpha support contract](docs/ALPHA.md)** for exactly what is and is not
 claimed.

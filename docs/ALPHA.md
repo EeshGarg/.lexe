@@ -163,8 +163,8 @@ push (`.github/workflows/ci.yml`).
 | Warning-clean, markup-safe GUIs | `scripts/gui-smoke.sh` (CI `linux` job) |
 | Cross-distribution portability proof | `scripts/portability-demo.sh` (CI `portability` job) |
 
-**Regression totals (this line):** Linux (GCC) 494 test cases / 6671 assertions;
-Windows (MSVC) 474 test cases / 6530 assertions — both green. Linux runs more
+**Regression totals (this line):** Linux (GCC) 495 test cases / 6681 assertions;
+Windows (MSVC) 475 test cases / 6540 assertions — both green. Linux runs more
 cases because the POSIX-only behaviour is compiled in only there: the
 bubblewrap isolation and cross-process race suites, plus the individual cases
 guarded for fork/exec, symlinks, file locking and FIFOs.

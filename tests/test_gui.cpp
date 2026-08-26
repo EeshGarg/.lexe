@@ -25,6 +25,7 @@
 #include "core/trust.hpp"
 #include "core/verify.hpp"
 
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -542,6 +543,55 @@ TEST_CASE("tampered payload disables Install and says what actually failed") {
     CHECK_FALSE(vm.refusal_text.empty());
 }
 
+// The Installer accepts drops, so a project folder lands on it the same way a
+// package does. It used to answer every refusal with "Re-download it from the
+// original source" — the one action that cannot help someone who dropped a
+// folder, or named a path that holds no package. The remedy now comes from the
+// stage that failed, and the re-download line is the fallback for when that
+// stage had nothing more specific to say.
+TEST_CASE("a refusal explains the actual problem, not a generic re-download") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+
+    SUBCASE("a dropped project folder is told how to package it") {
+        const fs::path project = home.path() / "my-project";
+        fs::create_directories(project / "payload");
+        const VerificationReport report = lexe::verify_package(project, true);
+        REQUIRE_FALSE(report.ok());
+        const lexe::gui::ViewModel vm =
+            make_vm(std::nullopt, report, project, paths);
+        CHECK_FALSE(vm.verified);
+        CHECK_FALSE(vm.can_install);
+        CHECK(contains(vm.refusal_text, "lexe build"));
+        CHECK_FALSE(contains(vm.refusal_text, "Re-download"));
+    }
+
+    SUBCASE("a path naming no package points at the path") {
+        const fs::path absent = home.path() / "absent.lexe";
+        const VerificationReport report = lexe::verify_package(absent, true);
+        REQUIRE_FALSE(report.ok());
+        const lexe::gui::ViewModel vm =
+            make_vm(std::nullopt, report, absent, paths);
+        CHECK(contains(vm.refusal_text, "path"));
+        CHECK_FALSE(contains(vm.refusal_text, "Re-download"));
+    }
+
+    // The fallback still has to work: a package that really is damaged has no
+    // stage-specific remedy, and re-downloading it is the right advice.
+    SUBCASE("a corrupt archive keeps the re-download advice") {
+        const fs::path junk = home.path() / "junk.lexe";
+        {
+            std::ofstream out(junk, std::ios::binary);
+            out << "this is not a ZIP archive";
+        }
+        const VerificationReport report = lexe::verify_package(junk, true);
+        REQUIRE_FALSE(report.ok());
+        const lexe::gui::ViewModel vm =
+            make_vm(std::nullopt, report, junk, paths);
+        CHECK(contains(vm.refusal_text, "Re-download"));
+    }
+}
+
 TEST_CASE("a package that verifies has nothing to explain") {
     TempLexeHome home;
     const Paths paths = Paths::detect();
@@ -604,7 +654,7 @@ TEST_CASE("view model reflects SPEC manifest example fields") {
     for (const char* stage : {"structure", "manifest", "key",
                               "manifest-signature", "payload-signature",
                               "hashes", "compatibility"}) {
-        report.stages.push_back(VerificationStage{stage, true, "ok"});
+        report.stages.push_back(VerificationStage{stage, true, "ok", {}});
     }
 
     const lexe::gui::ViewModel vm = make_vm(m, report,
