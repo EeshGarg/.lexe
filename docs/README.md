@@ -33,6 +33,7 @@ implemented).
 
 | Document | Kind | What it covers |
 |---|---|---|
+| [../SECURITY.md](../SECURITY.md) | Informative | How to report a vulnerability privately, what is in scope, and the documented non-guarantees that are not. |
 | [HARDENING.md](HARDENING.md) | Normative | The hardening gates (A–H), the proven-invariants table, and the evidence bar. |
 | [ISOLATION.md](ISOLATION.md) | Design | The Linux bubblewrap runtime-isolation design. |
 | [CONCURRENCY.md](CONCURRENCY.md) | Normative | OS-backed operation locking, launch leases, and the launch TOCTOU closure. |
@@ -60,6 +61,7 @@ implemented).
 | Document | Kind | What it covers |
 |---|---|---|
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | — | Building, running the tests, and finding your way around the code. |
+| [../CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) | — | What is expected in issues and pull requests, and how enforcement actually works here. |
 
 ## Status & roadmap
 
