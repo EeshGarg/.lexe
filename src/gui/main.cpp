@@ -40,6 +40,10 @@
 #include "core/verify.hpp"
 #include "core/versioncmp.hpp"
 
+#if !defined(LEXE_GUI_VIEWMODEL_ONLY)
+#include "gui/style.hpp"
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -590,6 +594,11 @@ inline std::string install_progress_note() {
 
 namespace {
 
+/// The shared visual language (src/gui/style.hpp); this GTK layer lives in an
+/// anonymous namespace outside lexe::gui, so alias it rather than repeating the
+/// full qualification at every call site.
+namespace style = lexe::gui::style;
+
 /// Whole-application state, owned by main(). Widget pointers are only ever
 /// touched on the GTK main thread; the plain-data result fields are written
 /// by exactly one worker thread and read on the main thread only after the
@@ -649,15 +658,19 @@ struct AppState {
 /// a refusal ("danger"). Any other value is treated as danger.
 void set_banner(AppState* st, const std::string& severity,
                 const std::string& text) {
-    const char* colour = severity == "ok"        ? "#1a7f37"   // green
-                         : severity == "caution" ? "#9a6700"   // amber
-                                                 : "#b00020";  // red
-    gchar* escaped = g_markup_escape_text(text.c_str(), -1);
-    gchar* markup = g_strdup_printf(
-        "<span weight=\"bold\" foreground=\"%s\">%s</span>", colour, escaped);
-    gtk_label_set_markup(GTK_LABEL(st->banner_label), markup);
-    g_free(markup);
-    g_free(escaped);
+    // Severity is a STYLE CLASS on the banner strip, not a colour baked into
+    // markup: the strip carries a tinted background, a border and a text colour
+    // together, so the three states stay distinguishable to someone who cannot
+    // separate the hues — which a bare coloured word does not manage.
+    GtkWidget* strip = gtk_widget_get_parent(st->banner_label);
+    for (const char* klass : {"ok", "caution", "danger"}) {
+        if (strip != nullptr) style::remove_class(strip, klass);
+    }
+    const char* klass = severity == "ok"        ? "ok"
+                        : severity == "caution" ? "caution"
+                                                : "danger";
+    if (strip != nullptr) style::add_class(strip, klass);
+    gtk_label_set_text(GTK_LABEL(st->banner_label), text.c_str());
 }
 
 /// Left-aligned, wrapped, selectable body label appended to `box`.
@@ -684,15 +697,18 @@ void add_section(GtkWidget* box, const char* heading, const std::string& body) {
     // guarantee that no future section can reintroduce the defect. Dropping a
     // heading with no content hides nothing: there was nothing to show.
     if (body.empty()) return;
-    GtkWidget* head = gtk_label_new(nullptr);
-    gchar* escaped = g_markup_escape_text(heading, -1);
-    gchar* markup = g_strdup_printf("<b>%s</b>", escaped);
-    gtk_label_set_markup(GTK_LABEL(head), markup);
-    g_free(markup);
-    g_free(escaped);
+    // Each section is a CARD: related facts group visually instead of running
+    // together into one column of bold-then-text. The heading is a small muted
+    // label rather than bold body text, so hierarchy comes from the type scale.
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    style::add_class(card, "lexe-card");
+    GtkWidget* head = gtk_label_new(heading);
+    style::add_class(head, "lexe-section-heading");
     gtk_label_set_xalign(GTK_LABEL(head), 0.0f);
-    gtk_box_pack_start(GTK_BOX(box), head, FALSE, FALSE, 0);
-    add_body_label(box, body);
+    gtk_label_set_line_wrap(GTK_LABEL(head), TRUE);
+    gtk_box_pack_start(GTK_BOX(card), head, FALSE, FALSE, 0);
+    add_body_label(card, body);
+    gtk_box_pack_start(GTK_BOX(box), card, FALSE, FALSE, 0);
 }
 
 void on_window_destroy(GtkWidget*, gpointer) { gtk_main_quit(); }
@@ -933,22 +949,24 @@ void on_accept_permissions_toggled(GtkToggleButton*, gpointer user_data) {
 /// ABOVE the scroller: a message the user has to go looking for is a message
 /// they do not get.
 GtkWidget* build_banner(AppState* st) {
+    // A STRIP, not a bare label: the severity styling is a tinted background
+    // plus a border plus a text colour, and a label alone gives the tint
+    // nowhere to sit. set_banner() swaps the class on this wrapper.
+    GtkWidget* strip = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    style::add_class(strip, "lexe-banner");
     st->banner_label = gtk_label_new(nullptr);
     gtk_label_set_xalign(GTK_LABEL(st->banner_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(st->banner_label), TRUE);
-    gtk_widget_set_margin_start(st->banner_label, 16);
-    gtk_widget_set_margin_end(st->banner_label, 16);
-    gtk_widget_set_margin_top(st->banner_label, 12);
-    gtk_widget_set_margin_bottom(st->banner_label, 8);
+    gtk_box_pack_start(GTK_BOX(strip), st->banner_label, FALSE, FALSE, 0);
     set_banner(st, st->vm.trust_severity, st->vm.status_text);
-    return st->banner_label;
+    return strip;
 }
 
 /// Primary screen — mirrors the SPEC "Opening a .lexe File" mock.
 GtkWidget* build_details_page(AppState* st) {
     const lexe::gui::ViewModel& vm = st->vm;
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 18);
 
     // The banner is NOT packed here — see build_banner(), which pins it above
     // the scroller. It used to be the first child of the scrolled content, so
@@ -969,10 +987,13 @@ GtkWidget* build_details_page(AppState* st) {
     }
     gtk_label_set_xalign(GTK_LABEL(name_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(name_label), TRUE);
+    style::add_class(name_label, "lexe-title");
     gtk_box_pack_start(GTK_BOX(box), name_label, FALSE, FALSE, 0);
 
-    add_body_label(box, vm.publisher_line);
-    add_body_label(box, vm.version_line);
+    // Publisher and version are supporting detail, not headline: muted, so the
+    // eye lands on the application name and then on whatever is wrong.
+    style::add_class(add_body_label(box, vm.publisher_line), "lexe-muted");
+    style::add_class(add_body_label(box, vm.version_line), "lexe-muted");
 
     // The reason first, directly under the banner: when a package is refused
     // the user's only question is "why, and what do I do now".
@@ -1048,7 +1069,7 @@ GtkWidget* build_details_page(AppState* st) {
 /// it.
 GtkWidget* build_action_bar(AppState* st) {
     GtkWidget* bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(bar), 12);
+    style::add_class(bar, "lexe-actionbar");
 
     // The consent control lives HERE, beside the button it gates, not with the
     // permission list up in the scrolled details. Install is disabled until it
@@ -1076,6 +1097,7 @@ GtkWidget* build_action_bar(AppState* st) {
     g_signal_connect(st->details_close_button, "clicked",
                      G_CALLBACK(on_close_clicked), nullptr);
     st->install_button = gtk_button_new_with_label("Install");
+    style::add_class(st->install_button, "lexe-primary");
     // sensitivity is set below, once the consent box (if any) exists
     g_signal_connect(st->install_button, "clicked",
                      G_CALLBACK(on_install_clicked), st);
@@ -1251,6 +1273,7 @@ int show_startup_error(const std::string& message, int code) {
 
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
+    style::apply();
 
     // Body text is selectable so a user can copy a fingerprint or an ID. GTK
     // pairs that with gtk-label-select-on-focus, which makes the first

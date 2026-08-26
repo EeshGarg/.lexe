@@ -41,6 +41,10 @@
 #include "core/runtime_profile.hpp"
 #include "core/tux32.hpp"
 #include "core/util.hpp"
+
+#if !defined(LEXE_GUI_VIEWMODEL_ONLY)
+#include "gui/style.hpp"
+#endif
 #include "core/version.hpp"
 
 #include <nlohmann/json.hpp>
@@ -683,6 +687,10 @@ inline std::string verification_note() {
 
 namespace {
 
+/// The shared visual language (src/gui/style.hpp) — see the installer for the
+/// same alias; this GTK layer is outside lexe::gui.
+namespace style = lexe::gui::style;
+
 namespace fs = std::filesystem;
 
 /// Whole-application state, owned by main(). Widget pointers are touched on the
@@ -794,6 +802,7 @@ void set_banner(BuilderState* st, bool ok, const std::string& text) {
 
 GtkWidget* section_heading(const char* text) {
     GtkWidget* label = gtk_label_new(nullptr);
+    style::add_class(label, "lexe-section-heading");
     // Escape the heading: a "&" or "<" would otherwise break Pango markup and
     // render the heading blank (see the installer's add_section for the same fix).
     gchar* escaped = g_markup_escape_text(text, -1);
@@ -807,6 +816,7 @@ GtkWidget* section_heading(const char* text) {
 
 GtkWidget* body_label(const char* text) {
     GtkWidget* label = gtk_label_new(text);
+    style::add_class(label, "lexe-body");
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
     return label;
@@ -1782,21 +1792,21 @@ void build_ui(BuilderState* st) {
     gtk_container_add(GTK_CONTAINER(st->window), root);
 
     // Header: step counter + title + subtitle.
+    // The step header is a lit strip, like the installer's banner and both
+    // action bars: flat content sits between two subtly shaded edges. Sizing
+    // comes from the stylesheet's type scale rather than Pango attributes, so
+    // the wizard's title and the installer's title are the same size by
+    // construction instead of by coincidence.
     GtkWidget* header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_container_set_border_width(GTK_CONTAINER(header), 12);
+    style::add_class(header, "lexe-stepbar");
     st->step_counter = gtk_label_new("Step 1 of 7");
+    style::add_class(st->step_counter, "lexe-muted");
     gtk_label_set_xalign(GTK_LABEL(st->step_counter), 0.0f);
     st->step_title = gtk_label_new(nullptr);
-    {
-        GtkWidget* t = st->step_title;
-        PangoAttrList* attrs = pango_attr_list_new();
-        pango_attr_list_insert(attrs, pango_attr_scale_new(PANGO_SCALE_X_LARGE));
-        pango_attr_list_insert(attrs, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
-        gtk_label_set_attributes(GTK_LABEL(t), attrs);
-        pango_attr_list_unref(attrs);
-        gtk_label_set_xalign(GTK_LABEL(t), 0.0f);
-    }
+    style::add_class(st->step_title, "lexe-title");
+    gtk_label_set_xalign(GTK_LABEL(st->step_title), 0.0f);
     st->step_subtitle = gtk_label_new(nullptr);
+    style::add_class(st->step_subtitle, "lexe-subtitle");
     gtk_label_set_xalign(GTK_LABEL(st->step_subtitle), 0.0f);
     gtk_box_pack_start(GTK_BOX(header), st->step_counter, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header), st->step_title, FALSE, FALSE, 0);
@@ -1824,13 +1834,14 @@ void build_ui(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(root), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 0);
     GtkWidget* footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(footer), 12);
+    style::add_class(footer, "lexe-actionbar");
     st->banner_label = gtk_label_new(nullptr);
     gtk_label_set_xalign(GTK_LABEL(st->banner_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(st->banner_label), TRUE);
     gtk_box_pack_start(GTK_BOX(footer), st->banner_label, TRUE, TRUE, 0);
     st->back_button = gtk_button_new_with_label("Back");
     st->next_button = gtk_button_new_with_label("Next");
+    style::add_class(st->next_button, "lexe-primary");
     g_signal_connect(st->back_button, "clicked", G_CALLBACK(on_back_clicked), st);
     g_signal_connect(st->next_button, "clicked", G_CALLBACK(on_next_clicked), st);
     gtk_box_pack_start(GTK_BOX(footer), st->back_button, FALSE, FALSE, 0);
@@ -1844,6 +1855,7 @@ void build_ui(BuilderState* st) {
 
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
+    style::apply();
 
     // Body text is selectable so a user can copy a fingerprint or an ID. GTK
     // pairs that with gtk-label-select-on-focus, which makes the first
