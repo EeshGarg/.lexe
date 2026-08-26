@@ -58,6 +58,10 @@ window { background-color: @lexe_canvas; color: @lexe_text; }
 .lexe-body     { font-size: 14px; color: @lexe_text; }
 .lexe-muted    { font-size: 13px; color: @lexe_muted; }
 .lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_muted; }
+/* A success heading. A CLASS, not a colour in markup: a colour baked into
+   Pango when a build finished kept the old palette's green after a theme flip,
+   leaving mint text on a white card at ~1.4:1 contrast. */
+.lexe-success { font-size: 17px; font-weight: 700; color: #6ee7a8; }
 
 .lexe-card {
   background-color: @lexe_surface;
@@ -132,6 +136,8 @@ window { background-color: @lexe_canvas; color: @lexe_text; }
 .lexe-body     { font-size: 14px; color: @lexe_text; }
 .lexe-muted    { font-size: 13px; color: @lexe_muted; }
 .lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_muted; }
+/* A success heading - see the dark palette for why this is a class. */
+.lexe-success { font-size: 17px; font-weight: 700; color: #15803d; }
 
 .lexe-card {
   background-color: @lexe_surface;

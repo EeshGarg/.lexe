@@ -48,6 +48,12 @@ export GDK_BACKEND=x11
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+# "WARNING **" catches the GUIs' OWN g_warning() output, not just GTK's. The
+# stylesheet loader reports CSS parse errors that way, and the domain-prefixed
+# patterns below match "Gtk-WARNING" but not "** (lexe-installer:N): WARNING **"
+# — so a stylesheet with an invalid selector sailed through this test while
+# every window it produced was missing a rule.
+#
 # Lines that indicate a real GUI defect. The allowlist strips environment noise
 # that a headless X server / missing a11y bus legitimately produces and that is
 # NOT an application bug.
@@ -62,7 +68,7 @@ trap 'rm -rf "$WORK"' EXIT
 # GUIs actually emit.
 offending() {
     grep -aE \
-      '(Gtk|Gdk|GLib|GLib-GObject|GdkPixbuf|Pango|Gnome)-(WARNING|CRITICAL|ERROR)|CRITICAL \*\*|assertion .*failed|due to error parsing markup|Segmentation fault|core dumped|Trace/breakpoint trap' \
+      '(Gtk|Gdk|GLib|GLib-GObject|GdkPixbuf|Pango|Gnome)-(WARNING|CRITICAL|ERROR)|CRITICAL \*\*|WARNING \*\*|assertion .*failed|due to error parsing markup|Segmentation fault|core dumped|Trace/breakpoint trap' \
       "$1" 2>/dev/null \
       | grep -avE 'dbind-WARNING|AT-SPI|at-spi|atk-bridge|Failed to connect to|session (manager|bus)|Theme parsing error|Gtk-Message|accessibility bus|Unable to init server|cannot open display: after|Could not load a pixbuf|pixbuf from .*(theme|icon|symbolic|Adwaita)|Error loading (theme )?icon|gdk_seat_get_keyboard: assertion' \
       || true
