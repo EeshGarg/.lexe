@@ -324,6 +324,36 @@ CLI and integration:
   it counts removals, only refreshes databases that exist, and cleans up the
   confined copies too.
 
+### The GUIs got a design
+Both frontends rendered in whatever the GTK theme handed them: a flat run of
+bold-label-then-text, controls at default proportions, severity carried by a
+coloured word. They now share one stylesheet (`src/gui/style.hpp`), so they
+cannot drift apart visually the way their wording once did.
+
+- **Cards** group related facts, **a type scale** carries hierarchy (26px title,
+  muted section labels, 14px body — GTK's uniform 11px is itself a period
+  detail), and **one solid accent** marks the single primary action per screen.
+- **Flat, not glassy.** A first attempt took "Aero" literally — gradient strips,
+  a bordered gradient button, hairline borders — which are exactly the cues that
+  date a window to the late 2000s. Depth is now a two-layer shadow; that is the
+  only thing from Aero worth keeping.
+- **Buttons are pills** with a hover transition, the primary one wider than the
+  quiet ones beside it.
+- **Severity is a style class, not a colour in markup.** Tint, a 4px leading bar
+  and text colour move together, so the three states stay distinguishable
+  without relying on hue — the entire point of that banner being that a
+  first-seen key must not read like a verified one.
+- **Light and dark palettes**, chosen at runtime. `Theme{System,Light,Dark}`
+  with System the default; `apply()` is re-appliable so the theme can change a
+  live window, and it pushes the resolved mode into GtkSettings so GTK's own
+  chooser dialogs and menus follow rather than opening light out of a dark
+  window. `System` asks the desktop three ways — the prefer-dark setting, a
+  theme name ending `-dark`, and `GTK_THEME=…:dark` — because any one alone
+  leaves some sessions rendering the wrong way round.
+- The Builder's **first-run welcome screen** was restyled too. It had been
+  missed, so a first launch still looked entirely unchanged, and its empty step
+  strip and action bar are now hidden rather than drawn blank.
+
 ### Known limitations
 See [docs/ALPHA.md#known-limitations](docs/ALPHA.md#known-limitations) — most
 notably: Linux-only isolation (Windows is a build/test host), isolation requires
