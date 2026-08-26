@@ -19,6 +19,7 @@
 #include "core/package.hpp"
 #include "core/paths.hpp"
 #include "core/permissions.hpp"
+#include "core/settings.hpp"
 #include "core/presentation.hpp"
 #include "core/transaction.hpp"
 #include "core/trust.hpp"
@@ -628,6 +629,229 @@ TEST_CASE("view model reflects SPEC manifest example fields") {
     CHECK(vm.verified);
     CHECK(vm.can_install); // first-seen but valid → installable
     CHECK(vm.trust_severity == "caution");
+}
+
+// --- the theme control -----------------------------------------------------
+//
+// The installer window's theme control and `lexe config set theme` have to be
+// ONE preference. The tests below pin the two ends of that: the control offers
+// exactly the values Settings accepts, and what the control writes is what a
+// later load reads back.
+
+TEST_CASE("the theme control offers exactly the values settings accept") {
+    TempLexeHome home;
+    const std::vector<std::string>& values = lexe::gui::theme_option_values();
+
+    // Three, not two: "follow the desktop" is a distinct answer from "light",
+    // and a two-state control cannot express it.
+    REQUIRE(values.size() == 3);
+    CHECK(values[0] == "system"); // the default, and index 0
+    CHECK(values[1] == "light");
+    CHECK(values[2] == "dark");
+    CHECK(lexe::gui::theme_option_labels().size() == values.size());
+
+    // Every offered value is one Settings::set accepts. If the vocabulary ever
+    // grows on one side only, this fails instead of the GUI throwing on a
+    // click.
+    for (const std::string& value : values) {
+        lexe::Settings settings;
+        REQUIRE_NOTHROW(settings.set("theme", value));
+        CHECK(settings.theme == value);
+        CHECK(settings.get("theme") == value);
+    }
+    lexe::Settings settings;
+    CHECK_THROWS_AS(settings.set("theme", "midnight"), lexe::Error);
+    // GTK reports -1 for "no active item"; that must not become an empty string
+    // handed to Settings::set, which would throw on a cosmetic change.
+    CHECK_THROWS_AS(settings.set("theme", ""), lexe::Error);
+}
+
+TEST_CASE("a theme choice round-trips through the persisted settings file") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+
+    // What the window does at startup: read the preference, select that option.
+    lexe::Settings loaded = lexe::Settings::load(paths);
+    CHECK(loaded.theme == "system");
+    CHECK(lexe::gui::theme_option_index(loaded.theme) == 0);
+
+    // What the window does when the user picks "Dark": take the value for the
+    // selected index, set it, save it. Other preferences must survive — the
+    // window keeps the whole bundle rather than saving a fresh default one.
+    loaded.developer_mode = true;
+    loaded.update_check = "never";
+    loaded.set("theme", lexe::gui::theme_option_value(2));
+    loaded.save(paths);
+
+    const lexe::Settings reread = lexe::Settings::load(paths);
+    CHECK(reread.theme == "dark");
+    CHECK(reread.developer_mode);              // not clobbered by the theme write
+    CHECK(reread.update_check == "never");
+    CHECK(lexe::gui::theme_option_index(reread.theme) == 2);
+}
+
+TEST_CASE("an unknown or out-of-range theme falls back to following the desktop") {
+    TempLexeHome home;
+    // A settings.json written by a newer runtime must not leave the control
+    // showing nothing selected while the window renders the system palette.
+    CHECK(lexe::gui::theme_option_index("solarized") == 0);
+    CHECK(lexe::gui::theme_option_index("") == 0);
+    CHECK(lexe::gui::theme_option_value(-1) == "system");
+    CHECK(lexe::gui::theme_option_value(3) == "system");
+    for (int i = 0; i < 3; ++i) {
+        CHECK(lexe::gui::theme_option_index(lexe::gui::theme_option_value(i)) == i);
+    }
+}
+
+// --- drag and drop ---------------------------------------------------------
+//
+// A dropped file is untrusted input that arrived by mouse. check_dropped_package
+// decides only whether the drag delivered one local .lexe worth opening; every
+// refusal must SAY something, because a drop that changes nothing on screen is
+// indistinguishable from a drop target that does not work.
+
+TEST_CASE("a dropped single .lexe file is accepted for verification") {
+    TempLexeHome home;
+    const auto key = lexe::test::make_keypair();
+    const fs::path package = lexe::test::make_test_package(home.path(), key);
+
+    const lexe::gui::DropCheck check =
+        lexe::gui::check_dropped_package({package.string()});
+    CHECK(check.accept);
+    CHECK(check.path == package);
+    CHECK(check.message.empty());
+}
+
+TEST_CASE("a package whose extension was upcased by the filesystem is accepted") {
+    TempLexeHome home;
+    const auto key = lexe::test::make_keypair();
+    const fs::path package = lexe::test::make_test_package(home.path(), key);
+    // A package carried on a FAT or ISO-9660 volume comes back upcased.
+    // Refusing it there would be a false rejection the user cannot act on.
+    const fs::path upcased = home.path() / "HELLO.LEXE";
+    fs::copy_file(package, upcased);
+
+    const lexe::gui::DropCheck check =
+        lexe::gui::check_dropped_package({upcased.string()});
+    CHECK(check.accept);
+    CHECK(check.path == upcased);
+}
+
+TEST_CASE("every refused drop says why, and never yields a path to open") {
+    TempLexeHome home;
+    const auto key = lexe::test::make_keypair();
+    const fs::path package = lexe::test::make_test_package(home.path(), key);
+
+    struct Case {
+        const char* what;
+        std::vector<std::string> paths;
+        const char* must_mention;
+    };
+
+    // A folder, including one NAMED like a package: an unpacked project
+    // directory is exactly what a developer drags by mistake, and it must be
+    // named as a folder rather than reported as an unreadable archive.
+    const fs::path folder = home.path() / "some-folder";
+    fs::create_directories(folder);
+    const fs::path folder_named_lexe = home.path() / "project.lexe";
+    fs::create_directories(folder_named_lexe);
+    const fs::path not_a_package = home.path() / "notes.txt";
+    lexe::util::spit(not_a_package, std::string_view("not a package\n"));
+    const fs::path missing = home.path() / "gone.lexe";
+
+    const std::vector<Case> cases{
+        {"nothing at all", {}, "no file"},
+        {"two packages", {package.string(), package.string()}, "one package"},
+        {"a remote or virtual location", {std::string()}, "local file"},
+        {"a folder", {folder.string()}, "folder"},
+        {"a folder named like a package", {folder_named_lexe.string()}, "folder"},
+        {"a file that is not a package", {not_a_package.string()}, ".lexe"},
+        {"a path that does not exist", {missing.string()}, "not a readable file"},
+    };
+
+    for (const Case& c : cases) {
+        CAPTURE(c.what);
+        const lexe::gui::DropCheck check =
+            lexe::gui::check_dropped_package(c.paths);
+        CHECK_FALSE(check.accept);
+        // The defect this guards: a silently ignored drop.
+        CHECK_FALSE(check.message.empty());
+        CHECK(contains(check.message, c.must_mention));
+        // Nothing refused may hand a path on to the verification pipeline.
+        CHECK(check.path.empty());
+    }
+}
+
+TEST_CASE("dropping a package does not shorten the route to Install") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const auto key = lexe::test::make_keypair();
+
+    // A real package, dropped: admitted by the drop check, and then judged by
+    // the SAME view model a command-line argument produces. Being dropped is
+    // worth nothing on its own.
+    const fs::path good = lexe::test::make_test_package(home.path(), key);
+    const lexe::gui::DropCheck good_drop =
+        lexe::gui::check_dropped_package({good.string()});
+    REQUIRE(good_drop.accept);
+    const VerificationReport good_report =
+        lexe::verify_package(good_drop.path, true);
+    const lexe::gui::ViewModel good_vm =
+        make_vm(try_read_manifest(good_drop.path), good_report, good_drop.path,
+                paths);
+    CHECK(good_vm.can_install);
+
+    // A package with a tampered payload, dropped. It is still a .lexe file, so
+    // the drop check admits it — and it must be REFUSED by the pipeline, with
+    // Install disabled, exactly as it would be from the command line.
+    const fs::path bad_dir = home.path() / "tampered";
+    fs::create_directories(bad_dir);
+    const fs::path bad = lexe::test::make_test_package(bad_dir, key);
+    lexe::test::tamper_entry(bad, "payload/data.txt",
+                             [](std::vector<std::uint8_t>& bytes) {
+                                 REQUIRE_FALSE(bytes.empty());
+                                 bytes[0] ^= 0xFF;
+                             });
+    const lexe::gui::DropCheck bad_drop =
+        lexe::gui::check_dropped_package({bad.string()});
+    REQUIRE(bad_drop.accept); // admission is not approval
+    const VerificationReport bad_report =
+        lexe::verify_package(bad_drop.path, true);
+    const lexe::gui::ViewModel bad_vm = make_vm(
+        try_read_manifest(bad_drop.path), bad_report, bad_drop.path, paths);
+    CHECK_FALSE(bad_vm.verified);
+    CHECK_FALSE(bad_vm.can_install);
+    CHECK(bad_vm.trust_severity == "danger");
+    CHECK_FALSE(bad_vm.refusal_text.empty());
+
+    // Bytes that are not an archive at all, named .lexe. Same story.
+    const fs::path junk = home.path() / "junk.lexe";
+    lexe::util::spit(junk, std::string_view("\x7f not a zip"));
+    const lexe::gui::DropCheck junk_drop =
+        lexe::gui::check_dropped_package({junk.string()});
+    REQUIRE(junk_drop.accept);
+    const VerificationReport junk_report =
+        lexe::verify_package(junk_drop.path, true);
+    const lexe::gui::ViewModel junk_vm =
+        make_vm(try_read_manifest(junk_drop.path), junk_report, junk_drop.path,
+                paths);
+    CHECK_FALSE(junk_vm.can_install);
+}
+
+TEST_CASE("the empty state offers both ways in, and promises no shortcut") {
+    TempLexeHome home;
+    const lexe::gui::DropZoneText text = lexe::gui::drop_zone_text();
+    // Launching with no argument used to be a modal usage error and exit(2).
+    // The replacement has to name both routes: someone who started the window
+    // from a desktop menu has no command line to add an argument to, and
+    // someone who has one should not have to guess the syntax.
+    CHECK(contains(text.title, ".lexe"));
+    CHECK(contains(text.command, "lexe-installer"));
+    CHECK(contains(text.command, ".lexe"));
+    CHECK(contains(text.hint, "command line"));
+    // And it must not imply that dropping is the easy way past the checks.
+    CHECK(contains(text.assurance, "verification"));
+    CHECK_FALSE(text.assurance.empty());
 }
 
 } // TEST_SUITE("gui")

@@ -45,12 +45,15 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace lexe::gui {
@@ -249,6 +252,183 @@ inline std::string format_advanced_directories(const Paths& paths,
     text += "Desktop entries: " + paths.applications_dir().string() + '\n';
     text += "Icons: " + paths.icons_dir().string() + '\n';
     text += "Download cache: " + paths.cache_dir().string();
+    return text;
+}
+
+// ---------------------------------------------------------------------------
+// Theme preference. THREE states, not two.
+//
+// "Follow the desktop" is the default and is a genuinely different answer from
+// "light": a two-state control (a "Dark mode" switch) can only say light or
+// dark, so the first time a user touched it they would be silently converted
+// from "follows my desktop" to "pinned light" forever — including when their
+// desktop later flips to dark on a schedule. A GtkSwitch plus a "Follow
+// system" check does express three values, but it also puts a fourth,
+// meaningless combination on screen (Follow system ticked, the switch sitting
+// in the "dark" position, the window rendering light), which the reader has to
+// work out is not a contradiction. One list of three mutually exclusive
+// options has no such state, shows all three choices at once, and needs no
+// explanation.
+//
+// The values are exactly the three `Settings::set("theme", ...)` accepts, so
+// the GUI control and `lexe config set theme` are the same preference in the
+// same file rather than two stores that disagree the moment one is used.
+// ---------------------------------------------------------------------------
+
+/// The persisted values, in display order. Index 0 is the default.
+inline const std::vector<std::string>& theme_option_values() {
+    static const std::vector<std::string> values{"system", "light", "dark"};
+    return values;
+}
+
+/// What the control shows for each value. "Follow system" rather than
+/// "System": next to "Light" and "Dark", a bare "System" reads as a third
+/// palette instead of as "whatever the desktop is doing".
+inline const std::vector<std::string>& theme_option_labels() {
+    static const std::vector<std::string> labels{"Follow system", "Light",
+                                                 "Dark"};
+    return labels;
+}
+
+/// Which option a persisted preference selects. An unknown value selects
+/// "system" — the same fallback style::theme_from_string makes — so a
+/// settings.json written by a newer runtime leaves the control showing what is
+/// actually being rendered, rather than showing nothing selected at all.
+inline int theme_option_index(const std::string& persisted) {
+    const std::vector<std::string>& values = theme_option_values();
+    const auto it = std::find(values.begin(), values.end(), persisted);
+    return it == values.end() ? 0 : static_cast<int>(it - values.begin());
+}
+
+/// The value a control index selects. Out of range means "system": GTK reports
+/// -1 for "no active item", and handing that on as an empty string would make
+/// Settings::set throw on a purely cosmetic change.
+inline std::string theme_option_value(int index) {
+    const std::vector<std::string>& values = theme_option_values();
+    if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+        return values.front();
+    }
+    return values[static_cast<std::size_t>(index)];
+}
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop admission.
+//
+// A dropped file is untrusted input that happens to have arrived by mouse.
+// This decides only whether the drag delivered ONE local file worth opening; it
+// decides nothing about whether that file is safe. Everything that decides
+// that — the FORMAT-0.1 section 6 pipeline, the local trust evaluation, the
+// permission-vocabulary check, the consent gate on Install — runs afterwards,
+// unchanged, exactly as it does for a command-line argument.
+//
+// Every refusal carries a message. A drag that lands on the window and changes
+// nothing on screen is indistinguishable from a drop target that does not
+// work, and the user's next move is to drag the same file again.
+// ---------------------------------------------------------------------------
+
+struct DropCheck {
+    bool accept = false;
+    std::filesystem::path path; ///< set only when `accept`
+    std::string message;        ///< always set when !accept, never empty
+};
+
+/// Whether a drag delivered exactly one openable `.lexe`.
+///
+/// `local_paths` is the drop's URI list already resolved to local filesystem
+/// paths, with an EMPTY entry standing for a URI that is not a local file (an
+/// http:// download, a trash:// entry, an unmounted GVfs location). Keeping the
+/// URI decode in the GTK layer — it is g_filename_from_uri's job — leaves this
+/// decision pure, so every refusal below is covered by tests/test_gui.cpp
+/// rather than only by dragging things onto a window by hand.
+inline DropCheck check_dropped_package(
+    const std::vector<std::string>& local_paths) {
+    DropCheck result;
+    if (local_paths.empty()) {
+        result.message =
+            "That drop carried no file. Drag a .lexe package from a file "
+            "manager, or pass one on the command line.";
+        return result;
+    }
+    if (local_paths.size() > 1) {
+        result.message =
+            "Drop one package at a time — that drag carried " +
+            std::to_string(local_paths.size()) +
+            " items, and this window reviews and installs a single package.";
+        return result;
+    }
+    if (local_paths.front().empty()) {
+        result.message =
+            "Only a local file can be opened here. That drop was a remote or "
+            "virtual location; save the .lexe to disk first, then drop the "
+            "file.";
+        return result;
+    }
+    const std::filesystem::path candidate(local_paths.front());
+    const std::string shown = candidate.filename().string();
+    std::error_code ec;
+    // Directory FIRST. A folder named "app.lexe" — which is what an unpacked
+    // project directory tends to be called during development — would otherwise
+    // pass the extension check below and be reported as an unreadable package,
+    // naming a zip failure instead of the mistake the user actually made.
+    if (std::filesystem::is_directory(candidate, ec)) {
+        result.message = "\"" + shown +
+                         "\" is a folder. Drop the .lexe package file itself, "
+                         "not the directory it lives in — build a directory "
+                         "into a package with `lexe build`.";
+        return result;
+    }
+    if (!std::filesystem::is_regular_file(candidate, ec)) {
+        result.message =
+            "\"" + shown +
+            "\" is not a readable file — it may have been moved, or it may be "
+            "a device or socket rather than a package.";
+        return result;
+    }
+    // Case-insensitive: a package that travelled through a FAT or ISO-9660
+    // volume (a USB stick, a burned image) comes back named APP.LEXE, and
+    // refusing a perfectly good package because the filesystem upcased its name
+    // is a false rejection the user cannot act on. The extension is a hint about
+    // intent only — section 6 verification is what decides whether the bytes are
+    // really a package.
+    std::string extension = candidate.extension().string();
+    for (char& c : extension) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (extension != ".lexe") {
+        result.message =
+            "\"" + shown +
+            "\" is not a .lexe package. This window installs Lexe packages, "
+            "which are named <application>.lexe.";
+        return result;
+    }
+    result.accept = true;
+    result.path = candidate;
+    return result;
+}
+
+/// The empty-state screen, shown when the installer is launched with no
+/// argument.
+///
+/// That used to be a modal usage error and exit(2), which is the wrong answer
+/// for a window that is a drop target: someone who launches the installer from
+/// a desktop menu has no command line to add an argument to, and the one thing
+/// they need is somewhere to put a package.
+struct DropZoneText {
+    std::string title;
+    std::string hint;
+    std::string command;   ///< rendered monospaced
+    std::string assurance;
+};
+
+inline DropZoneText drop_zone_text() {
+    DropZoneText text;
+    text.title = "Drop a .lexe package here";
+    text.hint = "… or pass one on the command line:";
+    text.command = "lexe-installer <application.lexe>";
+    text.assurance =
+        "However it arrives, a package is checked the same way: signature and "
+        "payload verification, then the signing key against the ones this "
+        "machine already trusts. Nothing installs until that passes.";
     return text;
 }
 
@@ -583,6 +763,7 @@ inline std::string install_progress_note() {
 #include "core/package.hpp"
 #include "core/permissions.hpp"
 #include "core/registry.hpp"
+#include "core/settings.hpp"
 #include "core/trust.hpp"
 #include "core/util.hpp"
 #include "core/version.hpp"
@@ -607,6 +788,20 @@ struct AppState {
     std::filesystem::path package_path;
     lexe::Paths paths;
     lexe::gui::ViewModel vm;
+    /// True once a package has been opened. Launched with no argument the
+    /// window starts on the drop zone with no package at all, so nothing may
+    /// assume `vm` describes something real.
+    bool has_package = false;
+
+    // Theme preference (main thread only). The WHOLE persisted bundle is kept,
+    // not just the theme string: settings.json holds update_check,
+    // developer_mode and diagnostics too, and saving a freshly defaulted
+    // Settings to write one cosmetic field would silently reset the other three.
+    lexe::Settings settings;
+    style::Theme theme = style::Theme::System;
+    /// The desktop's OWN dark preference, sampled once BEFORE the first
+    /// style::apply() — see apply_theme() for why that snapshot has to exist.
+    gboolean desktop_prefer_dark = FALSE;
 
     // Widgets (main thread only).
     GtkWidget* window = nullptr;
@@ -625,6 +820,19 @@ struct AppState {
     GtkWidget* success_label = nullptr;
     GtkWidget* launch_button = nullptr;
     GtkWidget* launch_status_label = nullptr;
+    GtkWidget* theme_combo = nullptr;
+    /// The details screen's CONTAINER (banner + scroller + action bar). Held
+    /// separately from the widgets inside it because opening a second package
+    /// by dropping it rebuilds those from a new view model; everything above
+    /// only ever refers to the current generation.
+    GtkWidget* details_page = nullptr;
+    GtkWidget* drop_banner_strip = nullptr;
+    GtkWidget* drop_banner_label = nullptr;
+    GtkWidget* drop_close_button = nullptr;
+    /// Handed from the drag handler to the idle callback that actually opens
+    /// the file, so the drag protocol completes before verification blocks the
+    /// UI thread.
+    std::filesystem::path pending_drop;
 
     // Install worker -> main loop.
     std::string selected_channel = "stable";
@@ -650,19 +858,23 @@ struct AppState {
     // Launch worker -> main loop.
     std::string launch_error;
     int launch_exit_code = 0;
+    /// A launch worker is in flight. It reads `installed_id` on its own thread,
+    /// so opening another package (which rewrites it) has to wait.
+    bool launching = false;
 };
 
 /// Set the authenticity/trust banner. The colour reflects the trust SEVERITY,
 /// never a plain "verified": green only for a known/trusted key ("ok"), amber
 /// for a valid-but-first-seen key ("caution" — NOT styled as verified), red for
 /// a refusal ("danger"). Any other value is treated as danger.
-void set_banner(AppState* st, const std::string& severity,
-                const std::string& text) {
+void set_banner_label(GtkWidget* banner_label, const std::string& severity,
+                      const std::string& text) {
+    if (banner_label == nullptr) return;
     // Severity is a STYLE CLASS on the banner strip, not a colour baked into
     // markup: the strip carries a tinted background, a border and a text colour
     // together, so the three states stay distinguishable to someone who cannot
     // separate the hues — which a bare coloured word does not manage.
-    GtkWidget* strip = gtk_widget_get_parent(st->banner_label);
+    GtkWidget* strip = gtk_widget_get_parent(banner_label);
     for (const char* klass : {"ok", "caution", "danger"}) {
         if (strip != nullptr) style::remove_class(strip, klass);
     }
@@ -670,7 +882,48 @@ void set_banner(AppState* st, const std::string& severity,
                         : severity == "caution" ? "caution"
                                                 : "danger";
     if (strip != nullptr) style::add_class(strip, klass);
-    gtk_label_set_text(GTK_LABEL(st->banner_label), text.c_str());
+    gtk_label_set_text(GTK_LABEL(banner_label), text.c_str());
+}
+
+void set_banner(AppState* st, const std::string& severity,
+                const std::string& text) {
+    set_banner_label(st->banner_label, severity, text);
+}
+
+/// Put a message where the user is actually looking.
+///
+/// The window has four screens and only the details screen carries the trust
+/// banner, so a drop refused while the drop zone (or the progress or success
+/// screen) is up would have been written to a strip that is not on screen —
+/// the same "the window came back looking completely unchanged" failure the
+/// banner was pinned above the scroller to prevent. Each screen has one place
+/// that is always visible on it; this picks that place.
+void set_status_message(AppState* st, const std::string& severity,
+                        const std::string& text) {
+    const gchar* visible =
+        st->stack != nullptr
+            ? gtk_stack_get_visible_child_name(GTK_STACK(st->stack))
+            : nullptr;
+    const std::string page = visible != nullptr ? visible : "";
+    // Deliberately NO "details" branch: the details screen's banner states the
+    // package's authenticity, which is not ours to overwrite.
+    if (page == "progress" && st->progress_note_label != nullptr) {
+        gtk_label_set_text(GTK_LABEL(st->progress_note_label), text.c_str());
+        return;
+    }
+    if (page == "done" && st->launch_status_label != nullptr) {
+        gtk_label_set_text(GTK_LABEL(st->launch_status_label), text.c_str());
+        return;
+    }
+    if (st->drop_banner_label != nullptr) {
+        set_banner_label(st->drop_banner_label, severity, text);
+        // The strip is gtk_widget_set_no_show_all()'d so an empty tinted bar
+        // never sits above an empty window, which means the toplevel's
+        // show_all never descended into it — show the label explicitly, not
+        // just the strip, or the bar appears blank.
+        gtk_widget_show(st->drop_banner_label);
+        gtk_widget_show(st->drop_banner_strip);
+    }
 }
 
 /// Left-aligned, wrapped, selectable body label appended to `box`.
@@ -901,6 +1154,7 @@ gpointer launch_worker(gpointer user_data) {
 
 gboolean on_launch_finished(gpointer user_data) {
     AppState* st = static_cast<AppState*>(user_data);
+    st->launching = false;
     gtk_widget_set_sensitive(st->launch_button, TRUE);
     if (!st->launch_error.empty()) {
         const std::string text = "Launch failed: " + st->launch_error;
@@ -915,6 +1169,7 @@ gboolean on_launch_finished(gpointer user_data) {
 
 void on_launch_clicked(GtkButton*, gpointer user_data) {
     AppState* st = static_cast<AppState*>(user_data);
+    st->launching = true;
     gtk_widget_set_sensitive(st->launch_button, FALSE);
     gtk_label_set_text(GTK_LABEL(st->launch_status_label), "Launching…");
     GThread* thread = g_thread_new("lexe-launch", launch_worker, st);
@@ -1211,95 +1466,258 @@ GtkWidget* build_done_page(AppState* st) {
     return box;
 }
 
-void build_ui(AppState* st) {
-    st->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    const std::string title = "Lexe Installer " +
-                              lexe::version::runtime_string() + " — " +
-                              st->vm.app_name;
-    gtk_window_set_title(GTK_WINDOW(st->window), title.c_str());
-    gtk_window_set_default_size(GTK_WINDOW(st->window), 580, 760);
-    g_signal_connect(st->window, "destroy", G_CALLBACK(on_window_destroy),
-                     nullptr);
-    // Vetoes the [X] while an install is running — see on_window_delete.
-    g_signal_connect(st->window, "delete-event", G_CALLBACK(on_window_delete),
-                     st);
+// ------------------------------------------------- theme, drop zone, loading
 
-    st->stack = gtk_stack_new();
+/// Render `theme` on the LIVE window.
+///
+/// The System case needs the extra step above style::apply(). apply() writes
+/// GTK's `gtk-application-prefer-dark-theme` so GTK's own widgetry (menus,
+/// tooltips, the file chooser) follows our palette — and style::resolve_dark()
+/// reads that same property back to decide what the desktop wants. Left alone
+/// the two latch: choosing Dark sets the flag, and choosing "Follow system"
+/// afterwards reads back the flag WE set, so the window stays dark forever on a
+/// light desktop with no way out short of restarting. Restoring the value
+/// sampled before the first apply() makes "Follow system" mean the desktop
+/// again. (The other half of resolve_dark — the "-dark" theme NAME check — is
+/// never written by apply(), so it stays honest on its own.)
+void apply_theme(AppState* st, style::Theme theme) {
+    st->theme = theme;
+    if (theme == style::Theme::System) {
+        if (GtkSettings* settings = gtk_settings_get_default()) {
+            g_object_set(settings, "gtk-application-prefer-dark-theme",
+                         st->desktop_prefer_dark, nullptr);
+        }
+    }
+    style::apply(theme);
+}
+
+void on_theme_changed(GtkComboBox* combo, gpointer user_data) {
+    AppState* st = static_cast<AppState*>(user_data);
+    const std::string value =
+        lexe::gui::theme_option_value(gtk_combo_box_get_active(combo));
+
+    // Restyle FIRST. This is a cosmetic change the user just asked for; making
+    // it wait on a disk write means a read-only or full home directory leaves
+    // the window looking like the control does nothing.
+    apply_theme(st, style::theme_from_string(value));
+
+    // Then persist, into the same settings.json `lexe config set theme` writes.
+    // Re-read it first: a `lexe config set developer_mode true` run in a
+    // terminal while this window is open would otherwise be reverted by writing
+    // back the copy loaded at startup.
+    lexe::Settings settings = st->settings;
+    try {
+        settings = lexe::Settings::load(st->paths);
+    } catch (const std::exception&) {
+        // Unparseable on disk. Fall back to the in-memory copy — this write is
+        // the user's chance to replace a corrupt file with a valid one.
+    }
+    try {
+        settings.set("theme", value);
+        settings.save(st->paths);
+        st->settings = settings;
+    } catch (const std::exception& e) {
+        set_status_message(
+            st, "caution",
+            "This window is now using the \"" + value +
+                "\" theme, but the preference could not be saved for next "
+                "time: " +
+                e.what());
+    }
+}
+
+/// The persistent chrome strip: what this window is, and the theme control.
+///
+/// The control lives here rather than in the Advanced Options expander or the
+/// details action bar because both of those exist only on the details screen.
+/// Launched with no argument the window opens on the drop zone, where there is
+/// no expander and no action bar at all — a preference you can only reach after
+/// finding a package to install is not reachable at the moment you first see
+/// the window. One control, in one place, present on every screen, so there is
+/// no second copy to keep in step.
+GtkWidget* build_header_bar(AppState* st) {
+    GtkWidget* bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    style::add_class(bar, "lexe-actionbar");
+
+    GtkWidget* product = gtk_label_new("Lexe Installer");
+    style::add_class(product, "lexe-muted");
+    gtk_widget_set_halign(product, GTK_ALIGN_START);
+    gtk_widget_set_valign(product, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(bar), product, FALSE, FALSE, 0);
+
+    GtkWidget* right = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(right, GTK_ALIGN_END);
+    gtk_widget_set_valign(right, GTK_ALIGN_CENTER);
+    // A mnemonic label rather than a bare one: it gives the combo a keyboard
+    // route (Alt+T) and, because GTK derives the accessible name from the
+    // mnemonic relation, a screen reader announces the list as "Theme" instead
+    // of reading out only whichever option happens to be selected.
+    GtkWidget* label = gtk_label_new_with_mnemonic("_Theme");
+    style::add_class(label, "lexe-muted");
+    gtk_box_pack_start(GTK_BOX(right), label, FALSE, FALSE, 0);
+
+    st->theme_combo = gtk_combo_box_text_new();
+    for (const std::string& option : lexe::gui::theme_option_labels()) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->theme_combo),
+                                       option.c_str());
+    }
+    // Select BEFORE connecting: gtk_combo_box_set_active emits "changed", and a
+    // handler running here would write the freshly loaded preference straight
+    // back to disk on every startup — turning a read into a write, and turning
+    // an unreadable settings.json into an overwritten one.
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->theme_combo),
+                             lexe::gui::theme_option_index(st->settings.theme));
+    g_signal_connect(st->theme_combo, "changed", G_CALLBACK(on_theme_changed),
+                     st);
+    gtk_label_set_mnemonic_widget(GTK_LABEL(label), st->theme_combo);
+    gtk_widget_set_tooltip_text(
+        st->theme_combo,
+        "Which palette this window renders in. Saved as the `theme` preference, "
+        "the same one `lexe config set theme` writes.");
+    gtk_box_pack_start(GTK_BOX(right), st->theme_combo, FALSE, FALSE, 0);
+
+    gtk_box_pack_end(GTK_BOX(bar), right, FALSE, FALSE, 0);
+    return bar;
+}
+
+/// The empty state: what the window shows when it has no package yet.
+GtkWidget* build_drop_page(AppState* st) {
+    const lexe::gui::DropZoneText text = lexe::gui::drop_zone_text();
+    GtkWidget* page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+    // A refused drop has to say so somewhere the user is already looking, and
+    // this screen has no trust banner of its own. Same strip, same severity
+    // classes, hidden until there is something to say — an empty tinted bar
+    // above an empty window is a message the reader has to work out is not a
+    // message.
+
+    GtkWidget* body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_set_border_width(GTK_CONTAINER(body), 22);
+    gtk_widget_set_valign(body, GTK_ALIGN_CENTER);
+
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    style::add_class(card, "lexe-card");
+
+    GtkWidget* title = gtk_label_new(text.title.c_str());
+    style::add_class(title, "lexe-title");
+    gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(title), TRUE);
+    gtk_box_pack_start(GTK_BOX(card), title, FALSE, FALSE, 0);
+
+    GtkWidget* hint = gtk_label_new(text.hint.c_str());
+    style::add_class(hint, "lexe-muted");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(hint), TRUE);
+    gtk_box_pack_start(GTK_BOX(card), hint, FALSE, FALSE, 0);
+
+    GtkWidget* command = gtk_label_new(text.command.c_str());
+    style::add_class(command, "lexe-mono");
+    gtk_label_set_xalign(GTK_LABEL(command), 0.0f);
+    gtk_label_set_selectable(GTK_LABEL(command), TRUE);
+    gtk_box_pack_start(GTK_BOX(card), command, FALSE, FALSE, 0);
+
+    GtkWidget* assurance = gtk_label_new(text.assurance.c_str());
+    style::add_class(assurance, "lexe-muted");
+    gtk_label_set_xalign(GTK_LABEL(assurance), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(assurance), TRUE);
+    gtk_box_pack_start(GTK_BOX(card), assurance, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(body), card, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), body, TRUE, TRUE, 0);
+
+    // The drop zone gets the same pinned action bar as the details screen, so
+    // there is a keyboard-reachable way out of a window that otherwise responds
+    // only to a mouse drag.
+    GtkWidget* bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    style::add_class(bar, "lexe-actionbar");
+    st->drop_close_button = gtk_button_new_with_label("Close");
+    g_signal_connect(st->drop_close_button, "clicked",
+                     G_CALLBACK(on_close_clicked), nullptr);
+    gtk_box_pack_end(GTK_BOX(bar), st->drop_close_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), bar, FALSE, FALSE, 0);
+
+    return page;
+}
+
+void update_window_title(AppState* st) {
+    std::string title = "Lexe Installer " + lexe::version::runtime_string();
+    title += st->has_package ? " \u2014 " + st->vm.app_name
+                             : std::string(" \u2014 no package open");
+    gtk_window_set_title(GTK_WINDOW(st->window), title.c_str());
+}
+
+/// Fill — or REFILL — the details screen from the current view model.
+///
+/// Opening a second package replaces the whole screen rather than parts of it.
+/// The action bar's consent checkbox exists only for an update that expands
+/// permissions, the channel combo is populated from this manifest, and the
+/// banner's severity class belongs to this package's trust state. Patching
+/// those in place would eventually leave one of them describing the PREVIOUS
+/// package — most dangerously a ticked "grant the new permissions this update
+/// requests" box surviving into a package the user has approved nothing for.
+void rebuild_details_page(AppState* st) {
+    GList* children =
+        gtk_container_get_children(GTK_CONTAINER(st->details_page));
+    for (GList* item = children; item != nullptr; item = item->next) {
+        gtk_widget_destroy(GTK_WIDGET(item->data));
+    }
+    g_list_free(children);
+    // Every pointer below referred to a widget that has just been destroyed.
+    st->banner_label = nullptr;
+    st->install_button = nullptr;
+    st->details_close_button = nullptr;
+    st->channel_combo = nullptr;
+    st->accept_permissions_check = nullptr;
+    st->accept_permissions = false;
 
     GtkWidget* scroller = gtk_scrolled_window_new(nullptr, nullptr);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(scroller), build_details_page(st));
 
-    // The details scroll; the action bar stays pinned to the bottom, so
-    // [Install] is visible the moment the window opens however long the
-    // package's details run.
-    GtkWidget* details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     // Banner pinned above, action bar pinned below, details scrolling between:
     // the state of the package and the button that acts on it are both always
     // on screen, whatever the scroll position.
-    gtk_box_pack_start(GTK_BOX(details), build_banner(st), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(details), scroller, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(details), build_action_bar(st), FALSE, FALSE, 0);
-
-    gtk_stack_add_named(GTK_STACK(st->stack), details, "details");
-    gtk_stack_add_named(GTK_STACK(st->stack), build_progress_page(st),
-                        "progress");
-    gtk_stack_add_named(GTK_STACK(st->stack), build_done_page(st), "done");
-    gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "details");
-
-    gtk_container_add(GTK_CONTAINER(st->window), st->stack);
+    gtk_box_pack_start(GTK_BOX(st->details_page), build_banner(st), FALSE,
+                       FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(st->details_page), scroller, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(st->details_page), build_action_bar(st), FALSE,
+                       FALSE, 0);
+    gtk_widget_show_all(st->details_page);
 }
 
-/// Modal startup error (bad usage, unresolvable directories). Returns `code`
-/// so main() can `return show_startup_error(…)`.
-int show_startup_error(const std::string& message, int code) {
-    GtkWidget* dialog = gtk_message_dialog_new(
-        nullptr, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
-        "%s", message.c_str());
-    gtk_window_set_title(GTK_WINDOW(dialog), "Lexe Installer");
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-    return code;
-}
+/// Open `package`: the FORMAT-0.1 section 6 verification pipeline, the local
+/// trust evaluation, the isolation probe and the permission delta, then a
+/// rebuilt primary screen.
+///
+/// This is the ONLY route a package takes into the window. The command-line
+/// argument and a drag-and-drop both call it, so a dropped file cannot reach
+/// the Install button by a shorter path than an argument does — there is no
+/// shorter path to take. In particular vm.can_install is recomputed from this
+/// package's own report, so Install is disabled again the moment a bad package
+/// replaces a good one.
+///
+/// Verification runs on the UI thread, exactly as it did at startup before the
+/// window existed. That is a deliberate carry-over rather than an oversight:
+/// the pipeline hashes the payload once and the drag handler paints a
+/// "Verifying ..." message before handing over, but a very large package will
+/// visibly hold the window while it runs.
+void load_package(AppState* st, const std::filesystem::path& package) {
+    st->package_path = package;
+    // A reload must not inherit the previous package's results. Every field
+    // below is read on a later screen (the success message, the launcher's
+    // target, the retry banner), and carrying one across would report the old
+    // package's outcome for the new one.
+    st->install_error.clear();
+    st->installed_id.clear();
+    st->installed_version.clear();
+    st->launch_error.clear();
+    st->launch_exit_code = 0;
+    st->accept_permissions = false;
 
-} // namespace
-
-int main(int argc, char** argv) {
-    gtk_init(&argc, &argv);
-    style::apply();
-
-    // Body text is selectable so a user can copy a fingerprint or an ID. GTK
-    // pairs that with gtk-label-select-on-focus, which makes the first
-    // focusable label select ALL of its text the moment the window opens — one
-    // line comes up highlighted as if the user had dragged over it. Turn the
-    // behaviour off; the labels stay selectable by hand.
-    if (GtkSettings* settings = gtk_settings_get_default()) {
-        g_object_set(settings, "gtk-label-select-on-focus", FALSE, nullptr);
-    }
-
-    if (argc < 2 || argv[1] == nullptr || *argv[1] == '\0') {
-        return show_startup_error(
-            "Usage: lexe-installer <application.lexe>\n\n"
-            "Open a .lexe package to review and install it.",
-            2);
-    }
-
-    // Deliberately not freed: worker threads may still reference the state
-    // when the main loop quits, and the process is exiting anyway.
-    AppState* st = new AppState();
-    st->package_path = std::filesystem::path(argv[1]);
-
-    try {
-        st->paths = lexe::Paths::detect();
-    } catch (const std::exception& e) {
-        return show_startup_error(
-            std::string("Cannot resolve the Lexe directories: ") + e.what(), 1);
-    }
-
-    // FORMAT-0.1 §6 pipeline, with the §6.7 architecture check — this is an
-    // install flow. verify_package reports failures rather than throwing;
-    // the catch below is defensive (e.g. an unreadable path).
+    // FORMAT-0.1 section 6 pipeline, with the section 6.7 architecture check —
+    // this is an install flow. verify_package reports failures rather than
+    // throwing; the catch below is defensive (e.g. an unreadable path).
     lexe::VerificationReport report;
     try {
         report = lexe::verify_package(st->package_path,
@@ -1381,21 +1799,282 @@ int main(int argc, char** argv) {
                                          st->paths, lexe::host_architecture(),
                                          eval, caps, delta, payload_bytes,
                                          installed_version);
+    st->has_package = true;
     if (!st->vm.channels.empty()) {
         st->selected_channel =
             st->vm.channels[static_cast<std::size_t>(st->vm.active_channel)];
     }
 
+    // The success screen belongs to the package that produced it. Reset it, or
+    // a second package opened from the success screen would be installed under
+    // a receipt still naming the first one.
+    if (st->success_label != nullptr) {
+        gtk_label_set_text(GTK_LABEL(st->success_label), "Installed.");
+    }
+    if (st->launch_status_label != nullptr) {
+        gtk_label_set_text(GTK_LABEL(st->launch_status_label), "");
+    }
+    if (st->launch_button != nullptr) {
+        gtk_widget_set_sensitive(st->launch_button, TRUE);
+    }
+    if (st->drop_banner_strip != nullptr) {
+        gtk_widget_hide(st->drop_banner_strip);
+    }
+
+    update_window_title(st);
+    rebuild_details_page(st);
+    gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "details");
+    // Focus the safe action, for the same reason main() does at startup: this
+    // screen asks for consent, so Close is what should be armed.
+    if (st->details_close_button != nullptr) {
+        gtk_widget_grab_focus(st->details_close_button);
+    }
+}
+
+/// Opens the file the drag handler accepted, one main-loop turn later.
+gboolean on_dropped_package(gpointer user_data) {
+    AppState* st = static_cast<AppState*>(user_data);
+    const std::filesystem::path package = st->pending_drop;
+    st->pending_drop.clear();
+    if (!package.empty()) load_package(st, package);
+    return G_SOURCE_REMOVE;
+}
+
+/// A `.lexe` dropped onto the window — the same thing as passing it on the
+/// command line, and nothing more than that. This function decides only WHICH
+/// file (if any) was dropped; load_package runs the identical verification
+/// pipeline over it, and Install stays disabled unless that pipeline passes.
+void on_drag_data_received(GtkWidget*, GdkDragContext*, gint, gint,
+                           GtkSelectionData* data, guint, guint,
+                           gpointer user_data) {
+    AppState* st = static_cast<AppState*>(user_data);
+    // No gtk_drag_finish() anywhere below: the drop site is registered with
+    // GTK_DEST_DEFAULT_ALL, so GTK finishes the drag itself once this handler
+    // returns, and finishing it twice is a protocol error. The drag is only
+    // ever GDK_ACTION_COPY, so nothing is deleted at the source either way.
+
+    // An install in flight owns package_path, the transaction journal and the
+    // progress poller. Swapping the package under it would rename the screen
+    // mid-install and poll a journal belonging to a different application — the
+    // same reason the window manager's [X] is vetoed on that screen.
+    if (st->installing) {
+        set_status_message(st, "caution",
+                           "An installation is running, so the dropped package "
+                           "was not opened.\n" +
+                               lexe::gui::install_progress_note());
+        return;
+    }
+    // Same argument for a launch: launch_worker reads installed_id on another
+    // thread, and opening a package rewrites it.
+    if (st->launching) {
+        set_status_message(st, "caution",
+                           "The application launched from this window is still "
+                           "running. Close it before opening another package.");
+        return;
+    }
+
+    std::vector<std::string> local_paths;
+    if (gtk_selection_data_get_length(data) > 0) {
+        if (gchar** uris = gtk_selection_data_get_uris(data)) {
+            for (gchar** uri = uris; *uri != nullptr; ++uri) {
+                // g_filename_from_uri fails for anything that is not a local
+                // file:// URI — an http:// download, a trash:// entry, an
+                // unmounted GVfs share. Recording an EMPTY path rather than
+                // skipping the entry keeps "one item, but not a local file"
+                // distinguishable from "nothing was dropped", which are
+                // different messages to the user.
+                gchar* path = g_filename_from_uri(*uri, nullptr, nullptr);
+                local_paths.emplace_back(path != nullptr ? path : "");
+                if (path != nullptr) g_free(path);
+            }
+            g_strfreev(uris);
+        }
+    }
+
+    const lexe::gui::DropCheck check =
+        lexe::gui::check_dropped_package(local_paths);
+    if (!check.accept) {
+        set_status_message(st, "danger", check.message);
+        return;
+    }
+
+    // Say what is happening BEFORE the pipeline runs: verification hashes the
+    // whole payload on this thread, and a window that freezes with no
+    // explanation reads as a crash. The open is queued with g_idle_add, whose
+    // default priority sits BELOW GDK's redraw priority, so this message is
+    // painted before the hashing starts — and the drag protocol completes when
+    // this handler returns instead of blocking the source application.
+    set_status_message(st, "caution",
+                       "Verifying " + check.path.filename().string() +
+                           "\u2026");
+    st->pending_drop = check.path;
+    g_idle_add(on_dropped_package, st);
+}
+
+void build_ui(AppState* st) {
+    st->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_size(GTK_WINDOW(st->window), 580, 760);
+    g_signal_connect(st->window, "destroy", G_CALLBACK(on_window_destroy),
+                     nullptr);
+    // Vetoes the [X] while an install is running — see on_window_delete.
+    g_signal_connect(st->window, "delete-event", G_CALLBACK(on_window_delete),
+                     st);
+
+    // The WHOLE window is the drop target. A small labelled rectangle would be
+    // something the user has to aim at, and on the details screen — which is a
+    // full page of package facts — there is no spare rectangle to give up.
+    // GTK_DEST_DEFAULT_ALL has GTK negotiate the drag and call gtk_drag_finish()
+    // itself once the handler returns; GDK_ACTION_COPY alone means the source
+    // is never asked to delete anything.
+    static GtkTargetEntry uri_targets[] = {
+        {const_cast<gchar*>("text/uri-list"), 0, 0},
+    };
+    gtk_drag_dest_set(st->window, GTK_DEST_DEFAULT_ALL, uri_targets,
+                      G_N_ELEMENTS(uri_targets), GDK_ACTION_COPY);
+    g_signal_connect(st->window, "drag-data-received",
+                     G_CALLBACK(on_drag_data_received), st);
+
+    // The theme control sits OUTSIDE the stack so it is on every screen; see
+    // build_header_bar.
+    GtkWidget* root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(root), build_header_bar(st), FALSE, FALSE, 0);
+
+    st->stack = gtk_stack_new();
+    // The details screen is an EMPTY container here; rebuild_details_page fills
+    // it from a view model, once per package opened.
+    st->details_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_stack_add_named(GTK_STACK(st->stack), build_drop_page(st), "drop");
+    gtk_stack_add_named(GTK_STACK(st->stack), st->details_page, "details");
+    gtk_stack_add_named(GTK_STACK(st->stack), build_progress_page(st),
+                        "progress");
+    gtk_stack_add_named(GTK_STACK(st->stack), build_done_page(st), "done");
+    // Start on the drop zone. main() switches to the details screen only if it
+    // was given a package to open.
+    gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "drop");
+    // Drop feedback gets its OWN strip, in the shell above the stack, so it is
+    // present on every page. It used to be written into whatever label the
+    // visible page happened to own — which on the details screen is the
+    // AUTHENTICITY banner: refusing a dropped folder replaced "Signed —
+    // publisher not verified" with a red refusal and never put it back, so the
+    // window then misreported the trust state of the package still loaded in
+    // it, with Install still armed. A transient message must never overwrite a
+    // standing one about something else.
+    st->drop_banner_strip = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    style::add_class(st->drop_banner_strip, "lexe-banner");
+    st->drop_banner_label = gtk_label_new(nullptr);
+    gtk_label_set_xalign(GTK_LABEL(st->drop_banner_label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(st->drop_banner_label), TRUE);
+    gtk_box_pack_start(GTK_BOX(st->drop_banner_strip), st->drop_banner_label,
+                       FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all(st->drop_banner_strip, TRUE);
+    gtk_box_pack_start(GTK_BOX(root), st->drop_banner_strip, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(root), st->stack, TRUE, TRUE, 0);
+
+    gtk_container_add(GTK_CONTAINER(st->window), root);
+    update_window_title(st);
+}
+
+/// Modal startup error (bad usage, unresolvable directories). Returns `code`
+/// so main() can `return show_startup_error(…)`.
+int show_startup_error(const std::string& message, int code) {
+    GtkWidget* dialog = gtk_message_dialog_new(
+        nullptr, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE,
+        "%s", message.c_str());
+    gtk_window_set_title(GTK_WINDOW(dialog), "Lexe Installer");
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    return code;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    gtk_init(&argc, &argv);
+
+    // Deliberately not freed: worker threads may still reference the state
+    // when the main loop quits, and the process is exiting anyway.
+    AppState* st = new AppState();
+
+    // Sample the desktop's own dark preference BEFORE the first style::apply(),
+    // which overwrites that property. apply_theme() explains what depends on it.
+    if (GtkSettings* settings = gtk_settings_get_default()) {
+        g_object_get(settings, "gtk-application-prefer-dark-theme",
+                     &st->desktop_prefer_dark, nullptr);
+    }
+    // Style anything shown before the preference is known — including the
+    // startup error dialogs below, which can be the only window this process
+    // ever puts on screen.
+    style::apply();
+
+    // Body text is selectable so a user can copy a fingerprint or an ID. GTK
+    // pairs that with gtk-label-select-on-focus, which makes the first
+    // focusable label select ALL of its text the moment the window opens — one
+    // line comes up highlighted as if the user had dragged over it. Turn the
+    // behaviour off; the labels stay selectable by hand.
+    if (GtkSettings* settings = gtk_settings_get_default()) {
+        g_object_set(settings, "gtk-label-select-on-focus", FALSE, nullptr);
+    }
+
+    // NO argument now opens the drop zone rather than exiting: this window is a
+    // drop target, and someone who launched it from a desktop menu has no
+    // command line to add an argument to. An argument that is PRESENT but empty
+    // is still a usage error — it is a path nothing can open, and quietly
+    // showing the drop zone instead would hide a broken caller (a .desktop Exec
+    // line, a file-manager association passing an empty field) behind a screen
+    // that looks like an ordinary empty launch.
+    const bool has_argument =
+        argc >= 2 && argv[1] != nullptr && *argv[1] != '\0';
+    if (argc >= 2 && !has_argument) {
+        return show_startup_error(
+            "Usage: lexe-installer [application.lexe]\n\n"
+            "Open a .lexe package to review and install it, or start with no "
+            "argument and drop one onto the window.",
+            2);
+    }
+
+    try {
+        st->paths = lexe::Paths::detect();
+    } catch (const std::exception& e) {
+        return show_startup_error(
+            std::string("Cannot resolve the Lexe directories: ") + e.what(), 1);
+    }
+
+    // The persisted theme, read from the settings.json `lexe config set theme`
+    // writes — one preference, not two. A corrupt file is not fatal for a
+    // cosmetic setting: fall back to the defaults and say so once there is a
+    // window to say it in.
+    std::string settings_error;
+    try {
+        st->settings = lexe::Settings::load(st->paths);
+    } catch (const std::exception& e) {
+        st->settings = lexe::Settings();
+        settings_error = e.what();
+    }
+    apply_theme(st, style::theme_from_string(st->settings.theme));
+
     build_ui(st);
+    if (has_argument) {
+        // Identical to what a drop does — one pipeline, one entry point.
+        load_package(st, std::filesystem::path(argv[1]));
+    }
     gtk_widget_show_all(st->window);
+    if (!settings_error.empty()) {
+        set_status_message(st, "caution",
+                           "Your settings file could not be read, so the "
+                           "defaults are in use: " +
+                               settings_error);
+    }
     // Start focus on Close, not on a body label. Two reasons: a selectable
     // label that holds focus draws a blinking text caret, so the window opened
     // with a cursor sitting in read-only prose; and this dialog asks for
     // consent, so the safe action is the one that should be armed — matching
     // `lexe install`, whose prompt defaults to No ("[y/N]"). Install stays one
     // click or one Tab away.
-    if (st->details_close_button != nullptr) {
-        gtk_widget_grab_focus(st->details_close_button);
+    GtkWidget* initial_focus =
+        st->has_package ? st->details_close_button : st->drop_close_button;
+    if (initial_focus != nullptr) {
+        gtk_widget_grab_focus(initial_focus);
     }
     gtk_main();
     return 0;
