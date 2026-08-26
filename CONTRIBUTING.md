@@ -10,6 +10,15 @@ explanation to build, test, and find your way around.
 > contribution submitted to this repository is assigned to the copyright holder —
 > please only contribute work you are able to assign.
 
+> **Found a vulnerability?** Do not open a pull request or a public issue for it
+> — the PR itself discloses the weakness before there is a fix. Report it
+> privately instead: [SECURITY.md](SECURITY.md) has the channel, what is in
+> scope, and the documented non-guarantees that are *not* vulnerabilities.
+
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) covers what is expected in issues and
+pull requests. It is short, and it is honest about the fact that enforcement
+here is one person's judgement rather than a committee's.
+
 ## Build
 
 The reference runtime is modern C++ (C++20). No network access is needed to
@@ -109,3 +118,11 @@ validation.
 - Confirm the full suite is green on both platforms before opening a PR, and note
   any platform-specific validation you ran (e.g. a `tests/integration` script on
   Linux).
+- The [pull-request template](.github/PULL_REQUEST_TEMPLATE.md) is filled in for
+  you when you open one; its checklist is this project's actual bar, including
+  the [HARDENING.md §I](docs/HARDENING.md) evidence bundle for a
+  security-relevant change.
+- Reporting rather than contributing? There are
+  [issue forms](.github/ISSUE_TEMPLATE) for bugs, feature requests and
+  portability results — the last of these exists because a result from a
+  distribution nobody here runs is genuinely useful to this project.
