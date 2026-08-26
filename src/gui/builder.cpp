@@ -39,6 +39,7 @@
 #include "core/elf.hpp"
 #include "core/paths.hpp"
 #include "core/runtime_profile.hpp"
+#include "core/settings.hpp"
 #include "core/tux32.hpp"
 #include "core/util.hpp"
 
@@ -660,6 +661,138 @@ inline std::string verification_note() {
            "the same checks a user's runtime runs on install.";
 }
 
+// -------------------------------------------------------------- theme (DX5)
+
+/// The theme choices the toggle offers, in display order, as the values they
+/// persist.
+///
+/// These are exactly the values `Settings::set("theme", …)` accepts, because
+/// the GUI toggle and `lexe config set theme` are ONE setting. A second store
+/// — a GTK setting, a dotfile of our own — would let the two disagree about
+/// what the user chose, and whichever wrote last would silently win.
+inline const std::vector<std::string>& theme_choices() {
+    static const std::vector<std::string> kChoices = {"system", "light", "dark"};
+    return kChoices;
+}
+
+/// The human label for a theme value.
+///
+/// "Follow system" rather than "System", matching the Installer word for word:
+/// the two GUIs drive ONE persisted setting, and naming it differently in each
+/// invites the reader to wonder whether they are two. "System" also reads as a
+/// third palette alongside Light and Dark rather than as deferring to the
+/// desktop, which is what it actually does.
+inline std::string theme_label(const std::string& value) {
+    if (value == "light") return "Light";
+    if (value == "dark") return "Dark";
+    return "Follow system";
+}
+
+/// The toggle position for a persisted theme value.
+///
+/// An unknown value (a hand-edited settings file, or one written by a newer
+/// build) selects System rather than leaving the toggle blank — the same
+/// fallback style::theme_from_string makes, mirrored here so the widget and
+/// the stylesheet can never disagree about which theme is in force.
+inline int theme_choice_index(const std::string& value) {
+    const std::vector<std::string>& choices = theme_choices();
+    for (std::size_t i = 0; i < choices.size(); ++i) {
+        if (choices[i] == value) return static_cast<int>(i);
+    }
+    return 0; // "system"
+}
+
+/// The theme value at toggle position `index` (out of range -> "system").
+inline std::string theme_choice_at(int index) {
+    const std::vector<std::string>& choices = theme_choices();
+    if (index < 0 || static_cast<std::size_t>(index) >= choices.size()) {
+        return choices[0];
+    }
+    return choices[static_cast<std::size_t>(index)];
+}
+
+/// The persisted theme, or "system" when the settings file cannot be read.
+///
+/// A corrupt settings file must not stop the Builder from opening — the window
+/// falls back to following the desktop and every build still works. `lexe
+/// config reset` is the repair, and the CLI is where it is explained.
+inline std::string load_theme(const Paths& paths) {
+    try {
+        return Settings::load(paths).theme;
+    } catch (const std::exception&) {
+        return "system";
+    }
+}
+
+/// Persist `value` as the theme. Returns "" on success, or the reason it could
+/// not be saved.
+///
+/// Settings are RE-READ here rather than carried over from startup: `lexe
+/// config set` may have written the file while this window was open, and
+/// saving a snapshot taken at launch would quietly roll those other
+/// preferences back to whatever they were then.
+inline std::string persist_theme(const Paths& paths, const std::string& value) {
+    try {
+        Settings settings = Settings::load(paths);
+        settings.set("theme", value); // validates; throws on an unknown value
+        settings.save(paths);
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return std::string();
+}
+
+// ------------------------------------------------------- drag and drop (DX1)
+
+/// What a drop onto the Builder window means for the Source step.
+struct DropDecision {
+    bool accepted = false;
+    std::string folder;  // the source folder, when accepted
+    std::string message; // what to tell the user; never empty
+};
+
+/// Decide what a drop of `paths` — the dropped text/uri-list already resolved
+/// to LOCAL filesystem paths — should do.
+///
+/// Everything except the URI decoding lives here so the rules are testable
+/// without a display. The three refusals are all mistakes people actually
+/// make: dropping the executable instead of the folder that holds it, dropping
+/// a remote/virtual location that has no local path at all, and dropping a
+/// multiple selection — where silently taking the first item would package
+/// something the developer never pointed at.
+inline DropDecision decide_drop(const std::vector<std::filesystem::path>& paths) {
+    DropDecision d;
+    if (paths.empty()) {
+        d.message = "Nothing that lives on this machine was dropped. Drag the "
+                    "folder that holds your compiled application out of a file "
+                    "manager.";
+        return d;
+    }
+    if (paths.size() > 1) {
+        d.message = "Several items were dropped. Drop one folder — the one "
+                    "that holds your compiled application.";
+        return d;
+    }
+    const std::filesystem::path& p = paths.front();
+    std::error_code ec;
+    if (std::filesystem::is_directory(p, ec)) {
+        d.accepted = true;
+        d.folder = p.string();
+        d.message = "Dropped folder: " + d.folder;
+        return d;
+    }
+    if (std::filesystem::is_regular_file(p, ec)) {
+        d.message = "\"" + p.filename().string() +
+                    "\" — that is a file; drop the folder that holds your "
+                    "compiled application.";
+        return d;
+    }
+    d.message = "\"" + p.string() +
+                "\" is not a folder this build can read. Drop the folder that "
+                "holds your compiled application.";
+    return d;
+}
+
 } // namespace lexe::gui
 // ===========================================================================
 // GTK 3 wizard (Phase 2 / DX1). A seven-step "Publish"-style flow: Source →
@@ -693,6 +826,22 @@ namespace style = lexe::gui::style;
 
 namespace fs = std::filesystem;
 
+/// A file/folder picker that says where it points.
+///
+/// The control this replaces, GtkFileChooserButton, renders as a narrow combo
+/// showing the chosen item's BASENAME and nothing else: two different folders
+/// both called `build` are indistinguishable in it, and there is no way to
+/// tell whether the tree about to be packaged and signed is the one you meant.
+/// This is a labelled button plus the FULL path underneath it, and an explicit
+/// empty state instead of a combo that merely looks unfilled.
+struct PathPicker {
+    GtkWidget* root = nullptr;      // the card; sensitivity is set on this
+    GtkWidget* button = nullptr;
+    GtkWidget* path_label = nullptr;
+    std::string path;               // "" until something is chosen
+    std::string empty_text;
+};
+
 /// Whole-application state, owned by main(). Widget pointers are touched on the
 /// GTK main thread only; the plain-data fields captured on Build are read by one
 /// worker thread and read back on the main thread after its final g_idle_add.
@@ -706,11 +855,25 @@ struct BuilderState {
     GtkWidget* next_button = nullptr;
     GtkWidget* banner_label = nullptr;
 
+    // Theme (DX5). Persisted as the `theme` setting — the SAME one `lexe
+    // config set theme` writes; see lexe::gui::persist_theme.
+    GtkWidget* theme_combo = nullptr;
+    std::string theme = "system";
+    /// The desktop's OWN dark preference, snapshotted in main() before the
+    /// first style::apply() overwrote it. See apply_theme().
+    gboolean desktop_prefers_dark = FALSE;
+    /// The banner currently on screen, replayed when the theme flips: its
+    /// colours are baked into Pango markup rather than coming from the
+    /// stylesheet, so it cannot restyle itself.
+    std::string banner_text;
+    bool banner_ok = true;
+
     // First-run welcome (DX8).
     GtkWidget* welcome_dont_show = nullptr;
+    bool welcome_visible = false;
 
     // Step 1 — Source.
-    GtkWidget* folder_chooser = nullptr;
+    PathPicker source_picker;
     GtkWidget* source_summary = nullptr;
     // Step 2 — Dependencies.
     GtkWidget* deps_box = nullptr;
@@ -733,7 +896,7 @@ struct BuilderState {
     GtkWidget* key_generate_radio = nullptr;
     GtkWidget* key_existing_radio = nullptr;
     GtkWidget* generated_key_entry = nullptr;
-    GtkWidget* existing_key_chooser = nullptr;
+    PathPicker existing_key_picker;
     // Step 6 — Output.
     GtkWidget* output_entry = nullptr;
     GtkWidget* profile_combo = nullptr;
@@ -754,6 +917,11 @@ struct BuilderState {
     std::string folder;
     lexe::gui::SourceDetection detection;
     bool detection_done = false;
+    /// A detection worker is running. Nothing else may start a second one —
+    /// two workers would write st->detection concurrently. begin_detection
+    /// disables Next/Back for this reason; the drop target is not covered by
+    /// that, so it consults this flag instead.
+    bool detecting = false;
     std::string detection_error; // worker -> main loop; "" on success
 
     // Captured on Build (main thread) → worker.
@@ -768,6 +936,12 @@ struct BuilderState {
     std::string output_path;
 
     // Results (worker → main).
+    /// A build worker is running. The build MOVES st->detection into the
+    /// build report, so a detection worker started meanwhile would be writing
+    /// the very object the build is reading. The Build page disables
+    /// Next/Back; the drop target is not a button, so it consults this.
+    bool building = false;
+
     bool build_ok = false;
     std::string build_error;
     std::string built_checksum;
@@ -786,18 +960,76 @@ std::string entry_text(GtkWidget* entry) {
     return trim(text != nullptr ? std::string(text) : std::string());
 }
 
+/// The severity text colours style.hpp renders in, resolved for the theme now
+/// in force.
+///
+/// A handful of labels here are built as Pango markup, so their colour is
+/// baked into the label instead of coming from the stylesheet — and the
+/// light-theme green and near-black these used to hardcode are unreadable on
+/// the dark canvas the theme toggle can now select (a failed-build banner that
+/// cannot be read is worse than no banner). The values are the ones style.hpp
+/// already defines for `.lexe-banner.ok/.caution/.danger` and for body text in
+/// each palette, so a message reads the same whether it is drawn as a styled
+/// callout or as markup. A `lexe-ok` / `lexe-caution` TEXT class in style.hpp
+/// would retire this helper — style.hpp is a frozen contract here, so this
+/// mirrors it rather than extending it.
+struct SeverityColours {
+    const char* ok;
+    const char* caution;
+    const char* text;
+    const char* danger;
+};
+
+SeverityColours severity_colours(const BuilderState* st) {
+    return style::resolve_dark(style::theme_from_string(st->theme))
+               ? SeverityColours{"#6ee7a8", "#fbbf5c", "#e7eaf0", "#ff8f8a"}
+               : SeverityColours{"#15803d", "#b45309", "#0f172a", "#b91c1c"};
+}
+
 void set_banner(BuilderState* st, bool ok, const std::string& text) {
+    // Remembered so a theme flip can redraw it in the other palette's colours.
+    st->banner_text = text;
+    st->banner_ok = ok;
+    // The banner lives in the footer, and the welcome screen hides the footer —
+    // so every refusal raised from that screen was written to a hidden widget
+    // and the window did not change at all. A drop refused on the first screen
+    // anyone sees was therefore completely silent. Reveal the footer for as
+    // long as there is something to say, and take it away again when there is
+    // not; Back/Next stay hidden independently, so this shows the message
+    // without bringing back wizard chrome the welcome screen has no use for.
+    if (st->footer != nullptr && st->welcome_visible) {
+        if (text.empty()) {
+            gtk_widget_hide(st->footer);
+        } else {
+            gtk_widget_show(st->footer);
+        }
+    }
     if (text.empty()) {
         gtk_label_set_text(GTK_LABEL(st->banner_label), "");
         return;
     }
+    const SeverityColours colours = severity_colours(st);
     gchar* escaped = g_markup_escape_text(text.c_str(), -1);
     gchar* markup = g_strdup_printf(
         "<span weight=\"bold\" foreground=\"%s\">%s</span>",
-        ok ? "#1a7f37" : "#b00020", escaped);
+        ok ? colours.ok : colours.danger, escaped);
     gtk_label_set_markup(GTK_LABEL(st->banner_label), markup);
     g_free(markup);
     g_free(escaped);
+}
+
+/// Reveal the wizard chrome that the welcome screen hides.
+///
+/// Shared by the "Get started" button and by a folder dropped ONTO the welcome
+/// screen: a drop has to be able to leave the welcome screen too, or detection
+/// would run behind a page that has no Back/Next on it.
+void leave_welcome(BuilderState* st) {
+    if (!st->welcome_visible) return;
+    st->welcome_visible = false;
+    gtk_widget_show(st->back_button);
+    gtk_widget_show(st->next_button);
+    if (st->step_header != nullptr) gtk_widget_show(st->step_header);
+    if (st->footer != nullptr) gtk_widget_show(st->footer);
 }
 
 // --- small widget helpers ---------------------------------------------------
@@ -845,6 +1077,140 @@ GtkWidget* page_scroller(GtkWidget* child) {
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(scroller), child);
     return scroller;
+}
+
+// --- path pickers -----------------------------------------------------------
+
+/// Draw `picker`'s current path, or its empty state.
+///
+/// The path gets `lexe-mono` so a path is read as a path — the one place in
+/// this window where character-level accuracy matters — and the empty state
+/// gets `lexe-muted`, so "nothing chosen yet" is visibly not a value.
+void path_picker_render(PathPicker* picker) {
+    if (picker->path.empty()) {
+        style::remove_class(picker->path_label, "lexe-mono");
+        style::remove_class(picker->path_label, "lexe-body");
+        style::add_class(picker->path_label, "lexe-muted");
+        gtk_label_set_text(GTK_LABEL(picker->path_label),
+                           picker->empty_text.c_str());
+        gtk_widget_set_tooltip_text(picker->path_label, nullptr);
+        return;
+    }
+    style::remove_class(picker->path_label, "lexe-muted");
+    style::add_class(picker->path_label, "lexe-body");
+    style::add_class(picker->path_label, "lexe-mono");
+    gtk_label_set_text(GTK_LABEL(picker->path_label), picker->path.c_str());
+    gtk_widget_set_tooltip_text(picker->path_label, picker->path.c_str());
+}
+
+void path_picker_set(PathPicker* picker, const std::string& path) {
+    picker->path = path;
+    path_picker_render(picker);
+}
+
+/// Build a picker card: heading, action button, and the chosen path below it.
+/// The caller connects the button and packs the returned card.
+GtkWidget* path_picker_build(PathPicker* picker, const char* heading,
+                             const char* button_label, const char* empty_text) {
+    picker->empty_text = empty_text;
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    style::add_class(card, "lexe-card");
+    picker->root = card;
+    gtk_box_pack_start(GTK_BOX(card), section_heading(heading), FALSE, FALSE, 0);
+
+    picker->button = gtk_button_new_with_label(button_label);
+    style::add_class(picker->button, "lexe-primary");
+    // Left-aligned and sized to its label: packed plain into a vertical box a
+    // GTK button stretches the full width of the card, which reads as a banner
+    // rather than as something to press.
+    gtk_widget_set_halign(picker->button, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(card), picker->button, FALSE, FALSE, 0);
+
+    picker->path_label = gtk_label_new(nullptr);
+    gtk_label_set_xalign(GTK_LABEL(picker->path_label), 0.0f);
+    // Selectable so a path can be copied out; GTK's select-on-focus is turned
+    // off in main(), so it does not come up pre-highlighted.
+    gtk_label_set_selectable(GTK_LABEL(picker->path_label), TRUE);
+    // Wrapped, never ellipsized: a truncated path is the exact failure this
+    // control exists to end, and a project deep in a home directory is
+    // routinely wider than the window. WORD_CHAR can break the single long
+    // slash-separated token that a path is.
+    gtk_label_set_line_wrap(GTK_LABEL(picker->path_label), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(picker->path_label),
+                                 PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(picker->path_label), 64);
+    gtk_box_pack_start(GTK_BOX(card), picker->path_label, FALSE, FALSE, 0);
+
+    path_picker_render(picker);
+    return card;
+}
+
+/// Open a chooser and return the chosen path, or "" if it was cancelled.
+///
+/// GtkFileChooserNative hands the job to the desktop's OWN chooser through the
+/// portal where there is one — the dialog the user already knows, with their
+/// bookmarks and recent places in it, and the only chooser that can reach
+/// files a sandboxed app otherwise cannot see. Where no portal exists it falls
+/// back to GTK's in-process dialog, so this is never worse than the control it
+/// replaces.
+std::string run_chooser(BuilderState* st, const char* title,
+                        GtkFileChooserAction action, const char* accept,
+                        const std::string& start_at, bool key_filters) {
+    GtkFileChooserNative* native = gtk_file_chooser_native_new(
+        title, GTK_WINDOW(st->window), action, accept, "Cancel");
+    GtkFileChooser* chooser = GTK_FILE_CHOOSER(native);
+    // Re-open where the last choice was made rather than at $HOME: choosing a
+    // folder, looking at it, and choosing again is the common case.
+    if (!start_at.empty()) {
+        gtk_file_chooser_set_filename(chooser, start_at.c_str());
+    }
+    if (key_filters) {
+        GtkFileFilter* keys = gtk_file_filter_new();
+        gtk_file_filter_set_name(keys, "Signing keys (*.json)");
+        gtk_file_filter_add_pattern(keys, "*.json");
+        gtk_file_chooser_add_filter(chooser, keys);
+        // A second, unfiltered entry: a key file that is not named *.json is
+        // still a key file, and a filter with no way out hides it completely.
+        GtkFileFilter* all = gtk_file_filter_new();
+        gtk_file_filter_set_name(all, "All files");
+        gtk_file_filter_add_pattern(all, "*");
+        gtk_file_chooser_add_filter(chooser, all);
+    }
+    std::string chosen;
+    if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(native)) ==
+        GTK_RESPONSE_ACCEPT) {
+        gchar* path = gtk_file_chooser_get_filename(chooser);
+        if (path != nullptr) {
+            chosen = path;
+            g_free(path);
+        }
+    }
+    g_object_unref(native);
+    return chosen;
+}
+
+void on_choose_source_folder(GtkButton*, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    const std::string chosen =
+        run_chooser(st, "Choose your application's folder",
+                    GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, "Use this folder",
+                    st->folder, /*key_filters=*/false);
+    // A cancelled chooser keeps whatever was chosen before. Clearing it would
+    // throw away a valid selection because the user changed their mind about
+    // changing it.
+    if (chosen.empty()) return;
+    st->folder = chosen;
+    path_picker_set(&st->source_picker, chosen);
+    set_banner(st, true, "");
+}
+
+void on_choose_key_file(GtkButton*, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    const std::string chosen = run_chooser(
+        st, "Choose your signing key", GTK_FILE_CHOOSER_ACTION_OPEN,
+        "Use this key", st->existing_key_picker.path, /*key_filters=*/true);
+    if (chosen.empty()) return;
+    path_picker_set(&st->existing_key_picker, chosen);
 }
 
 // --- form gathering ---------------------------------------------------------
@@ -955,9 +1321,15 @@ void render_dependencies(BuilderState* st) {
         const std::string title = row.soname + "  —  " + row.handling;
         GtkWidget* head = gtk_label_new(nullptr);
         gchar* esc = g_markup_escape_text(title.c_str(), -1);
+        // Both colours follow the theme. The near-black this used to
+        // hardcode for the ordinary case put every dependency name at
+        // roughly the background's own brightness once the window went
+        // dark — the whole list unreadable, on the one screen whose
+        // entire job is to be read.
+        const SeverityColours colours = severity_colours(st);
         gchar* markup = g_strdup_printf(
             "<span weight=\"bold\" foreground=\"%s\">%s</span>",
-            row.warn ? "#b06000" : "#1a1a1a", esc);
+            row.warn ? colours.caution : colours.text, esc);
         gtk_label_set_markup(GTK_LABEL(head), markup);
         g_free(markup);
         g_free(esc);
@@ -976,6 +1348,63 @@ void render_dependencies(BuilderState* st) {
 
 gboolean on_detection_finished(gpointer user_data);
 void update_step(BuilderState* st); // defined with the navigation below
+
+/// The persisted theme, or "system" when even the paths cannot be resolved.
+std::string startup_theme() {
+    try {
+        return lexe::gui::load_theme(lexe::Paths::detect());
+    } catch (const std::exception&) {
+        return "system";
+    }
+}
+
+/// Persist the theme; "" on success, otherwise the reason it failed.
+std::string persist_theme_now(const std::string& value) {
+    try {
+        return lexe::gui::persist_theme(lexe::Paths::detect(), value);
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+}
+
+/// Restyle the LIVE window to `value` — no restart, no reopened window.
+void apply_theme(BuilderState* st, const std::string& value) {
+    st->theme = value;
+    // style::apply() writes the theme it resolved into GTK's
+    // gtk-application-prefer-dark-theme, and resolve_dark(System) reads that
+    // same flag back to ask what the desktop wants. So once a window has been
+    // Dark, the flag says "dark" from then on, and Dark -> System would stay
+    // dark on a light desktop. Put the desktop's own answer back first; it was
+    // snapshotted in main() before the first apply() could overwrite it.
+    if (value == "system") {
+        if (GtkSettings* settings = gtk_settings_get_default()) {
+            g_object_set(settings, "gtk-application-prefer-dark-theme",
+                         st->desktop_prefers_dark, nullptr);
+        }
+    }
+    style::apply(style::theme_from_string(value));
+    // The two surfaces whose colours are Pango markup rather than stylesheet
+    // rules cannot restyle themselves, so redraw them by hand.
+    render_dependencies(st);
+    if (!st->banner_text.empty()) set_banner(st, st->banner_ok, st->banner_text);
+}
+
+void on_theme_changed(GtkComboBox* combo, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    const std::string value = lexe::gui::theme_choice_at(
+        gtk_combo_box_get_active(GTK_COMBO_BOX(combo)));
+    if (value == st->theme) return; // includes the programmatic initial select
+    apply_theme(st, value);
+    // The window is already restyled; a settings file that cannot be written
+    // costs the user the choice next launch, not this one, so say so and carry
+    // on rather than reverting what they can plainly see happened.
+    const std::string error = persist_theme_now(value);
+    if (!error.empty()) {
+        set_banner(st, false,
+                   "The theme changed for this window, but could not be saved: " +
+                       error);
+    }
+}
 
 /// Detection walks the whole source folder, reads every ELF and resolves the
 /// full dependency graph. That ran on the UI THREAD, so choosing a folder with
@@ -1003,6 +1432,7 @@ gpointer detection_worker(gpointer user_data) {
 /// until it finishes, so the step cannot advance on a half-built detection and
 /// a second click cannot start a second worker.
 void begin_detection(BuilderState* st) {
+    st->detecting = true;
     gtk_widget_set_sensitive(st->next_button, FALSE);
     gtk_widget_set_sensitive(st->back_button, FALSE);
     gtk_label_set_text(
@@ -1079,6 +1509,7 @@ void apply_detection(BuilderState* st) {
 /// or report the failure and stay put.
 gboolean on_detection_finished(gpointer user_data) {
     BuilderState* st = static_cast<BuilderState*>(user_data);
+    st->detecting = false;
     gtk_widget_set_sensitive(st->next_button, TRUE);
     gtk_widget_set_sensitive(st->back_button, TRUE);
     if (!st->detection_error.empty()) {
@@ -1250,6 +1681,7 @@ gpointer build_worker(gpointer user_data) {
 
 gboolean on_build_finished(gpointer user_data) {
     BuilderState* st = static_cast<BuilderState*>(user_data);
+    st->building = false;
     gtk_spinner_stop(GTK_SPINNER(st->spinner));
     if (!st->build_ok) {
         set_banner(st, false, "Build failed: " + st->build_error);
@@ -1258,11 +1690,13 @@ gboolean on_build_finished(gpointer user_data) {
         gtk_widget_set_sensitive(st->back_button, TRUE);
         return G_SOURCE_REMOVE;
     }
-    gchar* heading = g_strdup_printf(
-        "<span size=\"large\" weight=\"bold\" foreground=\"#1a7f37\">Build "
-        "succeeded</span>");
-    gtk_label_set_markup(GTK_LABEL(st->result_heading), heading);
-    g_free(heading);
+    // Plain text plus a style class, NOT a colour baked into Pango markup: the
+    // baked colour was resolved once, when the build finished, and a later
+    // theme flip restyled the whole window around it — leaving the dark
+    // palette's mint green on the light palette's white card at about 1.4:1
+    // contrast. A class re-resolves with the stylesheet.
+    gtk_label_set_text(GTK_LABEL(st->result_heading), "Build succeeded");
+    style::add_class(st->result_heading, "lexe-success");
     // Say WHICH key signed this, and where it lives. The signing key is the
     // application's durable identity and the developer has to keep it; a build
     // that never names the file leaves them with nothing to keep.
@@ -1353,10 +1787,7 @@ void start_build(BuilderState* st) {
                     .string();
         }
     } else {
-        gchar* chosen = gtk_file_chooser_get_filename(
-            GTK_FILE_CHOOSER(st->existing_key_chooser));
-        st->existing_key_path = chosen != nullptr ? std::string(chosen) : "";
-        if (chosen != nullptr) g_free(chosen);
+        st->existing_key_path = st->existing_key_picker.path;
         if (st->existing_key_path.empty()) {
             set_banner(st, false, "Choose the signing key file, or switch to "
                                   "generating a new key.");
@@ -1365,6 +1796,7 @@ void start_build(BuilderState* st) {
     }
     st->output_path = resolve_output_path(st, st->form.app_id);
 
+    st->building = true;
     gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "progress");
     gtk_widget_set_sensitive(st->next_button, FALSE);
     gtk_widget_set_sensitive(st->back_button, FALSE);
@@ -1380,13 +1812,12 @@ void on_next_clicked(GtkButton*, gpointer user_data) {
         steps[static_cast<std::size_t>(st->step)].step;
 
     if (current == lexe::gui::WizardStep::Source) {
-        gchar* path =
-            gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(st->folder_chooser));
-        st->folder = path != nullptr ? std::string(path) : std::string();
-        if (path != nullptr) g_free(path);
+        // st->folder is set the moment a folder is chosen or dropped, so both
+        // routes arrive here having already agreed on what is being packaged.
         if (st->folder.empty()) {
             set_banner(st, false,
-                       "Choose the folder that holds your application's files.");
+                       "Choose the folder that holds your application's files, "
+                       "or drag it onto this window.");
             return;
         }
         // Detection is asynchronous now; on_detection_finished advances the
@@ -1400,6 +1831,87 @@ void on_next_clicked(GtkButton*, gpointer user_data) {
 
     ++st->step;
     update_step(st);
+}
+
+// --- drag and drop ----------------------------------------------------------
+
+/// A source folder dropped onto the window.
+///
+/// The WINDOW is the drop target rather than the Source page, because dropping
+/// a folder is how someone says "package THIS instead" — and having to
+/// navigate back to step 1 before the gesture would work defeats the point of
+/// the gesture. Everything after Source is derived from the source folder (the
+/// dependency list, the entrypoint list, the detected architecture), so a drop
+/// returns to step 1 and re-runs detection from there.
+void on_drag_data_received(GtkWidget*, GdkDragContext*, gint, gint,
+                           GtkSelectionData* data, guint, guint,
+                           gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+
+    // A second folder dropped while the first is still being read would leave
+    // two detection workers writing st->detection at once. Detection disables
+    // Next/Back for exactly that reason, but a drop target is not a button and
+    // insensitivity does not cover it, so refuse explicitly.
+    if (st->detecting) {
+        set_banner(st, false,
+                   "Still inspecting the folder you dropped a moment ago — "
+                   "wait for that to finish, then drop again.");
+        return;
+    }
+    // The same reason one stage later: the build worker MOVES st->detection
+    // into the build report, so a detection started underneath it would be
+    // writing the object the build is reading.
+    if (st->building) {
+        set_banner(st, false,
+                   "A build is running. Wait for it to finish, then drop the "
+                   "next folder.");
+        return;
+    }
+
+    std::vector<fs::path> local;
+    int non_local = 0;
+    if (gchar** uris = gtk_selection_data_get_uris(data)) {
+        for (gchar** uri = uris; *uri != nullptr; ++uri) {
+            // g_filename_from_uri is what makes this honest about what was
+            // dropped: an http:// or a gvfs trash:// URI has no local path, and
+            // packaging silently needs one.
+            gchar* filename = g_filename_from_uri(*uri, nullptr, nullptr);
+            if (filename == nullptr) {
+                ++non_local;
+                continue;
+            }
+            local.emplace_back(filename);
+            g_free(filename);
+        }
+        g_strfreev(uris);
+    }
+    if (local.empty() && non_local > 0) {
+        set_banner(st, false,
+                   "That is not a folder on this machine. Lexe packages local "
+                   "files, so download or mount it first, then drop the folder "
+                   "it landed in.");
+        return;
+    }
+
+    const lexe::gui::DropDecision decision = lexe::gui::decide_drop(local);
+    if (!decision.accepted) {
+        set_banner(st, false, decision.message);
+        return;
+    }
+
+    // A drop is also a way OUT of the first-run welcome screen; without this
+    // detection would run behind a page that has no Back/Next on it.
+    leave_welcome(st);
+    st->step = 0;
+    update_step(st); // repaints the step strip and clears the old banner
+    st->folder = decision.folder;
+    path_picker_set(&st->source_picker, decision.folder);
+    set_banner(st, true, decision.message);
+    // The same asynchronous detection the Next button runs — one code path,
+    // off the UI thread, advancing the step from on_detection_finished. A drop
+    // that ran its own synchronous scan would freeze the window it was dropped
+    // on.
+    begin_detection(st);
 }
 
 // --- result-page actions ----------------------------------------------------
@@ -1472,9 +1984,22 @@ GtkWidget* build_source_page(BuilderState* st) {
                                   "your compiled application. Its contents "
                                   "become the package payload."),
                        FALSE, FALSE, 0);
-    st->folder_chooser = gtk_file_chooser_button_new(
-        "Application files folder", GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER);
-    gtk_box_pack_start(GTK_BOX(box), st->folder_chooser, FALSE, FALSE, 0);
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        path_picker_build(&st->source_picker, "Application files folder",
+                          "Choose folder\xe2\x80\xa6", "No folder chosen yet."),
+        FALSE, FALSE, 0);
+    g_signal_connect(st->source_picker.button, "clicked",
+                     G_CALLBACK(on_choose_source_folder), st);
+
+    GtkWidget* drop_hint = gtk_label_new(
+        "Or drag the folder straight onto this window from your file manager \xe2\x80\x94 "
+        "it is inspected the moment you drop it.");
+    style::add_class(drop_hint, "lexe-muted");
+    gtk_label_set_xalign(GTK_LABEL(drop_hint), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(drop_hint), TRUE);
+    gtk_box_pack_start(GTK_BOX(box), drop_hint, FALSE, FALSE, 0);
+
     st->source_summary = body_label("Choose a folder, then press Next to detect "
                                     "the executable and dependencies.");
     gtk_box_pack_start(GTK_BOX(box), st->source_summary, FALSE, FALSE, 0);
@@ -1576,7 +2101,7 @@ void on_signing_choice_toggled(GtkToggleButton*, gpointer user_data) {
     const gboolean generating =
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->key_generate_radio));
     gtk_widget_set_sensitive(st->generated_key_entry, generating);
-    gtk_widget_set_sensitive(st->existing_key_chooser, !generating);
+    gtk_widget_set_sensitive(st->existing_key_picker.root, !generating);
 }
 
 GtkWidget* build_signing_page(BuilderState* st) {
@@ -1596,12 +2121,19 @@ GtkWidget* build_signing_page(BuilderState* st) {
                                    "where to write the new key (optional)");
     st->key_existing_radio = gtk_radio_button_new_with_label_from_widget(
         GTK_RADIO_BUTTON(st->key_generate_radio), "Use an existing key file");
-    st->existing_key_chooser = gtk_file_chooser_button_new(
-        "Signing key (key.json)", GTK_FILE_CHOOSER_ACTION_OPEN);
+    // The same treatment as the source folder: which key file signs this
+    // package is exactly as consequential as which folder is packaged, and the
+    // combo it replaces showed only a basename — every project's key is called
+    // key.json, so the control was effectively blank.
+    GtkWidget* key_card =
+        path_picker_build(&st->existing_key_picker, "Signing key file",
+                          "Choose key file\xe2\x80\xa6", "No key file chosen yet.");
+    g_signal_connect(st->existing_key_picker.button, "clicked",
+                     G_CALLBACK(on_choose_key_file), st);
     gtk_box_pack_start(GTK_BOX(box), st->key_generate_radio, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), st->generated_key_entry, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), st->key_existing_radio, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), st->existing_key_chooser, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), key_card, FALSE, FALSE, 0);
     // Only the SELECTED option's control stays live. Both were enabled at once,
     // so the page showed a key-file chooser and a "where to write the new key"
     // box side by side with nothing to say which one the build would use —
@@ -1737,10 +2269,7 @@ void on_welcome_continue(GtkButton*, gpointer user_data) {
             // best-effort persistence
         }
     }
-    gtk_widget_show(st->back_button);
-    gtk_widget_show(st->next_button);
-    if (st->step_header != nullptr) gtk_widget_show(st->step_header);
-    if (st->footer != nullptr) gtk_widget_show(st->footer);
+    leave_welcome(st);
     st->step = 0;
     update_step(st);
 }
@@ -1788,6 +2317,7 @@ GtkWidget* build_welcome_page(BuilderState* st) {
 
 // Show the welcome page and hide the wizard chrome until it is dismissed.
 void show_welcome(BuilderState* st) {
+    st->welcome_visible = true;
     gtk_stack_set_visible_child_name(GTK_STACK(st->stack), "welcome");
     gtk_label_set_text(GTK_LABEL(st->step_counter), "");
     gtk_label_set_text(GTK_LABEL(st->step_title), "");
@@ -1797,6 +2327,11 @@ void show_welcome(BuilderState* st) {
     // Hide the wizard chrome outright rather than blanking its labels. Emptied,
     // the step strip and the action bar are still drawn — two shaded bands with
     // nothing in them, top and bottom of the first screen anyone ever sees.
+    //
+    // What is hidden is the step TEXT, not the strip that carries it: the theme
+    // control lives in that strip, and the first screen anyone sees is the one
+    // most likely to be the wrong brightness for the desk it is sitting on. A
+    // toggle only reachable from step 1 is not reachable from here.
     if (st->step_header != nullptr) gtk_widget_hide(st->step_header);
     if (st->footer != nullptr) gtk_widget_hide(st->footer);
     set_banner(st, true, "");
@@ -1813,15 +2348,21 @@ void build_ui(BuilderState* st) {
     GtkWidget* root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(st->window), root);
 
-    // Header: step counter + title + subtitle.
-    // The step header is a lit strip, like the installer's banner and both
-    // action bars: flat content sits between two subtly shaded edges. Sizing
-    // comes from the stylesheet's type scale rather than Pango attributes, so
-    // the wizard's title and the installer's title are the same size by
-    // construction instead of by coincidence.
+    // Header: a lit strip carrying the step text on the left and the theme
+    // control on the right, like the installer's banner and both action bars —
+    // flat content between two subtly shaded edges. Sizing comes from the
+    // stylesheet's type scale rather than Pango attributes, so the wizard's
+    // title and the installer's title are the same size by construction
+    // instead of by coincidence.
+    //
+    // The strip and the step text inside it are two widgets on purpose: the
+    // welcome screen hides the text and keeps the strip, so the theme control
+    // is reachable from the very first screen.
+    GtkWidget* header_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    style::add_class(header_bar, "lexe-stepbar");
     GtkWidget* header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     st->step_header = header;
-    style::add_class(header, "lexe-stepbar");
+    gtk_widget_set_hexpand(header, TRUE);
     st->step_counter = gtk_label_new("Step 1 of 7");
     style::add_class(st->step_counter, "lexe-muted");
     gtk_label_set_xalign(GTK_LABEL(st->step_counter), 0.0f);
@@ -1834,7 +2375,43 @@ void build_ui(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(header), st->step_counter, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header), st->step_title, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header), st->step_subtitle, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(root), header, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(header_bar), header, TRUE, TRUE, 0);
+
+    // Theme: three states, not a two-way switch. "System" has to be one of
+    // them and has to be the default — a desktop that follows the time of day
+    // is common, and a builder that latched to whatever it happened to be at
+    // first launch would be the one window not moving with it.
+    GtkWidget* theme_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_valign(theme_box, GTK_ALIGN_CENTER);
+    // A mnemonic, and the mnemonic-widget RELATION that goes with it: Alt+T
+    // reaches the control, and ATK derives the accessible name from the
+    // relation, so a screen reader announces "Theme" rather than just reading
+    // back whichever value happens to be selected. The installer's control does
+    // the same; the two must not diverge on the same setting.
+    GtkWidget* theme_caption = gtk_label_new_with_mnemonic("_Theme");
+    style::add_class(theme_caption, "lexe-section-heading");
+    gtk_label_set_xalign(GTK_LABEL(theme_caption), 0.0f);
+    st->theme_combo = gtk_combo_box_text_new();
+    gtk_label_set_mnemonic_widget(GTK_LABEL(theme_caption), st->theme_combo);
+    for (const std::string& choice : lexe::gui::theme_choices()) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->theme_combo),
+                                       lexe::gui::theme_label(choice).c_str());
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->theme_combo),
+                             lexe::gui::theme_choice_index(st->theme));
+    gtk_widget_set_tooltip_text(
+        st->theme_combo,
+        "System follows your desktop. The choice is saved as the `theme` "
+        "setting \xe2\x80\x94 the same one `lexe config set theme` reads and writes.");
+    // Connected AFTER the initial selection: restoring the saved theme must not
+    // immediately write it straight back out again.
+    g_signal_connect(st->theme_combo, "changed", G_CALLBACK(on_theme_changed),
+                     st);
+    gtk_box_pack_start(GTK_BOX(theme_box), theme_caption, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(theme_box), st->theme_combo, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(header_bar), theme_box, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(root), header_bar, FALSE, FALSE, 0);
 
     // Stack of pages.
     st->stack = gtk_stack_new();
@@ -1868,6 +2445,20 @@ void build_ui(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(footer), st->next_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), footer, FALSE, FALSE, 0);
 
+    // Drag and drop: a source folder dropped anywhere on the window. Only
+    // text/uri-list is accepted — it is what every file manager offers for a
+    // dragged folder, and it is the only one that names a filesystem path.
+    //
+    // GTK_DEST_DEFAULT_ALL also calls gtk_drag_finish() for us once the handler
+    // returns; finishing the same drop a second time by hand is a GTK warning,
+    // and scripts/gui-smoke.sh fails the build on any of those.
+    static GtkTargetEntry drop_targets[] = {
+        {const_cast<gchar*>("text/uri-list"), 0, 0}};
+    gtk_drag_dest_set(st->window, GTK_DEST_DEFAULT_ALL, drop_targets, 1,
+                      GDK_ACTION_COPY);
+    g_signal_connect(st->window, "drag-data-received",
+                     G_CALLBACK(on_drag_data_received), st);
+
     update_step(st);
 }
 
@@ -1875,7 +2466,25 @@ void build_ui(BuilderState* st) {
 
 int main(int argc, char** argv) {
     gtk_init(&argc, &argv);
-    style::apply();
+
+    // The desktop's OWN dark preference, read before style::apply() has had a
+    // chance to write to it. style::apply() stores the theme it resolved into
+    // gtk-application-prefer-dark-theme, and resolve_dark(System) reads that
+    // same flag back to decide what the desktop wants — so without this
+    // snapshot, a session that has been Dark once answers "the desktop prefers
+    // dark" from then on, and switching back to System would stay dark on a
+    // light desktop. apply_theme() restores it.
+    gboolean desktop_prefers_dark = FALSE;
+    if (GtkSettings* gtk_settings = gtk_settings_get_default()) {
+        g_object_get(gtk_settings, "gtk-application-prefer-dark-theme",
+                     &desktop_prefers_dark, nullptr);
+    }
+
+    // The persisted `theme` setting decides how the window is drawn from its
+    // first frame: styling it light and then correcting it once the widgets
+    // exist is a visible flash of the wrong theme on every launch.
+    const std::string theme = startup_theme();
+    style::apply(style::theme_from_string(theme));
 
     // Body text is selectable so a user can copy a fingerprint or an ID. GTK
     // pairs that with gtk-label-select-on-focus, which makes the first
@@ -1886,6 +2495,8 @@ int main(int argc, char** argv) {
         g_object_set(settings, "gtk-label-select-on-focus", FALSE, nullptr);
     }
     BuilderState* st = new BuilderState();
+    st->theme = theme;
+    st->desktop_prefers_dark = desktop_prefers_dark;
     build_ui(st);
     gtk_widget_show_all(st->window);
     // First run: greet the developer once (DX8); otherwise start the wizard.
