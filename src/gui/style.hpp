@@ -235,6 +235,17 @@ inline bool resolve_dark(Theme theme) {
                name.compare(name.size() - 5, 5, "-dark") == 0;
     }
     if (theme_name != nullptr) g_free(theme_name);
+    // GTK_THEME=Adwaita:dark is the developer/CI override and sets NEITHER of
+    // the above — gtk-theme-name reports the base name and the prefer-dark flag
+    // stays off — so a session started that way would render light inside a
+    // dark shell. Cheap to honour, and it is how a dark run gets tested.
+    if (!dark) {
+        if (const char* env = g_getenv("GTK_THEME"); env != nullptr) {
+            const std::string value = env;
+            dark = value.size() >= 5 &&
+                   value.compare(value.size() - 5, 5, ":dark") == 0;
+        }
+    }
     return dark;
 }
 
