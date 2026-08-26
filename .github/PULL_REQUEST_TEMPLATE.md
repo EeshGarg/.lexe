@@ -1,4 +1,6 @@
 <!-- Thanks for contributing to .lexe. See CONTRIBUTING.md. -->
+<!-- If this fixes a security weakness that has NOT been reported privately yet,
+     stop: opening it here discloses it. See SECURITY.md. -->
 
 ## What & why
 
@@ -12,6 +14,13 @@
 - [ ] For a security-relevant change: the HARDENING §I evidence is described below
 
 <!-- Note any tests/integration scripts you ran on real Linux. -->
+
+## Claims
+
+- [ ] Nothing is described as enforced where it is advisory, partial or
+      unavailable, and no signature is presented as identity (CONTRIBUTING
+      *Conventions*; `docs/TRUST-MODEL.md`)
+- [ ] Docs and CHANGELOG updated where this changes documented behaviour
 
 ## Notes
 

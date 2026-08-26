@@ -1,0 +1,22 @@
+# Dependabot covers the GitHub Actions used by .github/workflows/ci.yml and
+# nothing else: the C++ dependencies here are either system libraries resolved
+# by pkg-config or pinned, never-modified sources under third_party/ (see
+# docs/SBOM.md), and Dependabot has no ecosystem for either. Those are reviewed
+# by hand against the SBOM.
+#
+# Monthly and grouped, so a one-person project gets one pull request to look at
+# rather than a stream of them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"

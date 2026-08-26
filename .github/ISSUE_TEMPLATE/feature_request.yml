@@ -1,0 +1,95 @@
+name: Feature request
+description: Propose a capability, or a change to an existing one.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals are welcome, with one caveat worth reading first.
+
+        [docs/ALPHA.md](https://github.com/EeshGarg/.lexe/blob/main/docs/ALPHA.md)
+        lists what this Alpha deliberately does **not** claim — no multi-ISA
+        support, no GUI forwarding inside the sandbox, no language-runtime
+        dependency harvesting, no global revocation or authenticated key
+        rotation, no Windows isolation. Several of those are planned rather than
+        rejected, but a proposal that engages with why they are absent is far
+        more useful than one that reports their absence.
+
+        Two surfaces are frozen for this line and will not change on a feature
+        request: the `.lexe` package format `0.1`
+        ([FORMAT-0.1](https://github.com/EeshGarg/.lexe/blob/main/docs/FORMAT-0.1.md))
+        and the `tux32-core-1` portability baseline
+        ([TUX32](https://github.com/EeshGarg/.lexe/blob/main/docs/TUX32.md)).
+        Changes there belong to a future version of each, not to 0.1.
+
+        **Security weaknesses are not feature requests.** Report those privately
+        through the Security tab — see
+        [SECURITY.md](https://github.com/EeshGarg/.lexe/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What are you trying to do that you cannot do today? Describe the
+        situation, not the solution — what you attempted, and where the runtime,
+        Builder or SDK stopped you.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: |
+        The change itself. If it touches the CLI, show the command and the output
+        you would expect; if it touches the format or a manifest, show the field.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where it belongs
+      options:
+        - Runtime CLI (install / run / update / trust / apps / config)
+        - Isolation and permissions
+        - Trust and signing
+        - Builder and packaging
+        - Dependency analysis and Tux32 portability
+        - GUIs (Builder, Installer)
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: |
+        Including doing it outside `.lexe` entirely. If an existing command gets
+        you most of the way there, say which and where it falls short.
+
+  - type: textarea
+    id: honesty
+    attributes:
+      label: What it would and would not guarantee
+      description: |
+        Optional, and valued. This project states the limits of every control it
+        ships — an advisory permission is called advisory, a signature is never
+        called identity. If your proposal is a security or trust feature, say
+        what it would genuinely prove and what it would still leave unproven.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I read "What this Alpha does NOT claim" in docs/ALPHA.md, and this is not simply a restatement of it.
+          required: true
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability report.
+          required: true

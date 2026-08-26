@@ -128,8 +128,28 @@ lexe apps                          # what's installed: version, disk, trust
 lexe config                        # view or change preferences
 ```
 
-`lexe help` groups the full command surface; run any command with no arguments
-for its usage. See the full **[tutorial](docs/TUTORIAL.md)**.
+`lexe help` groups the full command surface, `lexe <command> --help` explains one,
+and bash/zsh completion comes from `lexe completion`. See the full
+**[tutorial](docs/TUTORIAL.md)**.
+
+**What verification actually prints** — every stage, named, with what it checked:
+
+```console
+$ lexe verify hello.lexe
+Verifying hello.lexe
+  [ ok ] structure          archive OK: 5 entries, §2 path rules hold, required entries present
+  [ ok ] manifest           lexe.json is a valid 0.1 manifest: org.lexe.examples.cli-tool 1.0.0
+  [ ok ] key                publisher.publicKey decodes to a 32-byte Ed25519 key (Lexe Examples)
+  [ ok ] manifest-signature signatures/manifest.sig verifies over the stored lexe.json bytes (476 bytes)
+  [ ok ] payload-signature  signatures/payload.sig verifies over the stored metadata/hashes.json bytes (140 bytes)
+  [ ok ] hashes             all 1 covered entries present, coverage is exact (both directions), every SHA-256 digest matches
+verification: OK (signature valid, Ed25519)
+signing key fingerprint: 4F46 E2C5 0A81 5180 983E EBEA 4CC7 BCF9 F52E 926F A6D9 A74A 6BBD 4C39 F75E 7350
+note: this proves package integrity + signature, NOT the publisher's real-world identity.
+```
+
+That last line is the house style: the runtime states what a signature proves and
+declines to imply more.
 
 ## Screenshots
 
@@ -277,6 +297,7 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 
 | Document | What it covers |
 |---|---|
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability privately, what is in scope, and the documented non-guarantees. |
 | [docs/HARDENING.md](docs/HARDENING.md) | The hardening gates (A–H) and the proven-invariants table. |
 | [docs/ISOLATION.md](docs/ISOLATION.md) | The Linux bubblewrap runtime-isolation design. |
 | [docs/CONCURRENCY.md](docs/CONCURRENCY.md) | OS-backed locking, launch leases, and the TOCTOU closure. |
@@ -383,6 +404,12 @@ contributors should start there, then read
 ```sh
 ./scripts/build.sh          # configure + build + run the full test suite
 ```
+
+Bug reports, feature requests and portability reports each have an
+[issue template](.github/ISSUE_TEMPLATE). **Security findings go privately**
+through the Security tab, not the public tracker — see
+**[SECURITY.md](SECURITY.md)** for the channel, what is in scope, and the
+documented non-guarantees that are *not* vulnerabilities.
 
 ## License
 

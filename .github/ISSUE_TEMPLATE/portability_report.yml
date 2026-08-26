@@ -1,0 +1,90 @@
+name: Portability report
+description: Report how .lexe behaved on a distribution, kernel or host you tried it on.
+title: "[portability] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Portability is a specific, verifiable claim in this project rather than a
+        general aspiration: `tux32-core-1` is a dynamically linked x86-64 ELF
+        within a glibc symbol ceiling of 2.31
+        ([TUX32](https://github.com/EeshGarg/.lexe/blob/main/docs/TUX32.md)). The
+        claim is only as good as the hosts it has actually been run on, so
+        results are useful **whether they passed or failed** — a clean run on a
+        distribution not yet listed is worth reporting.
+
+        Compatibility findings that are simply "not Core 1" — a static binary, a
+        non-x86-64 binary, an over-ceiling glibc symbol — are the contract
+        working. Report them here if the *verdict or its explanation* looked
+        wrong, not merely because a package was rejected.
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Worked end to end (verify, install, sandboxed launch)
+        - Installed, but would not launch
+        - Verification or install refused
+        - Built from source, but the test suite failed
+        - Would not build from source
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: "Distribution and release, `uname -r`, and the glibc version (`ldd --version`)."
+      placeholder: "Debian 12 · 6.1.0-23-amd64 · glibc 2.36"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: lexe version
+      description: "The output of `lexe version`, or the commit SHA you built."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sandbox
+    attributes:
+      label: Isolation backend
+      description: "`bwrap --version`, and `unshare -U true` for unprivileged user namespaces."
+      options:
+        - bubblewrap present, user namespaces available
+        - bubblewrap present, user namespaces restricted or disabled
+        - bubblewrap not installed
+        - Running inside a container or VM (say which below)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: transcript
+    attributes:
+      label: What you ran, and what it printed
+      description: |
+        The commands and their full output. `lexe sdk verify <binary>`,
+        `lexe analyze <dir> --json` and `lexe inspect <file.lexe>` carry the most
+        signal for a portability question; include the exit status.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: package
+    attributes:
+      label: What you were packaging
+      description: |
+        How the payload was built (compiler, distribution, whether it was built in
+        a Core 1 sysroot), and what it links against. Enough that someone else
+        could construct something equivalent.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: "Filesystem, `LEXE_HOME` location, container runtime, or anything unusual about the host."
