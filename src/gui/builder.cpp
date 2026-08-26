@@ -739,6 +739,8 @@ struct BuilderState {
     GtkWidget* profile_combo = nullptr;
     GtkWidget* profile_explanation = nullptr; // updates as the profile changes
     // Step 7 — Build summary + progress.
+    GtkWidget* step_header = nullptr;   // the lit step strip (hidden on welcome)
+    GtkWidget* footer = nullptr;        // the action bar (hidden on welcome)
     GtkWidget* build_summary = nullptr;
     GtkWidget* spinner = nullptr;
     GtkWidget* progress_label = nullptr;
@@ -1737,25 +1739,39 @@ void on_welcome_continue(GtkButton*, gpointer user_data) {
     }
     gtk_widget_show(st->back_button);
     gtk_widget_show(st->next_button);
+    if (st->step_header != nullptr) gtk_widget_show(st->step_header);
+    if (st->footer != nullptr) gtk_widget_show(st->footer);
     st->step = 0;
     update_step(st);
 }
 
 GtkWidget* build_welcome_page(BuilderState* st) {
+    // The FIRST screen anyone ever sees, and the one that was left on widget
+    // defaults while every wizard step behind it was restyled — so a first run
+    // looked exactly like it always had. It gets the same language as the rest:
+    // title from the type scale, the explanation in a card, and the one action
+    // carrying the accent.
     GtkWidget* box = new_page();
+    gtk_widget_set_margin_top(box, 8);
+
     GtkWidget* heading = gtk_label_new("Welcome to Lexe Builder");
-    {
-        PangoAttrList* a = pango_attr_list_new();
-        pango_attr_list_insert(a, pango_attr_scale_new(PANGO_SCALE_XX_LARGE));
-        pango_attr_list_insert(a, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
-        gtk_label_set_attributes(GTK_LABEL(heading), a);
-        pango_attr_list_unref(a);
-    }
+    style::add_class(heading, "lexe-title");
     gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
     gtk_box_pack_start(GTK_BOX(box), heading, FALSE, FALSE, 0);
 
+    GtkWidget* tagline =
+        gtk_label_new("Turn a folder of compiled files into a signed .lexe "
+                      "package.");
+    style::add_class(tagline, "lexe-subtitle");
+    gtk_label_set_xalign(GTK_LABEL(tagline), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(tagline), TRUE);
+    gtk_box_pack_start(GTK_BOX(box), tagline, FALSE, FALSE, 0);
+
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    style::add_class(card, "lexe-card");
     GtkWidget* body = body_label(lexe::gui::welcome_body().c_str());
-    gtk_box_pack_start(GTK_BOX(box), page_scroller(body), TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(card), body, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), page_scroller(card), TRUE, TRUE, 0);
 
     st->welcome_dont_show =
         gtk_check_button_new_with_label("Don't show this again");
@@ -1763,6 +1779,7 @@ GtkWidget* build_welcome_page(BuilderState* st) {
 
     GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget* start = gtk_button_new_with_label("Get started");
+    style::add_class(start, "lexe-primary");
     g_signal_connect(start, "clicked", G_CALLBACK(on_welcome_continue), st);
     gtk_box_pack_end(GTK_BOX(row), start, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
@@ -1777,6 +1794,11 @@ void show_welcome(BuilderState* st) {
     gtk_label_set_text(GTK_LABEL(st->step_subtitle), "");
     gtk_widget_hide(st->back_button);
     gtk_widget_hide(st->next_button);
+    // Hide the wizard chrome outright rather than blanking its labels. Emptied,
+    // the step strip and the action bar are still drawn — two shaded bands with
+    // nothing in them, top and bottom of the first screen anyone ever sees.
+    if (st->step_header != nullptr) gtk_widget_hide(st->step_header);
+    if (st->footer != nullptr) gtk_widget_hide(st->footer);
     set_banner(st, true, "");
 }
 
@@ -1798,6 +1820,7 @@ void build_ui(BuilderState* st) {
     // the wizard's title and the installer's title are the same size by
     // construction instead of by coincidence.
     GtkWidget* header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    st->step_header = header;
     style::add_class(header, "lexe-stepbar");
     st->step_counter = gtk_label_new("Step 1 of 7");
     style::add_class(st->step_counter, "lexe-muted");
@@ -1834,6 +1857,7 @@ void build_ui(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(root), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 0);
     GtkWidget* footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    st->footer = footer;
     style::add_class(footer, "lexe-actionbar");
     st->banner_label = gtk_label_new(nullptr);
     gtk_label_set_xalign(GTK_LABEL(st->banner_label), 0.0f);
