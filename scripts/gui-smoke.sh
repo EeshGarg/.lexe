@@ -13,14 +13,23 @@
 # heading is built at startup.
 #
 # Usage:   scripts/gui-smoke.sh [BUILD_DIR]     (default: build)
-# Env:     TIMEOUT (seconds a GUI is held open before it is closed; default 6)
+# Env:     MAP_WAIT (seconds to wait for a window to appear; default 20)
+#          DWELL    (seconds to hold it open once mapped;   default 2)
 # Requires: xvfb-run, and the GUIs built in BUILD_DIR (Linux only).
 # Exit:    0 only if both GUIs render clean; non-zero otherwise.
 # =============================================================================
 set -eu
 
 BUILD_DIR="${1:-build}"
-TIMEOUT="${TIMEOUT:-6}"
+# A GUI gets MAP_WAIT seconds to put a window on screen, then is held DWELL
+# seconds so late warnings still land in the log. The outer `timeout` is a
+# backstop for a wedged process ONLY, so it must exceed the two budgets it
+# supervises: it previously did not (a 10s poll under a 6s timeout), and a
+# runner slower than 6s to first paint failed on a race rather than a defect.
+MAP_WAIT="${MAP_WAIT:-20}"
+DWELL="${DWELL:-2}"
+MAP_TRIES=$(( MAP_WAIT * 2 ))            # the poll below sleeps 0.5s
+TIMEOUT=$(( MAP_WAIT + DWELL + 10 ))
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 LEXE="$BUILD_DIR/lexe"
 INSTALLER="$BUILD_DIR/lexe-installer"
@@ -74,10 +83,11 @@ offending() {
       || true
 }
 
-# Run a GUI under Xvfb, hold it open for TIMEOUT seconds, and assert it neither
-# crashed nor emitted an offending line. A clean run is closed by the timeout
-# (exit 124); a self-exit of 0 is fine; anything else (a crash signal, 128+N)
-# is a failure.
+# Run a GUI under Xvfb, hold it open once it has mapped a window, and assert it
+# neither crashed nor emitted an offending line. A healthy GUI is still running
+# after the dwell, so the harness closes it and reports 0; a GUI that exits on
+# its own has its status propagated, and anything other than 0 (a crash signal,
+# 128+N) is a failure. Nothing depends on the outer timeout firing any more.
 smoke() {
     label="$1"; shift
     log="$WORK/$(echo "$label" | tr ' /' '__').log"
@@ -86,20 +96,36 @@ smoke() {
     # real toplevel window. Checking only for warnings is not enough: a GUI that
     # never shows a window, or one that connects to a different display
     # entirely, emits nothing at all and would "pass" silently.
+    MAP_TRIES="$MAP_TRIES" DWELL="$DWELL" \
     timeout "$TIMEOUT" xvfb-run -a sh -c '
         "$@" &
         app=$!
+        mapped=0
         i=0
-        while [ "$i" -lt 20 ]; do
+        while [ "$i" -lt "$MAP_TRIES" ]; do
+            # Stop polling the moment the process is gone: a GUI that died on
+            # startup will never map anything, and waiting out the whole budget
+            # only delays the report of its exit status.
+            kill -0 "$app" 2>/dev/null || break
             if xwininfo -root -children 2>/dev/null                  | grep -qE "^ +0x[0-9a-f]+ \"[^\"]+\".*[0-9][0-9][0-9]+x[0-9][0-9][0-9]+"
             then
                 echo "GUI-SMOKE: mapped a toplevel window"
+                mapped=1
                 break
             fi
             i=$((i + 1))
             sleep 0.5
         done
-        wait $app
+        [ "$mapped" = 1 ] && sleep "$DWELL"
+        # Still alive after the dwell is the healthy outcome: close it and
+        # report success. Otherwise it exited on its own -- propagate that, so
+        # a crash is still reported as a crash.
+        if kill -0 "$app" 2>/dev/null; then
+            kill "$app" 2>/dev/null
+            wait "$app" 2>/dev/null
+            exit 0
+        fi
+        wait "$app"
     ' sh "$@" >"$log" 2>&1 || code=$?
     if [ "$code" != 124 ] && [ "$code" != 0 ]; then
         echo "---- $label output ----"; sed 's/^/    /' "$log" >&2
@@ -117,8 +143,8 @@ smoke() {
     ok "$label mapped a window and rendered clean (exit $code)"
 }
 
-printf 'Headless GTK smoke test\n  build dir: %s\n  timeout:   %ss\n' \
-    "$BUILD_DIR" "$TIMEOUT"
+printf 'Headless GTK smoke test\n  build dir: %s\n  budget:    %ss to map, %ss dwell (timeout %ss)\n' \
+    "$BUILD_DIR" "$MAP_WAIT" "$DWELL" "$TIMEOUT"
 
 # --- Build a markup-HOSTILE package: name/publisher carry & < > " ------------
 mkdir -p "$WORK/proj/payload/bin"
