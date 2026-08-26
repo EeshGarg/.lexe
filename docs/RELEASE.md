@@ -27,10 +27,19 @@ with a frozen cross-distribution portability contract.
   gate, a minimal build-in-sysroot SDK, and an end-to-end cross-distribution proof
   in CI.
 - **Developer & consumer experience** — the Builder wizard, `lexe analyze` /
-  `build` / `inspect` / `apps` / `config`, grouped help + completion.
+  `build` / `inspect` / `apps` / `config`, grouped help, "did you mean"
+  suggestions, and bash/zsh completion.
+- **Both GUIs redesigned** — light and dark palettes following the system theme
+  by default, drag-and-drop onto either window, a native file picker, and
+  severity carried by tint, a leading bar and text colour together so a
+  first-seen key can never read like a verified one.
+
+Verified on the tagged commit: **493 test cases / 6665 assertions** on Linux
+(GCC), **473 / 6524** on Windows (MSVC), the headless GUI smoke test, and the
+end-to-end cross-distribution portability proof — all green.
 
 Full detail: [../CHANGELOG.md](../CHANGELOG.md). What is and is not claimed:
-[ALPHA.md](ALPHA.md).
+[ALPHA.md](ALPHA.md). How to report a vulnerability: [../SECURITY.md](../SECURITY.md).
 
 ## Artifacts
 
