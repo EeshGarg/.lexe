@@ -42,11 +42,19 @@ release ships source only (see [ALPHA.md](ALPHA.md#release-artifacts)).
 | Source archive (tar.gz) | `lexe-0.1.0-alpha.1.tar.gz` | GitHub auto-generates this for the tag. |
 | Source archive (zip) | `lexe-0.1.0-alpha.1.zip` | GitHub auto-generates this for the tag. |
 
-**Checksums** — record alongside the release:
+**Checksums** — after the tag is pushed, one command fetches the archives GitHub
+generated for it and writes `SHA256SUMS` beside them:
 
 ```sh
-sha256sum lexe-0.1.0-alpha.1.tar.gz lexe-0.1.0-alpha.1.zip > SHA256SUMS
+scripts/release-checksums.sh v0.1.0-alpha.1      # -> dist/{*.tar.gz,*.zip,SHA256SUMS}
 ```
+
+It downloads from the tag rather than running `git archive`, because the digest
+published must be for the exact bytes the release serves — a locally produced
+archive can differ in mtimes, compression and prefix, and would publish a
+checksum nobody can reproduce. It fails rather than checksumming a 404 page if
+the tag is not pushed yet, and it verifies both archives actually decompress
+before writing any digest. Attach all three files to the release.
 
 **SBOM** — the software bill of materials (vendored + runtime dependencies and
 their licenses) is [SBOM.md](SBOM.md).
@@ -89,7 +97,11 @@ Do all of these on the exact commit you intend to tag:
 - [ ] `scripts/gui-smoke.sh` passes; `scripts/portability-demo.sh` passes.
 - [ ] `lexe version` prints `0.1.0-alpha`; README/ALPHA totals match the suite.
 - [ ] All doc links resolve; no secrets or private keys in the tree; `LICENSE` present.
+- [ ] Enable **private vulnerability reporting** (Settings → Advanced Security)
+      — [SECURITY.md](../SECURITY.md) sends reporters to that channel, and it
+      returns 404 until it is switched on.
 - [ ] Create the annotated tag `v0.1.0-alpha.1`, push it, and publish a GitHub
-      **pre-release** with the notes above and `SHA256SUMS` attached.
+      **pre-release** with the notes above and `SHA256SUMS` attached
+      (`scripts/release-checksums.sh` produces it).
 
 Nothing here creates the tag — that is the operator's explicit action.
