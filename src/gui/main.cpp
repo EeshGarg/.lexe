@@ -965,8 +965,8 @@ GtkWidget* build_banner(AppState* st) {
 /// Primary screen — mirrors the SPEC "Opening a .lexe File" mock.
 GtkWidget* build_details_page(AppState* st) {
     const lexe::gui::ViewModel& vm = st->vm;
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 18);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 22);
 
     // The banner is NOT packed here — see build_banner(), which pins it above
     // the scroller. It used to be the first child of the scrolled content, so
@@ -1217,7 +1217,7 @@ void build_ui(AppState* st) {
                               lexe::version::runtime_string() + " — " +
                               st->vm.app_name;
     gtk_window_set_title(GTK_WINDOW(st->window), title.c_str());
-    gtk_window_set_default_size(GTK_WINDOW(st->window), 520, 640);
+    gtk_window_set_default_size(GTK_WINDOW(st->window), 580, 760);
     g_signal_connect(st->window, "destroy", G_CALLBACK(on_window_destroy),
                      nullptr);
     // Vetoes the [X] while an install is running — see on_window_delete.
@@ -1239,13 +1239,7 @@ void build_ui(AppState* st) {
     // the state of the package and the button that acts on it are both always
     // on screen, whatever the scroll position.
     gtk_box_pack_start(GTK_BOX(details), build_banner(st), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(details), gtk_separator_new(
-                                             GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(details), scroller, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(details), gtk_separator_new(
-                                             GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(details), build_action_bar(st), FALSE, FALSE, 0);
 
     gtk_stack_add_named(GTK_STACK(st->stack), details, "details");

@@ -1,165 +1,186 @@
 #pragma once
 // style — the one visual language both GTK frontends render in.
 //
-// The GUIs were structurally sound and visually stuck in the era of the widget
-// defaults: a flat run of bold-label-then-text down a grey box, controls at
-// whatever size the theme gave them, and severity carried only by a word. This
-// gives them a deliberate design instead:
+// The first attempt at this leaned literally on Aero: vertical gradients on
+// every strip, a bordered gradient button, hairline borders around cards. Those
+// are the exact cues that date a window to the late 2000s, so they are gone. The
+// borrowing from Aero that survives is DEPTH — surfaces that sit above the page
+// — expressed the way it is expressed now, with a soft shadow rather than a
+// bevel and a sheen.
 //
-//   * CARDS with real radius and a hairline border group related facts, so a
-//     package's identity, trust and permissions read as distinct things rather
-//     than one wall of text (One UI's grouping, without its phone-sized metrics);
-//   * a TYPE SCALE — a large semibold title, small uppercase-weight section
-//     labels in a muted tone, comfortable body — so hierarchy comes from
-//     typography rather than from bold runs (Fluent/Metro);
-//   * a single ACCENT for the one primary action per screen, filled and
-//     unmistakable, with every other button quiet (Metro);
-//   * soft vertical GRADIENTS and a hairline highlight on the banner and action
-//     bar, which is the one honest borrowing from Aero: a lit strip top and
-//     bottom framing flat content between them.
+// What the look is built from:
+//   * FLAT surfaces. One canvas tone, one card tone, no gradient anywhere. Depth
+//     comes from a two-layer shadow (a tight contact shadow plus a wider ambient
+//     one), which is what reads as "raised" today.
+//   * SPACE. Cards are padded 18/20 and separated by 12; the page is inset 22.
+//     The old layout was tight enough that everything read as one block, and no
+//     amount of colour fixes that.
+//   * A real TYPE SCALE with a neutral slate palette: 26px/700 title, 13px
+//     muted subtitle, 12px/600 muted section labels, 14px body. GTK's default
+//     11px everywhere is itself a period detail.
+//   * ONE solid accent. No gradient, no border, no bevel — a filled rounded
+//     rectangle, which is the single strongest signal that a UI is current.
+//   * Severity as an inset CALLOUT: flat tint plus a 4px bar down the leading
+//     edge, instead of a full-bleed gradient band.
 //
 // Constraints this file works under:
-//   * GTK 3.24 CSS only. No box-sizing, letter-spacing, text-transform or
-//     media queries — GTK warns on unknown properties, and the headless smoke
-//     test fails the build on GTK warnings.
-//   * Severity must survive the restyle. ok/caution/danger keep distinct hue,
-//     border AND text colour, never hue alone, because the whole point of the
-//     banner is that a first-seen key is not styled like a verified one.
-//   * Both themes. A user on a dark GTK theme got white text on white cards if
-//     the palette were hardcoded light, so the palette is chosen at runtime.
+//   * GTK 3.24 CSS only. No box-sizing, letter-spacing, text-transform or media
+//     queries — GTK warns on unknown properties, and the headless smoke test
+//     fails the build on GTK warnings.
+//   * Severity must survive the restyle. ok/caution/danger keep a distinct
+//     tint, edge-bar AND text colour, never hue alone, because the whole point
+//     of the banner is that a first-seen key is not styled like a verified one.
+//   * Both themes, chosen at runtime — a hardcoded light palette gives a user on
+//     a dark GTK theme white text on white cards.
 
 #include <gtk/gtk.h>
 
 namespace lexe::gui::style {
 
-/// The stylesheet for one theme. `dark` picks the palette; every rule below is
-/// identical in both, so the two can never drift in layout, only in colour.
+/// The stylesheet for one theme. `dark` picks the palette; the metrics below are
+/// identical in both, so the two can only differ in colour, never in layout.
 inline const char* stylesheet(bool dark) {
     if (dark) {
         return R"CSS(
-@define-color lexe_canvas   #16181d;
-@define-color lexe_surface  #1e2128;
-@define-color lexe_border   rgba(255,255,255,0.10);
-@define-color lexe_text     #e9ecf1;
-@define-color lexe_muted    #9aa3b2;
-@define-color lexe_accent   #2f7fe0;
-@define-color lexe_accent_h #3d8ff0;
+@define-color lexe_canvas  #0f1115;
+@define-color lexe_surface #181b21;
+@define-color lexe_text    #e7eaf0;
+@define-color lexe_muted   #98a2b3;
+@define-color lexe_accent  #3b82f6;
+
 
 window { background-color: @lexe_canvas; color: @lexe_text; }
 
-.lexe-title    { font-size: 19px; font-weight: 800; color: @lexe_text; }
-.lexe-subtitle { font-size: 12px; color: @lexe_muted; }
-.lexe-body     { color: @lexe_text; }
-.lexe-muted    { color: @lexe_muted; font-size: 12px; }
-.lexe-section-heading { font-size: 12px; font-weight: 700; color: @lexe_muted; }
+.lexe-title    { font-size: 26px; font-weight: 700; color: @lexe_text; }
+.lexe-subtitle { font-size: 13px; color: @lexe_muted; }
+.lexe-body     { font-size: 14px; color: @lexe_text; }
+.lexe-muted    { font-size: 13px; color: @lexe_muted; }
+.lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_muted; }
 
 .lexe-card {
   background-color: @lexe_surface;
-  border: 1px solid @lexe_border;
-  border-radius: 14px;
-  padding: 14px 16px;
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.40), 0 4px 12px rgba(0,0,0,0.28);
 }
 
-.lexe-banner { padding: 14px 18px; font-weight: 700; border-bottom: 1px solid @lexe_border; }
-.lexe-banner.ok      { background-image: linear-gradient(to bottom, #1b3326, #162b20); color: #7ee0a1; }
-.lexe-banner.caution { background-image: linear-gradient(to bottom, #3a2f18, #322813); color: #f0c471; }
-.lexe-banner.danger  { background-image: linear-gradient(to bottom, #3a1f1d, #331a18); color: #ff9c93; }
+.lexe-banner {
+  padding: 16px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  background-color: @lexe_surface;
+}
+.lexe-banner.ok      { background-color: #12271b; color: #6ee7a8; border-left: 4px solid #22c55e; }
+.lexe-banner.caution { background-color: #2a2113; color: #fbbf5c; border-left: 4px solid #f59e0b; }
+.lexe-banner.danger  { background-color: #2b1517; color: #ff8f8a; border-left: 4px solid #ef4444; }
 
-.lexe-actionbar {
-  background-image: linear-gradient(to bottom, #22252c, #1c1f25);
-  border-top: 1px solid @lexe_border;
-  padding: 12px 16px;
-}
+.lexe-actionbar { background-color: @lexe_surface; padding: 14px 20px; }
+.lexe-stepbar   { background-color: @lexe_surface; padding: 20px 22px 18px 22px; }
 
-.lexe-stepbar {
-  background-image: linear-gradient(to bottom, #22252c, #1c1f25);
-  border-bottom: 1px solid @lexe_border;
-  padding: 14px 18px;
-}
-
-button { border-radius: 10px; padding: 7px 16px; min-height: 20px; }
-button.lexe-primary {
-  background-image: linear-gradient(to bottom, @lexe_accent_h, @lexe_accent);
-  color: #ffffff;
-  font-weight: 700;
-  border: 1px solid rgba(0,0,0,0.30);
-}
-button.lexe-primary:hover {
-  background-image: linear-gradient(to bottom, #4a99f5, #2f7fe0);
-}
-button.lexe-primary:disabled {
+button {
+  border-radius: 10px;
+  padding: 9px 18px;
+  min-height: 24px;
+  font-size: 13px;
   background-image: none;
-  background-color: #2a2e36;
-  color: #6b7383;
-  border-color: @lexe_border;
+  background-color: #252932;
+  color: @lexe_text;
+  border: none;
+  box-shadow: none;
 }
+button:hover { background-color: #2e333e; }
+button.lexe-primary {
+  background-color: @lexe_accent;
+  color: #ffffff;
+  font-weight: 600;
+}
+button.lexe-primary:hover    { background-color: #5b9bf8; }
+button.lexe-primary:disabled { background-color: #262a33; color: #616b7d; }
+button:disabled              { background-color: #1d2129; color: #616b7d; }
 
-entry { border-radius: 10px; padding: 7px 10px; min-height: 22px; }
-entry:disabled { color: #6b7383; }
-.lexe-mono { font-family: monospace; font-size: 12px; }
+entry {
+  border-radius: 10px;
+  padding: 9px 12px;
+  min-height: 26px;
+  font-size: 14px;
+  background-image: none;
+  background-color: #1d2129;
+  border: none;
+  color: @lexe_text;
+}
+entry:disabled { color: #616b7d; }
+.lexe-mono { font-family: monospace; font-size: 13px; }
 )CSS";
     }
     return R"CSS(
-@define-color lexe_canvas   #f2f3f5;
-@define-color lexe_surface  #ffffff;
-@define-color lexe_border   rgba(16,24,40,0.12);
-@define-color lexe_text     #14161a;
-@define-color lexe_muted    #5b6472;
-@define-color lexe_accent   #0b64d0;
-@define-color lexe_accent_h #1273e6;
+@define-color lexe_canvas  #f5f6f8;
+@define-color lexe_surface #ffffff;
+@define-color lexe_text    #0f172a;
+@define-color lexe_muted   #64748b;
+@define-color lexe_accent  #2563eb;
+
 
 window { background-color: @lexe_canvas; color: @lexe_text; }
 
-.lexe-title    { font-size: 19px; font-weight: 800; color: @lexe_text; }
-.lexe-subtitle { font-size: 12px; color: @lexe_muted; }
-.lexe-body     { color: @lexe_text; }
-.lexe-muted    { color: @lexe_muted; font-size: 12px; }
-.lexe-section-heading { font-size: 12px; font-weight: 700; color: @lexe_muted; }
+.lexe-title    { font-size: 26px; font-weight: 700; color: @lexe_text; }
+.lexe-subtitle { font-size: 13px; color: @lexe_muted; }
+.lexe-body     { font-size: 14px; color: @lexe_text; }
+.lexe-muted    { font-size: 13px; color: @lexe_muted; }
+.lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_muted; }
 
 .lexe-card {
   background-color: @lexe_surface;
-  border: 1px solid @lexe_border;
-  border-radius: 14px;
-  padding: 14px 16px;
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 2px rgba(15,23,42,0.06), 0 4px 12px rgba(15,23,42,0.05);
 }
 
-.lexe-banner { padding: 14px 18px; font-weight: 700; border-bottom: 1px solid @lexe_border; }
-.lexe-banner.ok      { background-image: linear-gradient(to bottom, #eff8f2, #e3f2e9); color: #11632b; }
-.lexe-banner.caution { background-image: linear-gradient(to bottom, #fff8ea, #fdf0d8); color: #7a4f00; }
-.lexe-banner.danger  { background-image: linear-gradient(to bottom, #fdeeed, #fbe0de); color: #a01a13; }
+.lexe-banner {
+  padding: 16px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  background-color: @lexe_surface;
+}
+.lexe-banner.ok      { background-color: #ecfdf3; color: #15803d; border-left: 4px solid #22c55e; }
+.lexe-banner.caution { background-color: #fff8eb; color: #b45309; border-left: 4px solid #f59e0b; }
+.lexe-banner.danger  { background-color: #fef2f2; color: #b91c1c; border-left: 4px solid #ef4444; }
 
-.lexe-actionbar {
-  background-image: linear-gradient(to bottom, #ffffff, #f6f7f9);
-  border-top: 1px solid @lexe_border;
-  padding: 12px 16px;
-}
+.lexe-actionbar { background-color: @lexe_surface; padding: 14px 20px; }
+.lexe-stepbar   { background-color: @lexe_surface; padding: 20px 22px 18px 22px; }
 
-.lexe-stepbar {
-  background-image: linear-gradient(to bottom, #ffffff, #f6f7f9);
-  border-bottom: 1px solid @lexe_border;
-  padding: 14px 18px;
-}
-
-button { border-radius: 10px; padding: 7px 16px; min-height: 20px; }
-button.lexe-primary {
-  background-image: linear-gradient(to bottom, @lexe_accent_h, @lexe_accent);
-  color: #ffffff;
-  font-weight: 700;
-  border: 1px solid rgba(0,0,0,0.14);
-}
-button.lexe-primary:hover {
-  background-image: linear-gradient(to bottom, #2b86f0, #0f6ad8);
-}
-button.lexe-primary:disabled {
+button {
+  border-radius: 10px;
+  padding: 9px 18px;
+  min-height: 24px;
+  font-size: 13px;
   background-image: none;
-  background-color: #e3e5e9;
-  color: #9aa1ab;
-  border-color: @lexe_border;
+  background-color: #eef0f4;
+  color: @lexe_text;
+  border: none;
+  box-shadow: none;
 }
+button:hover { background-color: #e4e7ec; }
+button.lexe-primary {
+  background-color: @lexe_accent;
+  color: @lexe_surface;
+  font-weight: 600;
+}
+button.lexe-primary:hover    { background-color: #1d4ed8; }
+button.lexe-primary:disabled { background-color: #dfe3ea; color: #9aa4b2; }
+button:disabled              { background-color: #f1f3f6; color: #9aa4b2; }
 
-entry { border-radius: 10px; padding: 7px 10px; min-height: 22px; }
-entry:disabled { color: #9aa1ab; }
-.lexe-mono { font-family: monospace; font-size: 12px; }
+entry {
+  border-radius: 10px;
+  padding: 9px 12px;
+  min-height: 26px;
+  font-size: 14px;
+  background-image: none;
+  background-color: #f1f3f6;
+  border: none;
+  color: @lexe_text;
+}
+entry:disabled { color: #9aa4b2; }
+.lexe-mono { font-family: monospace; font-size: 13px; }
 )CSS";
 }
 

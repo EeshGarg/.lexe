@@ -1460,8 +1460,8 @@ void on_close_clicked(GtkButton*, gpointer user_data) {
 // --- pages ------------------------------------------------------------------
 
 GtkWidget* new_page() {
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 22);
     return box;
 }
 
@@ -1806,7 +1806,7 @@ void build_ui(BuilderState* st) {
     st->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     const std::string title = "Lexe Builder " + lexe::version::runtime_string();
     gtk_window_set_title(GTK_WINDOW(st->window), title.c_str());
-    gtk_window_set_default_size(GTK_WINDOW(st->window), 720, 620);
+    gtk_window_set_default_size(GTK_WINDOW(st->window), 780, 700);
     gtk_container_set_border_width(GTK_CONTAINER(st->window), 0);
     g_signal_connect(st->window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
 
@@ -1835,8 +1835,6 @@ void build_ui(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(header), st->step_title, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(header), st->step_subtitle, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), header, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(root), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
 
     // Stack of pages.
     st->stack = gtk_stack_new();
@@ -1854,8 +1852,6 @@ void build_ui(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(root), st->stack, TRUE, TRUE, 0);
 
     // Footer: banner + Back/Next.
-    gtk_box_pack_start(GTK_BOX(root), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 0);
     GtkWidget* footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     st->footer = footer;
     style::add_class(footer, "lexe-actionbar");
