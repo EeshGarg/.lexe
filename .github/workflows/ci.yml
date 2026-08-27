@@ -62,5 +62,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
+      # DELIBERATE: exit 75 (the script's "could not fetch the base images"
+      # code) is left to fail this job like any other non-zero status.
+      #
+      # It is tempting to special-case it into a warning so a Docker Hub
+      # outage does not redden the badge. That was considered and rejected:
+      # a green tick on a run where the proof never executed claims a
+      # verification that did not happen, and not claiming more than was
+      # verified is the rule this project is built on. A red mark that
+      # over-reports a problem is the safer error of the two.
+      #
+      # The run log distinguishes them unambiguously — a registry failure
+      # prints SKIP and says in terms that it says nothing about Core 1
+      # portability, where a real violation prints the failing verdict.
       - name: Prove cross-distribution portability
         run: CONTAINER=podman ./scripts/portability-demo.sh
