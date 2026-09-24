@@ -96,7 +96,8 @@ constexpr const char* kKeygenUsage = "usage: lexe keygen <keyfile.json>";
 constexpr const char* kPackUsage =
     "usage: lexe pack <source-dir> --manifest <lexe.json> --key "
     "<keyfile.json> -o <out.lexe> [--icons <dir>] [--metadata <dir>]";
-constexpr const char* kIntegrateUsage = "usage: lexe integrate [--verify]";
+constexpr const char* kIntegrateUsage =
+    "usage: lexe integrate [--verify | --remove]";
 constexpr const char* kOpenUsage =
     "usage: lexe open <artifact.lexe> [--yes] [--trust] [--no-terminal] "
     "[--json]";
@@ -2002,14 +2003,20 @@ int cmd_sign_update(const std::vector<std::string>& args) {
 int cmd_doctor(const std::vector<std::string>& args);
 
 int cmd_integrate(const std::vector<std::string>& args) {
-    const Parsed parsed =
-        parse_arguments(args, {"--verify"}, {}, false, kIntegrateUsage);
+    const Parsed parsed = parse_arguments(args, {"--verify", "--remove"}, {},
+                                          false, kIntegrateUsage);
     require_positionals(parsed, 0, kIntegrateUsage);
     const Paths paths = Paths::detect();
     DesktopIntegration integration(paths);
 
     if (parsed.flags.count("--verify") != 0) {
         return cmd_doctor({});
+    }
+    if (parsed.flags.count("--remove") != 0) {
+        integration.remove_runtime_handler();
+        std::cout << "Deregistered .LEXE as the .lexe handler.\n"
+                     "Installed applications and their data are untouched.\n";
+        return 0;
     }
 
     const IntegrationReport result = integration.install_runtime_handler();

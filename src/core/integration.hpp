@@ -128,6 +128,12 @@ public:
     /// Remove every artifact owned by `id` and forget it in the state file.
     void remove_app(const std::string& id);
 
+    /// Deregister the RUNTIME handler: remove the MIME declaration, the
+    /// handler entry and the default association. Per-application entries are
+    /// deliberately left alone — uninstalling the runtime must not silently
+    /// deregister applications the user still has installed.
+    void remove_runtime_handler();
+
     /// Check every recorded artifact plus the invariants that make the reboot
     /// test meaningful. Executes nothing and changes nothing.
     IntegrationReport verify() const;

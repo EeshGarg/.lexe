@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
 #
-# install.sh — install the Lexe runtime for the current user and wire up the
-# desktop so double-clicking a .lexe file opens the graphical installer.
+# install.sh — install the .LEXE runtime for the current user.
 #
 # Usage: ./packaging/install.sh [build-dir]
 #   build-dir  directory holding the built binaries (default: ./build)
 #
 # Installs, per-user (no root required):
-#   * lexe, lexe-installer, lexe-builder  -> ~/.local/bin
-#   * lexe-installer.desktop, lexe-builder.desktop
-#                                         -> ~/.local/share/applications
-#   * application-x-lexe.xml (MIME def)   -> ~/.local/share/mime/packages
-# then refreshes the MIME/desktop databases and sets lexe-installer as the
-# default handler for application/x-lexe. Safe to re-run (idempotent).
+#   * lexe, lexe-ui, lexe-builder  -> ~/.local/bin
+#   * lexe-builder.desktop         -> ~/.local/share/applications
+# and then hands desktop registration to the runtime itself:
+#   * lexe integrate
+#
+# That last step matters architecturally. The .LEXE handler, the MIME type and
+# the default .lexe association are owned by ONE implementation — the runtime —
+# so there is exactly one thing to verify and repair afterwards:
+#
+#   lexe doctor            what is registered, and what is missing or stale
+#   lexe doctor --repair   put it back
+#
+# A shell script that hand-rolled the same registration would be a second,
+# silently diverging copy of it. Safe to re-run (idempotent).
 
 set -euo pipefail
 
 # ----------------------------------------------------------------- locations
-# Directory this script lives in, so it can find the shipped .desktop/.xml
-# files regardless of the caller's working directory.
+# Directory this script lives in, so it can find the shipped .desktop files
+# regardless of the caller's working directory.
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 
 build_dir="${1:-build}"
@@ -26,15 +33,16 @@ build_dir="${1:-build}"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 applications_dir="$data_home/applications"
-mime_packages_dir="$data_home/mime/packages"
-mime_dir="$data_home/mime"
 
-binaries=(lexe lexe-installer lexe-builder)
+# lexe is required; the GUIs are built only when GTK 3 is available.
+required_binaries=(lexe)
+optional_binaries=(lexe-ui lexe-builder)
 
 # --------------------------------------------------------------- presentation
 step_total=4
 step() { printf '\n[%d/%d] %s\n' "$1" "$step_total" "$2"; }
 ok()   { printf '   ok  %s\n' "$1"; }
+note() { printf '   --  %s\n' "$1"; }
 
 cat <<'BANNER'
       __
@@ -56,7 +64,7 @@ if [ ! -d "$build_dir" ]; then
 fi
 
 missing=0
-for bin in "${binaries[@]}"; do
+for bin in "${required_binaries[@]}"; do
     if [ ! -x "$build_dir/$bin" ]; then
         echo "error: missing built binary: $build_dir/$bin" >&2
         missing=1
@@ -74,64 +82,90 @@ fi
 if command -v ldconfig >/dev/null 2>&1; then
     if ! ldconfig -p 2>/dev/null | grep -q 'libsodium\.so'; then
         echo "warning: libsodium runtime library not found." >&2
-        echo "         install it, e.g.:  sudo apt install libsodium23" >&2
+        echo "         Fedora:        sudo dnf install libsodium" >&2
+        echo "         Debian/Ubuntu: sudo apt install libsodium23" >&2
+        echo "         Arch:          sudo pacman -S libsodium" >&2
     fi
 fi
 
 # ------------------------------------------------------------ install binaries
 step 2 "Installing binaries to $bin_dir"
 mkdir -p "$bin_dir"
-for bin in "${binaries[@]}"; do
-    cp -f "$build_dir/$bin" "$bin_dir/$bin"
-    chmod +x "$bin_dir/$bin"
+installed_gui=0
+for bin in "${required_binaries[@]}"; do
+    install -m 755 "$build_dir/$bin" "$bin_dir/$bin"
     ok "$bin"
+done
+for bin in "${optional_binaries[@]}"; do
+    if [ -x "$build_dir/$bin" ]; then
+        install -m 755 "$build_dir/$bin" "$bin_dir/$bin"
+        ok "$bin"
+        installed_gui=1
+    else
+        note "$bin not built (GTK 3 development files absent) — skipping"
+    fi
 done
 
 # --------------------------------------------------------- desktop + MIME wiring
 step 3 "Registering desktop integration"
-mkdir -p "$applications_dir" "$mime_packages_dir"
+mkdir -p "$applications_dir"
 
-cp -f "$script_dir/lexe-installer.desktop" \
-    "$applications_dir/lexe-installer.desktop"
-ok "lexe-installer.desktop"
-
-cp -f "$script_dir/lexe-builder.desktop" \
-    "$applications_dir/lexe-builder.desktop"
-ok "lexe-builder.desktop"
-
-cp -f "$script_dir/application-x-lexe.xml" \
-    "$mime_packages_dir/application-x-lexe.xml"
-ok "application/x-lexe MIME type"
-
-# Refresh the shared databases (best-effort: absent tools are not an error).
-step 4 "Refreshing the desktop and MIME databases"
-if command -v update-mime-database >/dev/null 2>&1; then
-    update-mime-database "$mime_dir" || true
+if [ -f "$script_dir/lexe-builder.desktop" ] && [ "$installed_gui" -eq 1 ]; then
+    install -m 644 "$script_dir/lexe-builder.desktop" \
+        "$applications_dir/lexe-builder.desktop"
+    ok "lexe-builder.desktop"
 fi
+
+# The runtime owns the handler, the MIME type and the default association.
+# Run the freshly installed copy so the registration matches the binary that
+# will actually handle the files.
+if "$bin_dir/lexe" integrate; then
+    ok "handler, MIME type and default .lexe association"
+else
+    echo "warning: 'lexe integrate' did not complete; run 'lexe doctor' for" >&2
+    echo "         details and 'lexe doctor --repair' to retry." >&2
+fi
+
+# The alpha shipped a separate lexe-installer binary and desktop entry. The
+# consumer frontend is now lexe-ui and the handler entry is lexe-handler.desktop,
+# so remove the superseded ones rather than leaving two things claiming .lexe.
+for stale in "$applications_dir/lexe-installer.desktop" \
+             "$bin_dir/lexe-installer" \
+             "$data_home/mime/packages/application-x-lexe.xml"; do
+    if [ -e "$stale" ]; then
+        rm -f "$stale"
+        note "removed superseded $stale"
+    fi
+done
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$applications_dir" || true
 fi
 
-# Make double-clicking a .lexe open the graphical installer (best-effort).
-if command -v xdg-mime >/dev/null 2>&1; then
-    xdg-mime default lexe-installer.desktop application/x-lexe || true
-    echo "set lexe-installer.desktop as the default handler for application/x-lexe"
+# ------------------------------------------------------------------- verify
+step 4 "Verifying the installation"
+if "$bin_dir/lexe" doctor; then
+    :
 else
-    echo "note: xdg-mime not found; skipped setting the default .lexe handler" >&2
+    echo
+    echo "note: 'lexe doctor' reported problems above. Fix them with:" >&2
+    echo "        lexe doctor --repair" >&2
 fi
 
 # ------------------------------------------------------------------ next steps
 echo
 echo "Done — the .lexe runtime is installed for $(id -un)."
 echo
-echo "  Runtime      lexe"
-echo "  Builder      lexe-builder"
-echo "  Installer    lexe-installer   (opens when you double-click a .lexe)"
+echo "  Runtime      lexe            the source of truth for every operation"
+if [ "$installed_gui" -eq 1 ]; then
+echo "  Applications lexe-ui         install, launch, compatibility, diagnostics"
+echo "  Builder      lexe-builder    build and sign your own .lexe packages"
+fi
 echo
 echo "Try it:"
-echo "  Build an app:      lexe-builder"
-echo "  Install an app:    lexe install App.lexe"
+echo "  Install an app:    lexe install App.lexe      (or just double-click it)"
+echo "  Launch it:         lexe run <app-id>"
 echo "  See what you have: lexe apps"
+echo "  Check the system:  lexe doctor"
 echo "  Explore the CLI:   lexe help"
 echo
 echo "Everything installs under your home directory. Nothing needs root, and"

@@ -455,6 +455,38 @@ DesktopIntegration::install_app(const Manifest& manifest,
     return report;
 }
 
+void DesktopIntegration::remove_runtime_handler() {
+    IntegrationState state = IntegrationState::load(paths_);
+    std::error_code ec;
+    for (const IntegrationArtifact& artifact : state.scope("")) {
+        fs::remove(fs::path(artifact.path), ec);
+    }
+    state.replace_scope("", {});
+    state.save(paths_);
+
+    // Drop only OUR default association, leaving every other association the
+    // user has set exactly as it was.
+    if (fs::is_regular_file(paths_.mimeapps_file(), ec)) {
+        std::istringstream in(util::slurp_text(paths_.mimeapps_file()));
+        std::string line;
+        std::string out;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const bool ours =
+                line == std::string(kCanonicalMime) + "=" +
+                            kHandlerDesktopFile ||
+                line == std::string(kLegacyMime) + "=" + kHandlerDesktopFile;
+            if (!ours) out += line + "\n";
+        }
+        try {
+            util::write_atomic(paths_.mimeapps_file(), out);
+        } catch (const std::exception&) {
+            // Leaving a stale association is better than losing the file.
+        }
+    }
+    refresh_desktop_databases(paths_);
+}
+
 void DesktopIntegration::remove_app(const std::string& id) {
     IntegrationState state = IntegrationState::load(paths_);
     std::error_code ec;
