@@ -8,7 +8,7 @@ step here is exercised end to end from a fresh checkout by
 lifecycle check, so it is a real path, not an aspirational one.
 
 Prerequisites: the runtime is built and installed (README *Quick install*), so
-`lexe`, `lexe-builder` and `lexe-installer` are on your `PATH`. On Linux you also
+`lexe`, `lexe-builder` and `lexe-ui` are on your `PATH`. On Linux you also
 need `bubblewrap` for the launch step. Confirm your versions:
 
 ```console

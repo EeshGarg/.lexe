@@ -20,6 +20,7 @@ implemented).
 
 | Document | Kind | What it covers |
 |---|---|---|
+| [DEFINITIVE-ARCHITECTURE.md](DEFINITIVE-ARCHITECTURE.md) | Normative | **Start here.** What the runtime does: package roles, execution policy, launch semantics, durable integration, launch references, diagnostics, state locations, the install/run lifecycle, and what is not done yet. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Normative | The module map, build system, conventions, GUIs, and the test matrix. |
 
 ## Specifications
@@ -81,6 +82,6 @@ Used consistently across the code, the GUIs, and the docs:
   titles — e.g. the *Lexe Reference Runtime*; the file and format are always `.lexe`.
 - **Runtime** — the reference implementation (`lexe`) that verifies, installs, launches, updates, and removes packages.
 - **Builder** — `lexe-builder` (GUI) and `lexe build` (CLI) that produce packages.
-- **Installer** — `lexe-installer` (GUI) and `lexe install` (CLI) that install a package.
+- **Consumer frontend** — `lexe-ui` (GUI, and the registered `.lexe` handler) and `lexe install` / `lexe open` (CLI).
 - **Runtime Profile** — the portability contract a package targets (see [RUNTIME_PROFILES.md](RUNTIME_PROFILES.md)).
 - **Tux32 Core 1** — the frozen, versioned portability baseline (see [TUX32.md](TUX32.md)).

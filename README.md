@@ -57,7 +57,7 @@ Compile  →  Build .lexe  →  Distribute  →  Runs on conforming runtimes
 | **`.lexe` Package Format** | A signed, deterministic ZIP container ([FORMAT-0.1](docs/FORMAT-0.1.md)): a JSON manifest, the application payload, per-file SHA-256 hashes, and Ed25519 signatures. Self-describing and tamper-evident. |
 | **Runtime** | `lexe` — verifies, installs, launches (inside a sandbox), updates, rolls back, and removes applications, entirely in userspace. It fails closed: it never runs an app unconfined when isolation is required. |
 | **Builder** | `lexe-builder` (a graphical wizard) and `lexe build` (CLI) turn a compiled folder into a signed package — discovering dependencies and reporting compatibility so you never touch the format's internals. |
-| **Installer** | `lexe-installer` (the GUI that opens on a double-click) and `lexe install` (CLI) verify a package and present its identity, permissions, and isolation before anything is written. |
+| **Installer** | `lexe-ui` (the GUI that opens on a double-click) and `lexe install` (CLI) verify a package and present its identity, permissions, and isolation before anything is written. |
 | **Tux32 Core 1** | The frozen, versioned **portability contract**: a dynamically linked x86-64 ELF within a glibc symbol ceiling of 2.31. A package that passes `lexe sdk verify` runs unchanged on any conforming host. See [TUX32.md](docs/TUX32.md). |
 
 ## Quick install

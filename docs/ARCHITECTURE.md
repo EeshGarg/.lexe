@@ -41,20 +41,25 @@ compiled with `MINIZ_NO_TIME` (deterministic archives, FORMAT §1).
 |---|---|
 | `error.hpp` | exception hierarchy, exit-code mapping |
 | `util.{hpp,cpp}` | hex/base64 encode-decode, file slurp/spit, recursive dir ops, `run_process(argv, …) -> {exit_code, stdout}` (CreateProcess / posix_spawn), RFC 3339 UTC timestamps (callers pass no clock; a single `now_utc_string()` lives here) |
-| `paths.{hpp,cpp}` | `Paths::detect(env)` — resolves `LEXE_HOME` override, XDG dirs on Linux, `%LOCALAPPDATA%\lexe` on Windows; exposes `apps_dir()`, `data_dir()`, `cache_dir()`, `applications_dir()` (XDG), `icons_dir()`, `mime_dir()` |
+| `paths.{hpp,cpp}` | `Paths::detect(env)` — resolves `LEXE_HOME` override, XDG dirs on Linux, `%LOCALAPPDATA%\lexe` on Windows; exposes `apps_dir()`, `data_dir()`, `cache_dir()`, `applications_dir()` (XDG), `icons_dir()`, `mime_dir()`, plus the Definitive Architecture's separate roots: `state_dir()` (diagnostics), `config_dir()` (user overrides), `launch_dir()`, `keys_dir()`, `errors_dir()`, `apps_config_dir()`, `integration_state_file()`, `mimeapps_file()` |
 | `crypto.{hpp,cpp}` | SHA-256 of bytes/files (streamed); Ed25519 keygen from OS entropy, sign, verify; publisher-key string encode/decode (`ed25519:` + base64, FORMAT §4); key file read/write (0600 on POSIX) |
 | `manifest.{hpp,cpp}` | `Manifest` struct mirroring FORMAT §5; `Manifest::parse(bytes)` with full validation; `to_json()` |
 | `package.{hpp,cpp}` | `PackageReader` — open `.lexe`, path-safety checks (FORMAT §2), list entries, read entry bytes, extract `payload/` to a directory (zip-slip safe: every resolved destination must remain under the target root); `PackageWriter` — deterministic pack of a source tree (FORMAT §1), computes `hashes.json`, signs with a key file |
-| `verify.{hpp,cpp}` | the FORMAT §6 pipeline; returns `VerificationReport { stages: [{name, ok, detail}], ok() }` |
+| `verify.{hpp,cpp}` | the FORMAT §6 pipeline plus the `payload-role` stage (Definitive Architecture §14.2): a native package's declared entrypoint must BE a runnable ELF for a declared architecture, and a launch reference must carry no payload. Returns `VerificationReport { stages: [{name, ok, detail}], ok() }` |
 | `registry.{hpp,cpp}` | installed-app records under `<LEXE_HOME>/apps/` (FORMAT §9): `InstallationRecord` (installation.json) read/write, list installed apps, resolve current version (symlink or `current.txt` fallback), flip current, record/remove created files; the ONE canonical per-app path API (data/cache/runtime-temp/lock/lease/owner-marker), all id/version-validated |
 | `lock.{hpp,cpp}` | OS-backed operation locking (WS9, docs/CONCURRENCY.md): `OperationLockManager` with an `flock(2)` backend + permissive non-POSIX backend + test fake; `AppLock`/`LaunchLease`/`GlobalRecoveryLock` scoped types; kernel-released on death (no timestamp staleness), ordered to avoid deadlock |
 | `trust.{hpp,cpp}` | LOCAL trust-on-first-use model (WS3/WS4, docs/TRUST-MODEL.md): typed `SignatureState`/`PublisherKeyState`/`TrustDecision`; canonical key fingerprints; strict `TrustRecord` under `<home>/trust/<id>.json`; `TrustStore` evaluate/record/block/unblock/forget. Authenticity ≠ real-world identity |
 | `presentation.{hpp,cpp}` | Frontend-neutral display model (WS10): `present_authenticity`/`present_permissions`/`present_isolation` produce the truthful strings the CLI and GTK both render (no "verified"/"trusted"/"safe"; first-seen is caution, per-permission enforcement, platform isolation summary) |
 | `installer.{hpp,cpp}` | `install(package_path, opts)` → verify, extract to `versions/<v>/`, write records, desktop integration, data-owner marker; three-mode `uninstall(id, mode)`; `rollback(id)`; `garbage_collect(id, keep)` (lease-aware, conservative); `repair(id, package?)`; every mutation serialized by the per-app lock |
-| `desktop.{hpp,cpp}` | Linux: write `lexe-<id>.desktop` (Exec=`lexe run <id>`), install icons to hicolor, MIME XML, best-effort `update-desktop-database`/`update-mime-database`; also `integrate_runtime()` used by packaging to register `application/x-lexe` for the runtime itself. Windows: every function is a recorded no-op (returns `skipped`) so core tests run anywhere |
+| `desktop.{hpp,cpp}` | Content generation for desktop artifacts: `lexe-<id>.desktop` text (Exec=`lexe run <id>`, never a payload path), MIME XML for file associations, icon mapping. Pure string functions, unit-testable on any platform |
+| `integration.{hpp,cpp}` | DURABLE desktop integration (Definitive Architecture §14.1/§15.1). Integration is installed system state, not a side effect: `integration.json` enumerates every artifact .LEXE owns with its content hash; `verify()` names what is missing or modified; `repair()` re-establishes it FROM INSTALLED STATE with no package present. Owns the persistent `application/vnd.usha.lexe` handler (alias `application/x-lexe`) and the `mimeapps.list` default association — the piece that survives reboot |
+| `launchref.{hpp,cpp}` | First-class `run.lexe` launch references (§15.1): a real, fully signed, fully verifiable `.lexe` with role `launch` and no payload, signed by a stable machine-local key (the "Locally Trusted" signer class) so the raw ELF never becomes the user-facing launch object |
+| `execpolicy.{hpp,cpp}` | The execution resolver (§6/§7/§8): STRICT resolver for mission-critical software (Linux-native + host-ISA-native or stop), NORMAL resolver otherwise. Probes compatibility providers (FEX/Box64/qemu-user/Wine/Proton), builds chains incl. layered `proton+fex` forms. Pure with respect to package policy and user preference; host reality enters through a probed `ProviderSet` |
+| `appconfig.{hpp,cpp}` | Per-application USER overrides under `<config>/apps/<id>.json` (§10). Can only narrow or reorder what the manifest permits — never extend it, and never reach past mission-critical policy |
+| `diagnostics.{hpp,cpp}` | Structured `.lexe-error` records under `<state>/errors/<id>/` (§9): typed `FailureStage`, execution chain, host OS/ISA, runtime, exit code **or signal**, captured stream references, timestamp. Bounded per-stream and per-app with disclosed truncation |
 | `http.{hpp,cpp}` | `fetch_to_file(url, dest)` / `fetch_bytes(url)`: `https://`/`http://` via `curl` subprocess (`--fail -sS -L --max-time`), `file://` and plain paths via filesystem; no shell — argv arrays only |
 | `updater.{hpp,cpp}` | fetch + verify `update.json` (+`.sig`), FORMAT §7 checks 1–7, download to cache, hand to installer as new version, retain previous; `check(id)` (dry) and `apply(id)`; `set_source(id, url)` |
-| `launcher.{hpp,cpp}` | `run(id, argv)` — resolve current version, take a shared launch lease (WS9 TOCTOU closure), validate entrypoint containment + hash integrity, launch THROUGH the isolation backend (WS7), record last-run/exit in installation.json, propagate exit code |
+| `launcher.{hpp,cpp}` | `run_application(paths, RunRequest) -> ExecutionReport` — the POST-INSTALL/RUN role of §7. Resolves current version, takes a shared launch lease (WS9 TOCTOU closure), enforces local trust, reads the EXECUTION POLICY and resolves the chain, confirms the runtime contract recorded at install (§16), validates entrypoint containment + hash integrity, applies the DECLARED launch presentation (§14.4 — a console app with no terminal is given one), launches THROUGH the isolation backend (WS7), records an execution report, and writes a structured error record on any failure |
 | `versioncmp.{hpp,cpp}` | FORMAT §8 semver-lite total order |
 | `elf.{hpp,cpp}` | Defensive, bounds-checked ELF metadata reader (DX3, docs/DEPENDENCY_ENGINE.md): class/arch/type, interpreter, `DT_NEEDED`/`SONAME`/`RPATH`/`RUNPATH`, `DT_VERNEED` version needs. Never runs `ldd`; never over-reads |
 | `depengine.{hpp,cpp}` | Automatic dependency resolution (DX3): recursive graph from a root binary, deterministic soname resolution, typed classification (host-interface / bundle / forbidden / unresolved / language-runtime hook), hashing, cycles, glibc-version aggregation |
@@ -107,7 +112,7 @@ and asks for confirmation on stdin. Exit codes: `0` ok, `1` runtime error,
 `lexe pack` source-dir convention: the directory's contents become `payload/`;
 `--manifest` supplies `lexe.json`; optional `--icons <dir>`, `--metadata <dir>`.
 
-## GUI — `src/gui/` → `lexe-installer` + `lexe-builder` (Linux only)
+## GUI — `src/gui/` → `lexe-ui` + `lexe-builder` (Linux only)
 
 GTK 3 via the C API (`pkg-config gtk+-3.0`). Each GUI splits into a pure,
 GTK-free presentation/validation layer (the "view model", unit-tested on every
@@ -125,10 +130,15 @@ than truncation, and the system light/dark theme and font scaling are honored
 because no colors or sizes are hard-coded over the theme. `lexe-builder` opens
 with a first-run welcome screen (shown once).
 
-* **`lexe-installer`** — flow per SPEC §User Interface: open with a `.lexe`
-  argument → run verification → primary screen (app, publisher, version, source,
-  type/arch, permissions, size, update policy, verification status) → Install /
-  Advanced → progress → success screen with a Launch button (`lexe run`).
+* **`lexe-ui`** — the consumer and power-user frontend, and the registered
+  `.lexe` handler. `--open <file.lexe>` verifies the artifact, reads its SIGNED
+  role and dispatches: role `application` → the install flow (verification →
+  primary screen → Install → progress → success with Launch); role `launch` →
+  resolve the application id and launch it. `--app <id>` opens an application's
+  page (".LEXE Menu"); `--errors <id>` opens its Error History (".LEXE Error").
+  Single-instance: a second invocation focuses the existing window and
+  navigates. Pages: Home, Install, Apps → App (Launch, Compatibility, Runtime,
+  Permissions, Diagnostics, Error History, Uninstall), Settings.
 * **`lexe-builder`** — a seven-step wizard (Source → Dependencies → Architecture →
   Installer → Signing → Output → Build) that turns a project folder into a signed
   `.lexe`. The Build step enforces the Core Portable / Tux32 Core 1 gate (a
@@ -157,7 +167,7 @@ with a first-run welcome screen (shown once).
 ## Build
 
 * `CMakeLists.txt` (single top-level): `lexe_core` static lib, `lexe` CLI,
-  `lexe_tests` (CTest-registered), `lexe-installer` behind
+  `lexe_tests` (CTest-registered), `lexe-ui` behind
   `LEXE_BUILD_GUI` (auto: ON when gtk+-3.0 found).
 * `CMakePresets.json`: `msvc` (Ninja, cl, dev-host) and `linux` (Ninja or Make).
 * `scripts/build.cmd` — Windows one-shot: calls
