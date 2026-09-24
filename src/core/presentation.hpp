@@ -45,6 +45,42 @@ const char* to_string(AuthenticityView::Severity s);
 AuthenticityView present_authenticity(const TrustEvaluation& eval,
                                       const std::string& publisher_display);
 
+// ------------------------------------------------------------ signer class
+
+/// The signer vocabulary of the Definitive Architecture §4. It is a TAXONOMY,
+/// and this runtime implements only the part of it that it can establish
+/// truthfully. Cryptographic validity and signer trust are separate concepts:
+/// a valid signature proves provenance and integrity; it does NOT by itself
+/// prove that the software is safe, or who the publisher is in the real world.
+enum class SignerClass {
+    UshaVerified,       // NOT AVAILABLE — needs a signing authority
+    OrganizationSigned, // NOT AVAILABLE — needs organizational attestation
+    DeveloperSigned,    // valid signature by the key already bound to this App ID
+    LocallyTrusted,     // that key was EXPLICITLY trusted on this machine
+    UnknownSigner,      // valid signature, first-seen key: identity not established
+    InvalidSignature,   // the signature did not verify, or the key changed
+};
+const char* to_string(SignerClass c);
+
+/// One row of the §4 taxonomy, including whether this runtime can actually
+/// establish it. A frontend that shows the taxonomy must show the unavailable
+/// tiers as unavailable rather than quietly omitting them — otherwise a user
+/// could reasonably infer that "Developer Signed" is the top of the scale.
+struct SignerClassInfo {
+    SignerClass signer_class = SignerClass::UnknownSigner;
+    std::string id;          // "usha-verified"
+    std::string name;        // "Usha Verified"
+    std::string meaning;     // what it would assert
+    bool available = false;  // can THIS runtime ever assign it?
+    std::string unavailable_reason; // why not, when it cannot
+};
+const std::vector<SignerClassInfo>& signer_classes();
+const SignerClassInfo& signer_class_info(SignerClass c);
+
+/// Classify a trust evaluation into the §4 vocabulary. Never returns a class
+/// this runtime cannot establish.
+SignerClass classify_signer(const TrustEvaluation& eval);
+
 // --------------------------------------------------------- permissions
 
 /// Human label for a permission id (the vocabulary title; unknown ids pass

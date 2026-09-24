@@ -139,16 +139,23 @@ TEST_CASE("isolation: truthful summary per capability status") {
     const IsolationView avail = present_isolation(linux_available());
     CHECK(has(avail.headline, "enforced"));
     CHECK(has(avail.platform_caveat, "seccomp"));
-    CHECK(has(avail.platform_caveat, "GUI forwarding is unavailable"));
-    // The control rows spell out advisory / unavailable / not-implemented truths.
-    bool saw_advisory = false, saw_gui_unavailable = false, saw_seccomp = false;
+    // Display access is granted ONLY for a declared GUI launch mode, and when
+    // it IS granted the summary must say so rather than keep claiming the
+    // display is isolated. Both halves of that sentence are load-bearing.
+    CHECK(has(avail.platform_caveat, "GUI launch mode"));
+    CHECK(has(avail.platform_caveat, "reported, not hidden"));
+    // The control rows spell out advisory / conditional / not-implemented truths.
+    bool saw_advisory = false, saw_display = false, saw_seccomp = false;
     for (const auto& row : avail.controls) {
         if (has(row.first, "File selection") && row.second == "advisory") saw_advisory = true;
-        if (has(row.first, "GUI forwarding") && row.second == "unavailable") saw_gui_unavailable = true;
+        if (has(row.first, "Display isolation") &&
+            has(row.second, "except for a declared GUI launch mode")) {
+            saw_display = true;
+        }
         if (has(row.first, "seccomp") && row.second == "not implemented") saw_seccomp = true;
     }
     CHECK(saw_advisory);
-    CHECK(saw_gui_unavailable);
+    CHECK(saw_display);
     CHECK(saw_seccomp);
 
     IsolationCapabilities win;
@@ -163,3 +170,70 @@ TEST_CASE("isolation: truthful summary per capability status") {
 }
 
 } // TEST_SUITE("presentation")
+
+// --------------------------------------------------------------- §4 signer
+
+TEST_CASE("signer classification never claims a tier this runtime cannot "
+          "establish") {
+    // Definitive Architecture §4 lists six signer classes. Two of them —
+    // Usha Verified and Organization Signed — require infrastructure that does
+    // not exist here. The taxonomy is still SHOWN, marked unavailable, so a
+    // user cannot mistake "Developer Signed" for the top of the scale; but
+    // classify_signer must never actually return one of them.
+    const auto& classes = presentation::signer_classes();
+    CHECK(classes.size() == 6);
+
+    std::size_t unavailable = 0;
+    for (const auto& info : classes) {
+        CHECK_FALSE(info.id.empty());
+        CHECK_FALSE(info.name.empty());
+        CHECK_FALSE(info.meaning.empty());
+        if (!info.available) {
+            ++unavailable;
+            // An unavailable tier must SAY why, not just be greyed out.
+            CHECK_FALSE(info.unavailable_reason.empty());
+        } else {
+            CHECK(info.unavailable_reason.empty());
+        }
+    }
+    CHECK(unavailable == 2);
+    CHECK_FALSE(presentation::signer_class_info(
+                    presentation::SignerClass::UshaVerified)
+                    .available);
+    CHECK_FALSE(presentation::signer_class_info(
+                    presentation::SignerClass::OrganizationSigned)
+                    .available);
+
+    const auto classify = [](SignatureState signature,
+                             PublisherKeyState key_state) {
+        TrustEvaluation eval;
+        eval.signature = signature;
+        eval.key_state = key_state;
+        return presentation::classify_signer(eval);
+    };
+
+    // Cryptographic validity gates everything above "invalid".
+    for (const SignatureState bad :
+         {SignatureState::Invalid, SignatureState::Malformed,
+          SignatureState::Missing, SignatureState::UnsupportedAlgorithm}) {
+        CHECK(classify(bad, PublisherKeyState::ExplicitlyTrusted) ==
+              presentation::SignerClass::InvalidSignature);
+    }
+
+    // A valid signature by the WRONG key is a refusal, not a trust tier.
+    for (const PublisherKeyState refused :
+         {PublisherKeyState::Changed, PublisherKeyState::Blocked,
+          PublisherKeyState::TrustUnavailable,
+          PublisherKeyState::RetainedDataConflict}) {
+        CHECK(classify(SignatureState::Valid, refused) ==
+              presentation::SignerClass::InvalidSignature);
+    }
+
+    CHECK(classify(SignatureState::Valid, PublisherKeyState::FirstSeen) ==
+          presentation::SignerClass::UnknownSigner);
+    CHECK(classify(SignatureState::Valid, PublisherKeyState::KnownMatching) ==
+          presentation::SignerClass::DeveloperSigned);
+    CHECK(classify(SignatureState::Valid,
+                   PublisherKeyState::ExplicitlyTrusted) ==
+          presentation::SignerClass::LocallyTrusted);
+}

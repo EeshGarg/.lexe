@@ -167,8 +167,11 @@ IsolationView present_isolation(const IsolationCapabilities& caps) {
         v.platform_caveat =
             "Linux baseline: a read-only application image, private data/cache/"
             "temp, environment sanitization and (when not granted) network "
-            "denial are enforced; file-selection is advisory; GUI forwarding is "
-            "unavailable; a seccomp syscall filter is not implemented in 0.1.";
+            "denial are enforced; file-selection is advisory; display access is "
+            "granted ONLY to an application whose manifest declares a GUI "
+            "launch mode, and when it is granted the display socket is "
+            "genuinely reachable — that is reported, not hidden; a seccomp "
+            "syscall filter is not implemented in 0.1.";
     }
 
     const char* base = enforced ? "enforced" : "not established";
@@ -179,10 +182,96 @@ IsolationView present_isolation(const IsolationCapabilities& caps) {
         {"Network denial (when not granted)",
          caps.network_namespaces ? "enforced" : "unavailable"},
         {"File selection (user-files-selected)", "advisory"},
-        {"GUI forwarding", "unavailable"},
+        // Display access is per-launch and DECLARED: a console or service
+        // application gets no display socket at all, and a GUI application
+        // gets exactly one — not D-Bus, not the home directory, not network.
+        {"Display isolation",
+         enforced ? "enforced, except for a declared GUI launch mode"
+                  : "not established"},
         {"seccomp syscall filter", "not implemented"},
     };
     return v;
+}
+
+// ------------------------------------------------------------ signer class
+
+const char* to_string(SignerClass c) {
+    switch (c) {
+    case SignerClass::UshaVerified: return "usha-verified";
+    case SignerClass::OrganizationSigned: return "organization-signed";
+    case SignerClass::DeveloperSigned: return "developer-signed";
+    case SignerClass::LocallyTrusted: return "locally-trusted";
+    case SignerClass::UnknownSigner: return "unknown-signer";
+    case SignerClass::InvalidSignature: return "invalid-signature";
+    }
+    return "unknown-signer";
+}
+
+const std::vector<SignerClassInfo>& signer_classes() {
+    static const std::vector<SignerClassInfo> kClasses = {
+        {SignerClass::UshaVerified, "usha-verified", "Usha Verified",
+         "Signed by a recognised high-trust .LEXE signing authority.",
+         /*available=*/false,
+         "No signing authority exists for this runtime to check against, so "
+         "this tier can never be assigned here. It is shown so the scale is "
+         "not mistaken for a shorter one."},
+        {SignerClass::OrganizationSigned, "organization-signed",
+         "Organization Signed",
+         "Signed by a key attested to belong to a named organization.",
+         /*available=*/false,
+         "There is no organizational attestation mechanism in this runtime; an "
+         "organization's key is indistinguishable from any other developer "
+         "key, and claiming otherwise would be a false assurance."},
+        {SignerClass::DeveloperSigned, "developer-signed", "Developer Signed",
+         "A valid signature by the key already bound to this application on "
+         "this machine. Proves continuity of the signer — not who they are.",
+         /*available=*/true, ""},
+        {SignerClass::LocallyTrusted, "locally-trusted", "Locally Trusted",
+         "A valid signature by a key you explicitly chose to trust on this "
+         "machine. Local only: it means nothing on any other machine.",
+         /*available=*/true, ""},
+        {SignerClass::UnknownSigner, "unknown-signer", "Unknown Signer",
+         "A valid signature by a key seen for the first time. The bytes are "
+         "consistent with that key; the signer's identity is not established.",
+         /*available=*/true, ""},
+        {SignerClass::InvalidSignature, "invalid-signature",
+         "Invalid Signature",
+         "The signature did not verify, is missing or malformed, or the key "
+         "presented differs from the one bound to this application.",
+         /*available=*/true, ""},
+    };
+    return kClasses;
+}
+
+const SignerClassInfo& signer_class_info(SignerClass c) {
+    for (const SignerClassInfo& info : signer_classes()) {
+        if (info.signer_class == c) return info;
+    }
+    return signer_classes().back();
+}
+
+SignerClass classify_signer(const TrustEvaluation& eval) {
+    // Cryptographic validity first: nothing above "invalid" is reachable
+    // without a signature that actually verified.
+    if (eval.signature != SignatureState::Valid) {
+        return SignerClass::InvalidSignature;
+    }
+    switch (eval.key_state) {
+    case PublisherKeyState::Changed:
+    case PublisherKeyState::Blocked:
+    case PublisherKeyState::TrustUnavailable:
+    case PublisherKeyState::RetainedDataConflict:
+        // A valid signature by the WRONG key, or a state we cannot read, is
+        // not a trust tier — it is a refusal.
+        return SignerClass::InvalidSignature;
+    case PublisherKeyState::ExplicitlyTrusted:
+        return SignerClass::LocallyTrusted;
+    case PublisherKeyState::KnownMatching:
+        return SignerClass::DeveloperSigned;
+    case PublisherKeyState::FirstSeen:
+        break;
+    }
+    return SignerClass::UnknownSigner;
 }
 
 } // namespace lexe::presentation

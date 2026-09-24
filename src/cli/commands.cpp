@@ -86,8 +86,10 @@ constexpr const char* kVerifyUsage = "usage: lexe verify <file.lexe> [--json]";
 constexpr const char* kSourceUsage = "usage: lexe source set <id> <url>";
 constexpr const char* kRollbackUsage = "usage: lexe rollback <id>";
 constexpr const char* kGcUsage = "usage: lexe gc <id> [--keep <n>]";
+constexpr const char* kTrustClassesUsage = "usage: lexe trust classes [--json]";
 constexpr const char* kTrustUsage =
     "usage: lexe trust show <id> [--json]\n"
+    "       lexe trust classes [--json]\n"
     "       lexe trust block <id>\n"
     "       lexe trust unblock <id>\n"
     "       lexe trust forget <id> [--force]";
@@ -1539,6 +1541,18 @@ int cmd_trust_show(const std::string& id, bool as_json) {
     } else {
         std::cout << "Local trust: known key, accepted for this App ID\n";
     }
+    // The §4 signer class this state corresponds to. Shown alongside the local
+    // state rather than instead of it: they answer different questions.
+    {
+        const presentation::SignerClass signer =
+            rec->blocked ? presentation::SignerClass::InvalidSignature
+            : rec->explicitly_trusted
+                ? presentation::SignerClass::LocallyTrusted
+                : presentation::SignerClass::DeveloperSigned;
+        std::cout << "Signer class: "
+                  << presentation::signer_class_info(signer).name
+                  << "   (see `lexe trust classes`)\n";
+    }
     if (!rec->public_key.empty()) {
         const Fingerprint fp = key_fingerprint(rec->public_key);
         std::cout << "Signing key fingerprint:\n  " << fp.grouped << "\n";
@@ -1546,6 +1560,46 @@ int cmd_trust_show(const std::string& id, bool as_json) {
     if (!rec->first_seen.empty()) std::cout << "First seen:  " << rec->first_seen << "\n";
     if (!rec->last_seen.empty()) std::cout << "Last seen:   " << rec->last_seen << "\n";
     std::cout << kNote << "\n";
+    return 0;
+}
+
+/// Definitive Architecture §4 — show the signer vocabulary, including the
+/// tiers this runtime CANNOT establish. Hiding those would let a user read
+/// "Developer Signed" as the top of the scale when it is not.
+int cmd_trust_classes(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json"}, {}, false, kTrustClassesUsage);
+    require_positionals(parsed, 0, kTrustClassesUsage);
+
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json classes = ordered_json::array();
+        for (const presentation::SignerClassInfo& info :
+             presentation::signer_classes()) {
+            classes.push_back({{"id", info.id},
+                               {"name", info.name},
+                               {"meaning", info.meaning},
+                               {"available", info.available},
+                               {"unavailableReason", info.unavailable_reason}});
+        }
+        std::cout << ordered_json{{"signerClasses", std::move(classes)}}.dump(2)
+                  << "\n";
+        return 0;
+    }
+
+    std::cout << "Signer classes\n\n"
+              << "  Cryptographic validity and signer trust are SEPARATE. A "
+                 "valid signature proves\n  provenance and integrity; it does "
+                 "not by itself prove the software is safe.\n\n";
+    for (const presentation::SignerClassInfo& info :
+         presentation::signer_classes()) {
+        std::cout << "  " << info.name
+                  << (info.available ? "" : "   [not available here]") << "\n";
+        std::cout << "      " << info.meaning << "\n";
+        if (!info.available) {
+            std::cout << "      " << info.unavailable_reason << "\n";
+        }
+        std::cout << "\n";
+    }
     return 0;
 }
 
@@ -1557,6 +1611,7 @@ int cmd_trust(const std::vector<std::string>& args) {
     const std::vector<std::string> rest(args.begin() + 1, args.end());
     const Paths paths = Paths::detect();
 
+    if (sub == "classes") return cmd_trust_classes(rest);
     if (sub == "show") {
         const Parsed p = parse_arguments(rest, {"--json"}, {}, false, kTrustUsage);
         require_positionals(p, 1, kTrustUsage);
@@ -2553,8 +2608,8 @@ std::string usage_text() {
            "Trust & verification\n"
            "  verify <file.lexe> [--json]              run the verification "
            "pipeline\n"
-           "  trust show|block|unblock|forget <id>     inspect or set local "
-           "publisher trust\n"
+           "  trust show|classes|block|unblock|forget  inspect signer classes "
+           "or set local publisher trust\n"
            "  source set <id> <url>                    set the update source\n"
            "\n"
            "System\n"

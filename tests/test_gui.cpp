@@ -171,7 +171,7 @@ TEST_CASE("format_isolation states the truthful control set") {
     CHECK(contains(text, "enforced"));
     CHECK(contains(text, "advisory"));           // file selection
     CHECK(contains(text, "not implemented"));    // seccomp
-    CHECK(contains(text, "GUI forwarding"));
+    CHECK(contains(text, "Display isolation"));  // conditional on launch.mode
 }
 
 TEST_CASE("format_advanced_directories lists every FORMAT-0.1 §9 location") {
