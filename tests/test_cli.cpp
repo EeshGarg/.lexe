@@ -874,16 +874,79 @@ TEST_CASE("list on an empty home: friendly text and an empty JSON array") {
     CHECK(j.empty());
 }
 
-TEST_CASE("integrate runs and reports what it did") {
+TEST_CASE("integrate registers a PERSISTENT .lexe handler") {
+    // Definitive Architecture §14.1: the handler is installed SYSTEM STATE,
+    // not session state. `integrate` must therefore write a handler entry, a
+    // MIME declaration AND a durable default association, and record all of it
+    // so `doctor` can verify and repair it later.
     test::TempLexeHome home;
     const auto r = run_cli({"integrate"});
     CHECK(r.exit_code == 0);
 #ifdef _WIN32
     CHECK(contains(r.stdout_text, "skipped"));
 #else
-    CHECK(contains(r.stdout_text, "lexe-installer.desktop"));
-    CHECK(fs::is_regular_file(Paths::detect().applications_dir() /
-                              "lexe-installer.desktop"));
+    const Paths paths = Paths::detect();
+    CHECK(contains(r.stdout_text, "lexe-handler.desktop"));
+    CHECK(contains(r.stdout_text, "application/vnd.usha.lexe"));
+    CHECK(fs::is_regular_file(paths.applications_dir() /
+                              "lexe-handler.desktop"));
+    CHECK(fs::is_regular_file(paths.mime_dir() / "packages" / "lexe.xml"));
+
+    // The association is the part that actually survives a reboot.
+    REQUIRE(fs::is_regular_file(paths.mimeapps_file()));
+    const std::string mimeapps = util::slurp_text(paths.mimeapps_file());
+    CHECK(contains(mimeapps, "[Default Applications]"));
+    CHECK(contains(mimeapps,
+                   "application/vnd.usha.lexe=lexe-handler.desktop"));
+    // The alpha's type stays registered as an alias so existing files and
+    // already-registered desktops keep working.
+    CHECK(contains(mimeapps, "application/x-lexe=lexe-handler.desktop"));
+    const std::string mime_xml =
+        util::slurp_text(paths.mime_dir() / "packages" / "lexe.xml");
+    CHECK(contains(mime_xml, "application/vnd.usha.lexe"));
+    CHECK(contains(mime_xml, "<alias type=\"application/x-lexe\"/>"));
+
+    // The handler must route through .LEXE, never through a payload path.
+    const std::string entry =
+        util::slurp_text(paths.applications_dir() / "lexe-handler.desktop");
+    CHECK(contains(entry, "Exec=lexe-ui --open %f"));
+
+    // And it must be recorded, so doctor reports a healthy system.
+    CHECK(fs::is_regular_file(paths.integration_state_file()));
+    const auto doctor = run_cli({"doctor"});
+    CHECK(doctor.exit_code == 0);
+    CHECK(contains(doctor.stdout_text, "healthy"));
+#endif
+}
+
+TEST_CASE("doctor detects and repairs a broken .lexe handler registration") {
+#ifndef _WIN32
+    // The alpha's defining failure: it worked, then after a reboot it did not.
+    // Whatever destroys the registration, `doctor` must NAME it and `doctor
+    // --repair` must re-establish it (§14.1, §15.1).
+    test::TempLexeHome home;
+    REQUIRE(run_cli({"integrate"}).exit_code == 0);
+    const Paths paths = Paths::detect();
+
+    const fs::path handler =
+        paths.applications_dir() / "lexe-handler.desktop";
+    REQUIRE(fs::is_regular_file(handler));
+    fs::remove(handler);
+    fs::remove(paths.mimeapps_file());
+
+    const auto broken = run_cli({"doctor"});
+    CHECK(broken.exit_code != 0);
+    CHECK(contains(broken.stdout_text, "lexe-handler.desktop"));
+    CHECK(contains(broken.stdout_text, "missing"));
+
+    const auto repaired = run_cli({"doctor", "--repair"});
+    CHECK(repaired.exit_code == 0);
+    CHECK(fs::is_regular_file(handler));
+    CHECK(contains(util::slurp_text(paths.mimeapps_file()),
+                   "application/vnd.usha.lexe=lexe-handler.desktop"));
+
+    // And a second check now passes.
+    CHECK(run_cli({"doctor"}).exit_code == 0);
 #endif
 }
 

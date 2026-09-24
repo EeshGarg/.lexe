@@ -10,7 +10,12 @@
 #include "core/compat.hpp"
 #include "core/crypto.hpp"
 #include "core/depengine.hpp"
+#include "core/appconfig.hpp"
 #include "core/desktop.hpp"
+#include "core/diagnostics.hpp"
+#include "core/execpolicy.hpp"
+#include "core/integration.hpp"
+#include "core/launchref.hpp"
 #include "core/elf.hpp"
 #include "core/error.hpp"
 #include "core/installer.hpp"
@@ -45,6 +50,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -64,7 +70,9 @@ using nlohmann::ordered_json;
 constexpr const char* kInstallUsage =
     "usage: lexe install <file.lexe> [--yes] [--trust] [--accept-permissions] "
     "[--channel <c>]";
-constexpr const char* kRunUsage = "usage: lexe run <id> [-- <args...>]";
+constexpr const char* kRunUsage =
+    "usage: lexe run <id> [--chain <id>] [--attached-terminal] "
+    "[-- <args...>]";
 constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
 constexpr const char* kRemoveUsage =
@@ -88,7 +96,17 @@ constexpr const char* kKeygenUsage = "usage: lexe keygen <keyfile.json>";
 constexpr const char* kPackUsage =
     "usage: lexe pack <source-dir> --manifest <lexe.json> --key "
     "<keyfile.json> -o <out.lexe> [--icons <dir>] [--metadata <dir>]";
-constexpr const char* kIntegrateUsage = "usage: lexe integrate";
+constexpr const char* kIntegrateUsage = "usage: lexe integrate [--verify]";
+constexpr const char* kOpenUsage =
+    "usage: lexe open <artifact.lexe> [--yes] [--trust] [--no-terminal] "
+    "[--json]";
+constexpr const char* kDoctorUsage = "usage: lexe doctor [--repair] [--json]";
+constexpr const char* kErrorsUsage =
+    "usage: lexe errors <id> [--json] [--latest] [--clear] [--path]";
+constexpr const char* kCompatUsage =
+    "usage: lexe compat <id> [--set <chain> | --auto] [--json]";
+constexpr const char* kLaunchRefUsage =
+    "usage: lexe launch-ref <id> [-o <run.lexe>]";
 constexpr const char* kSignUpdateUsage =
     "usage: lexe sign-update <update.json> --key <keyfile.json>";
 constexpr const char* kBuildUsage =
@@ -435,11 +453,27 @@ int cmd_install(const std::vector<std::string>& args) {
 }
 
 int cmd_run(const std::vector<std::string>& args) {
-    const Parsed parsed = parse_arguments(args, {}, {}, true, kRunUsage);
+    const Parsed parsed = parse_arguments(
+        args, {"--attached-terminal", "--no-terminal"}, {"--chain"}, true,
+        kRunUsage);
     require_positionals(parsed, 1, kRunUsage);
+
+    RunRequest request;
+    request.id = parsed.positionals[0];
+    request.args = parsed.passthrough;
+    // Set by .LEXE itself when it re-enters inside the terminal it chose for a
+    // console application (Definitive Architecture §14.4); prevents a loop.
+    request.attached_terminal = parsed.flags.count("--attached-terminal") != 0;
+    request.allow_terminal_spawn = parsed.flags.count("--no-terminal") == 0;
+    if (const auto chain = parsed.options.find("--chain");
+        chain != parsed.options.end()) {
+        request.chain_override = chain->second;
+    }
+
+    const ExecutionReport report = run_application(Paths::detect(), request);
     // The child's exit code is propagated verbatim (SPEC "Installed
     // Application Representation").
-    return run_app(Paths::detect(), parsed.positionals[0], parsed.passthrough);
+    return report.exit_code;
 }
 
 int cmd_update(const std::vector<std::string>& args) {
@@ -883,11 +917,11 @@ constexpr const char* kCompletionUsage = "usage: lexe completion [bash]";
 // completion word list and the "did you mean" suggester.
 const std::vector<std::string>& known_commands() {
     static const std::vector<std::string> k = {
-        "install", "run",  "list",   "apps",        "info",      "inspect",
-        "update",  "rollback", "repair", "remove",  "gc",        "build",
-        "analyze", "sdk",  "pack",   "keygen",      "sign-update", "verify",
-        "trust",   "source", "config", "integrate", "completion", "version",
-        "help"};
+        "install",  "open",    "run",     "list",     "apps",     "info",
+        "inspect",  "update",  "rollback", "repair",  "remove",   "gc",
+        "build",    "analyze", "sdk",     "pack",     "keygen",   "sign-update",
+        "verify",   "trust",   "source",  "config",   "integrate", "doctor",
+        "errors",   "compat",  "launch-ref", "completion", "version", "help"};
     return k;
 }
 
@@ -1965,24 +1999,484 @@ int cmd_sign_update(const std::vector<std::string>& args) {
     return 0;
 }
 
-int cmd_integrate(const std::vector<std::string>& args) {
-    const Parsed parsed = parse_arguments(args, {}, {}, false, kIntegrateUsage);
-    require_positionals(parsed, 0, kIntegrateUsage);
+int cmd_doctor(const std::vector<std::string>& args);
 
-    const desktop::IntegrationResult result =
-        desktop::integrate_runtime(Paths::detect());
-    if (result.status == desktop::IntegrationStatus::applied) {
-        std::cout
-            << "Registered the Lexe runtime as the .lexe handler; created:\n";
-        for (const std::string& file : result.created_files) {
-            std::cout << "  " << file << "\n";
+int cmd_integrate(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--verify"}, {}, false, kIntegrateUsage);
+    require_positionals(parsed, 0, kIntegrateUsage);
+    const Paths paths = Paths::detect();
+    DesktopIntegration integration(paths);
+
+    if (parsed.flags.count("--verify") != 0) {
+        return cmd_doctor({});
+    }
+
+    const IntegrationReport result = integration.install_runtime_handler();
+    if (result.ok) {
+        std::cout << "Registered .LEXE as the persistent handler for "
+                  << DesktopIntegration::canonical_mime_type() << ":\n";
+        for (const ArtifactCheck& check : result.checks) {
+            std::cout << "  " << check.artifact.path << "\n";
         }
+        for (const std::string& note : result.notes) {
+            std::cout << "  " << note << "\n";
+        }
+        std::cout << "\nThis registration is persistent: it survives logout, "
+                     "reboot and a\ndesktop restart. Verify it any time with "
+                     "`lexe doctor`.\n";
     } else {
-        std::cout << "desktop integration skipped: not available on this "
-                     "platform\n";
+        for (const std::string& problem : result.unrepaired) {
+            std::cout << "  ! " << problem << "\n";
+        }
+        return 1;
     }
     return 0;
 }
+
+// ---------------------------------------------------------------- open
+//
+// Definitive Architecture §7 / §15.1: the persistent `.LEXE handler` reads the
+// artifact's SIGNED ROLE and performs the correct operation. `lexe open` is
+// that dispatcher in the CLI — the source of truth the consumer frontend is a
+// frontend TO. It never decides anything from the file name.
+
+int cmd_open(const std::vector<std::string>& args) {
+    const Parsed parsed = parse_arguments(
+        args, {"--json", "--yes", "--trust", "--no-terminal"}, {}, false,
+        kOpenUsage);
+    require_positionals(parsed, 1, kOpenUsage);
+    const bool as_json = parsed.flags.count("--json") != 0;
+    const fs::path artifact(parsed.positionals[0]);
+
+    // The role lives in the SIGNED manifest, so it is only trustworthy after
+    // the artifact verifies. Verification therefore comes first, always.
+    const VerificationReport report = verify_package(artifact, false);
+    if (!report.ok()) {
+        const VerificationStage* failure = report.first_failure();
+        throw VerificationError(
+            "this .lexe artifact did not verify (stage \"" +
+            (failure != nullptr ? failure->name : std::string("unknown")) +
+            "\"): " + (failure != nullptr ? failure->detail : std::string()));
+    }
+    const PackageReader reader(artifact);
+    const Manifest manifest = Manifest::parse(reader.read_entry("lexe.json"));
+
+    if (manifest.role == PackageRole::Launch) {
+        const std::string target = manifest.launch_application_id;
+        if (as_json) {
+            std::cout << ordered_json{{"role", "launch"},
+                                      {"applicationId", target},
+                                      {"action", "run"}}
+                             .dump(2)
+                      << "\n";
+        }
+        const Paths paths = Paths::detect();
+        if (!Registry(paths).is_installed(target)) {
+            throw NotFoundError(
+                "this launch reference points at " + target +
+                ", which is not installed on this machine. Install the "
+                "application package first.");
+        }
+        RunRequest request;
+        request.id = target;
+        request.allow_terminal_spawn = parsed.flags.count("--no-terminal") == 0;
+        return run_application(paths, request).exit_code;
+    }
+
+    // role "application": install it. Delegating keeps ONE install path.
+    std::vector<std::string> install_args = {artifact.string()};
+    if (parsed.flags.count("--yes") != 0) install_args.push_back("--yes");
+    if (parsed.flags.count("--trust") != 0) install_args.push_back("--trust");
+    return cmd_install(install_args);
+}
+
+// -------------------------------------------------------------- doctor
+//
+// Definitive Architecture §14.1 / §15.1: "If they are missing or stale, lexe
+// should be able to verify and repair them." This is the command that makes
+// the reboot test of §15.1 a diagnosable, fixable property instead of a hope.
+
+void print_integration_report(const IntegrationReport& report) {
+    for (const ArtifactCheck& check : report.checks) {
+        if (check.health == ArtifactHealth::Ok) continue;
+        std::cout << "  [" << to_string(check.health) << "] "
+                  << to_string(check.artifact.kind) << "  "
+                  << check.artifact.path << "\n";
+        if (!check.detail.empty()) {
+            std::cout << "        " << check.detail << "\n";
+        }
+    }
+    for (const std::string& id : report.unregistered_apps) {
+        std::cout << "  [missing] " << id
+                  << " is installed but has no desktop integration\n";
+    }
+    for (const std::string& path : report.orphaned) {
+        std::cout << "  [orphaned] " << path
+                  << " belongs to an application that is no longer installed\n";
+    }
+}
+
+ordered_json integration_report_json(const IntegrationReport& report) {
+    ordered_json checks = ordered_json::array();
+    for (const ArtifactCheck& check : report.checks) {
+        checks.push_back({{"kind", to_string(check.artifact.kind)},
+                          {"path", check.artifact.path},
+                          {"app", check.artifact.owner_app},
+                          {"health", to_string(check.health)},
+                          {"detail", check.detail}});
+    }
+    return ordered_json{{"ok", report.ok},
+                        {"problems", report.problem_count()},
+                        {"artifacts", std::move(checks)},
+                        {"unregisteredApps", report.unregistered_apps},
+                        {"orphaned", report.orphaned},
+                        {"repaired", report.repaired},
+                        {"unrepaired", report.unrepaired},
+                        {"notes", report.notes}};
+}
+
+int cmd_doctor(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--repair", "--json"}, {}, false, kDoctorUsage);
+    require_positionals(parsed, 0, kDoctorUsage);
+    const bool repair = parsed.flags.count("--repair") != 0;
+    const bool as_json = parsed.flags.count("--json") != 0;
+
+    const Paths paths = Paths::detect();
+    DesktopIntegration integration(paths);
+    const IntegrationReport report =
+        repair ? integration.repair() : integration.verify();
+
+    if (as_json) {
+        ordered_json j = integration_report_json(report);
+        j["repaired"] = report.repaired;
+        j["mimeType"] = DesktopIntegration::canonical_mime_type();
+        j["isolation"] = [&] {
+            const std::unique_ptr<IsolationBackend> backend =
+                make_isolation_backend(paths);
+            const IsolationCapabilities caps = backend->capabilities();
+            return ordered_json{{"backend", backend->name()},
+                                {"status", to_string(caps.status)},
+                                {"detail", caps.detail}};
+        }();
+        j["terminal"] = detect_terminal_emulator();
+        ordered_json providers = ordered_json::array();
+        for (const Provider& provider : probe_providers().providers) {
+            providers.push_back({{"id", provider.id},
+                                 {"name", provider.name},
+                                 {"kind", to_string(provider.kind)},
+                                 {"available", provider.available},
+                                 {"detail", provider.detail}});
+        }
+        j["compatibilityProviders"] = std::move(providers);
+        std::cout << j.dump(2) << "\n";
+        return report.ok ? 0 : 1;
+    }
+
+    std::cout << ".LEXE system check\n\n";
+    if (report.ok) {
+        std::cout << "  Desktop integration is healthy — .lexe artifacts open "
+                     "through .LEXE,\n  and every installed application is "
+                     "registered.\n";
+    } else {
+        std::cout << "  Problems found (" << report.problem_count() << "):\n";
+        print_integration_report(report);
+    }
+    if (!report.repaired.empty()) {
+        std::cout << "\n  Re-established " << report.repaired.size()
+                  << " registration(s).\n";
+    }
+    for (const std::string& problem : report.unrepaired) {
+        std::cout << "  ! " << problem << "\n";
+    }
+
+    // The rest of the host picture a user actually needs when something is odd.
+    std::cout << "\nHost\n";
+    {
+        const std::unique_ptr<IsolationBackend> backend =
+            make_isolation_backend(paths);
+        const IsolationCapabilities caps = backend->capabilities();
+        print_kv("  Isolation:", backend->name() + " (" +
+                                    to_string(caps.status) +
+                                    (caps.detail.empty()
+                                         ? std::string()
+                                         : " — " + caps.detail) +
+                                    ")");
+    }
+    {
+        const std::string terminal = detect_terminal_emulator();
+        print_kv("  Terminal:", terminal.empty()
+                                    ? "none found (console applications will "
+                                      "have their output captured instead)"
+                                    : terminal);
+    }
+    {
+        std::string available;
+        for (const Provider& provider : probe_providers().providers) {
+            if (!provider.available) continue;
+            if (!available.empty()) available += ", ";
+            available += provider.name;
+        }
+        print_kv("  Compatibility:",
+                 available.empty()
+                     ? "no compatibility providers installed (native only)"
+                     : available);
+    }
+    std::cout << "\nLocations\n";
+    print_kv("  Applications:", paths.apps_dir().string());
+    print_kv("  Launch refs:", paths.launch_dir().string());
+    print_kv("  Diagnostics:", paths.errors_dir().string());
+    print_kv("  Preferences:", paths.apps_config_dir().string());
+
+    if (!report.ok && !repair) {
+        std::cout << "\nRun `lexe doctor --repair` to re-establish the "
+                     "missing registrations.\n";
+    }
+    return report.ok ? 0 : 1;
+}
+
+// -------------------------------------------------------------- errors
+//
+// Definitive Architecture §9: the error view's data, in the CLI. The actions
+// named there — Copy Error Path, Open Error Folder, Copy Error Details — are
+// the same values this command prints.
+
+int cmd_errors(const std::vector<std::string>& args) {
+    const Parsed parsed = parse_arguments(
+        args, {"--json", "--latest", "--clear", "--path"}, {}, false,
+        kErrorsUsage);
+    const Paths paths = Paths::detect();
+    const ErrorStore store(paths);
+
+    if (parsed.positionals.empty()) {
+        // No id: list applications that currently have diagnostics.
+        const std::vector<std::string> ids = store.applications_with_errors();
+        if (parsed.flags.count("--json") != 0) {
+            std::cout << ordered_json{{"applications", ids}}.dump(2) << "\n";
+            return 0;
+        }
+        if (ids.empty()) {
+            std::cout << "No .LEXE error records on this machine.\n";
+            return 0;
+        }
+        std::cout << "Applications with recorded errors:\n\n";
+        for (const std::string& id : ids) {
+            const std::optional<ErrorRecord> latest = store.latest(id);
+            std::cout << "  " << id;
+            if (latest.has_value()) {
+                std::cout << "\n      " << latest->timestamp << "  "
+                          << to_string(latest->stage) << ": "
+                          << latest->summary;
+            }
+            std::cout << "\n";
+        }
+        std::cout << "\nDetails: lexe errors <id>\n";
+        return 0;
+    }
+
+    require_positionals(parsed, 1, kErrorsUsage);
+    const std::string id = parsed.positionals[0];
+
+    if (parsed.flags.count("--clear") != 0) {
+        const std::size_t removed = store.clear(id);
+        std::cout << "Cleared " << removed << " error record(s) for " << id
+                  << ".\n";
+        return 0;
+    }
+    if (parsed.flags.count("--path") != 0) {
+        // "Open Error Folder" / "Copy Error Path", for scripts and frontends.
+        std::cout << store.app_dir(id).string() << "\n";
+        return 0;
+    }
+
+    const std::vector<ErrorRecord> history =
+        store.history(id, parsed.flags.count("--latest") != 0 ? 1 : 20);
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json records = ordered_json::array();
+        for (const ErrorRecord& record : history) {
+            records.push_back(ordered_json::parse(record.to_json()));
+        }
+        std::cout << ordered_json{{"applicationId", id},
+                                  {"directory", store.app_dir(id).string()},
+                                  {"records", std::move(records)}}
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+
+    if (history.empty()) {
+        std::cout << "No error records for " << id << ".\n";
+        return 0;
+    }
+    for (const ErrorRecord& record : history) {
+        std::cout << record.to_details_text() << "\n";
+    }
+    std::cout << "Error folder: " << store.app_dir(id).string() << "\n";
+    std::cout << "Retry: lexe run " << id
+              << "   ·   Change execution: lexe compat " << id << "\n";
+    return 0;
+}
+
+// -------------------------------------------------------------- compat
+//
+// Definitive Architecture §8 + §10: show the execution chain .LEXE would use
+// and why, the alternatives the PACKAGE POLICY allows, and let a power user
+// pick one. The preference is stored OUTSIDE the signed package, so changing
+// it never modifies or invalidates the application.
+
+int cmd_compat(const std::vector<std::string>& args) {
+    const Parsed parsed = parse_arguments(args, {"--json", "--auto"},
+                                          {"--set"}, false, kCompatUsage);
+    require_positionals(parsed, 1, kCompatUsage);
+    const std::string id = parsed.positionals[0];
+    const Paths paths = Paths::detect();
+
+    const Registry registry(paths);
+    const Manifest manifest = registry.read_manifest(id); // NotFoundError
+
+    if (parsed.flags.count("--auto") != 0) {
+        AppConfig config = AppConfig::load(paths, id);
+        config.id = id;
+        config.compatibility_mode = CompatibilityMode::Automatic;
+        config.preferred_chain.clear();
+        config.save(paths);
+        std::cout << id << ": compatibility is now automatic.\n";
+    } else if (const auto set = parsed.options.find("--set");
+               set != parsed.options.end()) {
+        const std::string& chain = set->second;
+        // §6/§8: a preference can only ever narrow or reorder what the PACKAGE
+        // permits. Refusing here — rather than silently ignoring it at launch
+        // — is what keeps the policy honest.
+        if (!manifest.chain_allowed(chain)) {
+            std::string allowed;
+            for (const std::string& c : manifest.effective_allowed_chains()) {
+                if (!allowed.empty()) allowed += ", ";
+                allowed += c;
+            }
+            throw Error(
+                "this application's execution policy does not permit the \"" +
+                chain + "\" chain" +
+                (manifest.mission_critical
+                     ? " — it is mission-critical, so only strict native "
+                       "execution is allowed"
+                     : "") +
+                ". Permitted: " + allowed);
+        }
+        AppConfig config = AppConfig::load(paths, id);
+        config.id = id;
+        config.compatibility_mode = CompatibilityMode::Manual;
+        config.preferred_chain = {chain};
+        config.save(paths);
+        std::cout << id << ": compatibility preference set to \"" << chain
+                  << "\".\n";
+    }
+
+    const ChainResolution resolution = resolve_application_chain(paths, id);
+    const AppConfig config = AppConfig::load(paths, id);
+
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json alternatives = ordered_json::array();
+        for (const ExecutionChain& chain : resolution.alternatives) {
+            alternatives.push_back(
+                {{"id", chain.id}, {"explanation", chain.explanation}});
+        }
+        ordered_json rejected = ordered_json::array();
+        for (const RejectedChain& chain : resolution.rejected) {
+            rejected.push_back({{"id", chain.id}, {"reason", chain.reason}});
+        }
+        std::cout << ordered_json{
+                         {"applicationId", id},
+                         {"missionCritical", resolution.mission_critical},
+                         {"strictResolver", resolution.strict_resolver},
+                         {"mode", to_string(config.compatibility_mode)},
+                         {"preferredChain", config.preferred_chain},
+                         {"allowedByPackage",
+                          manifest.effective_allowed_chains()},
+                         {"resolved", resolution.ok},
+                         {"chain", resolution.chain.id},
+                         {"reason", resolution.reason},
+                         {"alternatives", std::move(alternatives)},
+                         {"rejected", std::move(rejected)},
+                         {"configFile", AppConfig::file(paths, id).string()}}
+                         .dump(2)
+                  << "\n";
+        return resolution.ok ? 0 : 1;
+    }
+
+    std::cout << manifest.name << "  (" << id << ")\n\n";
+    if (resolution.mission_critical) {
+        std::cout << "  This application is MISSION-CRITICAL. That is an "
+                     "execution restriction,\n  not a safety certification: "
+                     "only Linux-native, host-ISA-native execution\n  of a "
+                     "verified package is allowed. ISA translation, "
+                     "Wine/Proton, foreign-OS\n  execution, compatibility "
+                     "fallback and \"run anyway\" are all forbidden.\n\n";
+    }
+    if (resolution.ok) {
+        print_kv("  Execution chain:", resolution.chain.id);
+        print_kv("  Why:", resolution.reason);
+    } else {
+        print_kv("  Execution chain:", "none available");
+        print_kv("  Why:", resolution.reason);
+    }
+    print_kv("  Mode:", std::string(to_string(config.compatibility_mode)));
+
+    if (!resolution.alternatives.empty()) {
+        std::cout << "\n  Also available for this application:\n";
+        for (const ExecutionChain& chain : resolution.alternatives) {
+            std::cout << "    " << chain.id << "  — " << chain.explanation
+                      << "\n";
+        }
+    }
+    if (!resolution.rejected.empty()) {
+        std::cout << "\n  Not available:\n";
+        for (const RejectedChain& chain : resolution.rejected) {
+            std::cout << "    " << chain.id << "  — " << chain.reason << "\n";
+        }
+    }
+    if (!resolution.mission_critical) {
+        std::cout << "\n  Change it:  lexe compat " << id
+                  << " --set <chain>   ·   lexe compat " << id << " --auto\n";
+        std::cout << "  Your preference is stored in "
+                  << AppConfig::file(paths, id).string()
+                  << "\n  and never modifies the signed application.\n";
+    }
+    return resolution.ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------- launch-ref
+
+int cmd_launch_ref(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {"-o", "--output"}, false, kLaunchRefUsage);
+    require_positionals(parsed, 1, kLaunchRefUsage);
+    const std::string id = parsed.positionals[0];
+    const Paths paths = Paths::detect();
+    const Manifest manifest = Registry(paths).read_manifest(id);
+
+    fs::path destination = launch_reference_path(paths, id);
+    if (const auto out = parsed.options.find("-o");
+        out != parsed.options.end()) {
+        destination = fs::path(out->second);
+    } else if (const auto out2 = parsed.options.find("--output");
+               out2 != parsed.options.end()) {
+        destination = fs::path(out2->second);
+    }
+    // A destination that names a directory gets the conventional file name.
+    std::error_code ec;
+    if (fs::is_directory(destination, ec)) destination /= "run.lexe";
+
+    const fs::path written =
+        write_launch_reference(paths, manifest, destination);
+    std::cout << "Wrote a .LEXE launch reference for " << manifest.name
+              << ":\n  " << written.string() << "\n\n"
+              << "Double-clicking it launches the installed application "
+                 "through .LEXE.\nIt contains no payload — only the "
+                 "application id and the launch role.\n";
+    return 0;
+}
+
 
 } // namespace
 
@@ -2002,10 +2496,16 @@ std::string usage_text() {
            "arguments to see its usage)\n"
            "\n"
            "Applications\n"
+           "  open <artifact.lexe>                     open any .lexe: install "
+           "a package, launch a run.lexe\n"
            "  install <file.lexe> [--yes] [--trust]    verify and install a "
            "package\n"
-           "  run <id> [-- <args...>]                  launch an installed "
+           "  run <id> [--chain <c>] [-- <args...>]    launch an installed "
            "application (sandboxed)\n"
+           "  compat <id> [--set <chain> | --auto]     show or change how an "
+           "application is executed\n"
+           "  errors [<id>] [--latest|--clear|--path]  structured diagnostics "
+           "for a failed launch\n"
            "  apps [--json]                            manage installed apps "
            "(version, disk, trust, last run)\n"
            "  list [--json]                            list installed "
@@ -2053,8 +2553,12 @@ std::string usage_text() {
            "System\n"
            "  config [get|set|reset] ...               view or change runtime "
            "settings\n"
-           "  integrate                                register .lexe handling "
+           "  doctor [--repair] [--json]               check (and repair) "
+           ".LEXE desktop integration\n"
+           "  integrate [--verify]                     register .lexe handling "
            "for the runtime\n"
+           "  launch-ref <id> [-o <run.lexe>]          write a .LEXE launch "
+           "reference for an installed app\n"
            "  completion [bash]                        print a shell-completion "
            "script\n"
            "  version [--json]                         show runtime, format and "
@@ -2107,6 +2611,11 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "build") return cmd_build(rest);
     if (command == "sign-update") return cmd_sign_update(rest);
     if (command == "integrate") return cmd_integrate(rest);
+    if (command == "open") return cmd_open(rest);
+    if (command == "doctor") return cmd_doctor(rest);
+    if (command == "errors") return cmd_errors(rest);
+    if (command == "compat") return cmd_compat(rest);
+    if (command == "launch-ref") return cmd_launch_ref(rest);
     if (command == "config") return cmd_config(rest);
     if (command == "completion") return cmd_completion(rest);
 

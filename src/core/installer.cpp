@@ -17,6 +17,7 @@
 #include "core/installer.hpp"
 
 #include "core/crypto.hpp"
+#include "core/depengine.hpp"
 #include "core/desktop.hpp"
 #include "core/integration.hpp"
 #include "core/error.hpp"
@@ -215,6 +216,57 @@ void extract_icons(const PackageReader& reader, const fs::path& dest) {
 /// The launcher self-heals at launch time, but install time is the correct
 /// place (e.g. app dirs made read-only afterwards). Owner exec is always
 /// added; group/others exec mirror the corresponding read bits.
+/// Definitive Architecture §7 "RUNTIME RESOLUTION" + §16: resolve the
+/// application's dependency/runtime contract ONCE, at install (and repair),
+/// and record the outcome. A normal native launch then only confirms the
+/// recorded state still holds and execs — no compatibility-layer tax, and no
+/// per-launch dependency walk.
+void resolve_runtime_contract(const fs::path& version_dir,
+                              const Manifest& manifest,
+                              InstallationRecord& record) {
+    record.runtime_resolved_at = util::now_utc_string();
+    record.runtime_unresolved.clear();
+    record.runtime_source.clear();
+    record.runtime_glibc.clear();
+
+    const fs::path entry = version_dir / fs::path(manifest.entrypoint_executable);
+    std::error_code ec;
+    if (!fs::is_regular_file(entry, ec)) return;
+
+    DependencyOptions options;
+    // The application's own bundled libraries are searched FIRST, then the
+    // host — which is exactly the §7 "Host system / Tux32 / Bundled" ordering.
+    options.payload_search_paths = {version_dir};
+    options.hash_bundles = false; // hashes are already covered by the package
+    DependencyReport deps;
+    try {
+        deps = analyze_dependencies(entry, options);
+    } catch (const std::exception&) {
+        // A dependency analysis that cannot run must not block an install; the
+        // contract is simply recorded as unresolved-unknown (empty), and the
+        // launcher does not gate on it.
+        return;
+    }
+
+    for (const Dependency* dependency :
+         deps.of_kind(DependencyKind::Unresolved)) {
+        record.runtime_unresolved.push_back(dependency->soname);
+    }
+    record.runtime_glibc = deps.max_glibc_version();
+
+    const std::size_t bundled = deps.count(DependencyKind::Bundle);
+    const std::size_t host = deps.count(DependencyKind::HostInterface);
+    if (bundled != 0 && host != 0) {
+        record.runtime_source = "mixed";
+    } else if (bundled != 0) {
+        record.runtime_source = "bundled";
+    } else if (host != 0) {
+        record.runtime_source = "host";
+    } else {
+        record.runtime_source = "static";
+    }
+}
+
 void ensure_entrypoint_executable(const fs::path& version_dir,
                                   const std::string& entrypoint) {
     std::error_code ec;
@@ -464,6 +516,9 @@ InstallResult Installer::install(const fs::path& lexe_file,
             util::remove_recursive(icons_staging);
         }
         new_record.created_files = std::move(created_files);
+        // §16: resolve the runtime contract once, here, and record it.
+        resolve_runtime_contract(registry.version_dir(manifest.id, manifest.version),
+                                 manifest, new_record);
         registry.write_record(new_record);
 
         registry.set_current_version(manifest.id, manifest.version); // atomic
@@ -875,6 +930,26 @@ RepairReport Installer::repair(const std::string& id,
     const std::string current = registry.current_version(id);
     const fs::path app_dir = registry.app_dir(id);
     const fs::path version_dir = registry.version_dir(id, current);
+
+    // §16 "first install / repair": repair is the OTHER place the runtime
+    // contract is resolved. Re-resolving here is what makes "install what is
+    // missing, then `lexe repair`" a real recovery path for an application
+    // whose dependencies stopped being satisfied — and it re-establishes the
+    // durable desktop integration at the same time (§14.1).
+    {
+        InstallationRecord refreshed = record;
+        try {
+            const Manifest manifest = registry.read_manifest(id);
+            resolve_runtime_contract(version_dir, manifest, refreshed);
+            registry.write_record(refreshed);
+            DesktopIntegration integration(paths_);
+            (void)integration.install_runtime_handler();
+            (void)integration.install_app(manifest, version_dir / "icons");
+        } catch (const std::exception&) {
+            // Repair must still verify and restore payload files even when
+            // the manifest copy or the desktop layer is unavailable.
+        }
+    }
 
     // Hash source: the hashes.json copy stored at install time (per-version
     // meta store, falling back to the active-version copy).
