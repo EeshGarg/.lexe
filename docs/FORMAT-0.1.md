@@ -44,7 +44,8 @@ Application.lexe
 │   ├── license.txt                optional
 │   └── permissions.json           optional
 ├── icons/                         optional  64.png 128.png 256.png scalable.svg
-├── payload/                       REQUIRED for bundled mode  application files
+├── payload/                       REQUIRED for role "application"; MUST be
+│                                  ABSENT for role "launch"
 └── scripts/                       optional  RESERVED — never executed in 0.1
 ```
 
@@ -56,7 +57,9 @@ Readers MUST reject an archive when:
   `lexe.json`, `signatures`, `metadata`, `icons`, `payload`, `scripts`;
 * two entries have the same path;
 * an entry is a symbolic link (ZIP external attributes: Unix mode `S_IFLNK`);
-* a required entry is missing.
+* a required entry is missing;
+* `payload/` entries are absent and the manifest's `role` is not `"launch"`
+  (bundled mode requires payload bytes; a launch reference carries none).
 
 `scripts/` entries are carried but MUST NOT be executed by a 0.1 runtime.
 
@@ -125,6 +128,21 @@ created with mode `0600`.
 Encoding: UTF-8 JSON, no BOM. Unknown fields MUST be ignored (forward
 compatibility). Required fields for 0.1:
 
+### 5.1 Role
+
+`role` selects which of the two `.lexe` artifact kinds this manifest describes.
+
+| Value | Meaning |
+|---|---|
+| `"application"` | an installable application package (the default when absent) |
+| `"launch"` | a launch reference naming an already-installed application |
+
+The role is part of the SIGNED manifest, so it cannot be changed by renaming
+the file. A handler MUST dispatch on the role, never on the file name or
+extension. An unrecognised role MUST be rejected.
+
+### 5.2 Fields required for every role
+
 | Field | Constraint |
 |---|---|
 | `lexeVersion` | MUST be the string `"0.1"` |
@@ -133,12 +151,68 @@ compatibility). Required fields for 0.1:
 | `version` | non-empty string, see §8 ordering |
 | `publisher.name` | non-empty string |
 | `publisher.publicKey` | see §4 |
+
+### 5.3 Fields required for `role: "application"`
+
+These MUST be present for an application, and MUST be ABSENT for a launch
+reference — the two roles are structurally distinct, not merely differently
+labelled.
+
+| Field | Constraint |
+|---|---|
 | `applicationType` | MUST be `"native"` in 0.1 |
 | `architectures` | non-empty array; recognised values: `x86_64`, `aarch64` |
 | `entrypoint.executable` | relative path inside `payload/` (no leading `/`, no `..`, no backslash) |
 | `install.mode` | MUST be `"bundled"` in 0.1 (`network`/`launcher` → "unsupported in 0.1") |
 
-Optional with defaults: `entrypoint.arguments` (`[]`), `install.scope` (`"user"`),
+### 5.4 Fields required for `role: "launch"`
+
+| Field | Constraint |
+|---|---|
+| `launch.applicationId` | the installed App ID this reference launches; same shape as `id` |
+
+A launch reference MUST NOT carry any `payload/` entries (§6.7). Its own `id`
+SHOULD NOT be the target application's id: a trust store binds ids to keys, and
+a locally-signed reference must not bind a real application's id to a local
+key. This implementation uses the fixed id `org.lexe.launch`.
+
+`launch.applicationId` MUST be absent for `role: "application"`.
+
+### 5.5 Execution policy — `execution`
+
+| Field | Default | Constraint |
+|---|---|---|
+| `execution.missionCritical` | `false` | boolean |
+| `execution.allowedChains` | `["native"]` | non-empty array of chain ids `[a-zA-Z0-9-+_]+` |
+
+`missionCritical` is an EXECUTION RESTRICTION, not a safety certification. When
+it is `true` the runtime MUST require a Linux-native, host-ISA-native
+realization of a verified package, and MUST forbid ISA translation, Wine/Proton,
+foreign-OS execution, compatibility fallback and any "run anyway" affordance.
+If strict native execution cannot be achieved, execution stops.
+
+A manifest with `missionCritical: true` and any `allowedChains` entry other than
+`"native"` is a contradiction and MUST be rejected.
+
+`allowedChains` is the set a resolver may choose from and a frontend may offer.
+A user preference may narrow or reorder it; it MUST NOT extend it.
+
+### 5.6 Launch semantics — `launch`
+
+| Field | Default | Constraint |
+|---|---|---|
+| `launch.mode` | `"gui"` | one of `"gui"`, `"console"`, `"service"` |
+| `launch.singleInstance` | `false` | boolean; advisory hint for frontends |
+
+Presentation MUST be taken from this declaration and MUST NOT be inferred from
+whether the desktop happens to provide a terminal. A `"console"` application
+launched without a terminal MUST be given one by the runtime, or have its output
+captured and surfaced — it must not silently appear to do nothing. Exit code 0
+MUST be recorded as success even when no window appears.
+
+### 5.7 Optional fields with defaults
+
+`entrypoint.arguments` (`[]`), `install.scope` (`"user"`),
 `install.estimatedSize`, `permissions` (`[]`, informational in 0.1), `updates`
 (disabled when absent, see §7), `integration` (§9), `publisher.website`.
 
@@ -152,10 +226,37 @@ Optional with defaults: `entrypoint.arguments` (`[]`), `install.scope` (`"user"`
 4. **Manifest signature** — `manifest.sig` verifies over `lexe.json` bytes.
 5. **Payload signature** — `payload.sig` verifies over `hashes.json` bytes.
 6. **Hashes** — §3 set equality and digest checks over all covered entries.
-7. **Compatibility** (install/update only) — host architecture ∈ `architectures`.
+7. **Payload role** — the bytes ARE what the manifest declares (§6.7).
+8. **Compatibility** (install/update only) — host architecture ∈ `architectures`.
+   Skipped for `role: "launch"`, which declares no architectures.
 
 The report distinguishes every failed stage; the CLI exits `3` on any verification
 failure.
+
+### 6.7 Payload role
+
+A manifest can only be trusted to describe the artifact if the artifact is
+checked against it. Stage 7 closes that gap, BEFORE anything is installed.
+
+For `role: "application"` with `applicationType: "native"`, the entry named by
+`entrypoint.executable` MUST:
+
+* be present in the archive;
+* be a valid ELF object;
+* have ELF type `ET_EXEC` or `ET_DYN` (an executable, or a position-independent
+  executable) — a relocatable object or a core file is not runnable;
+* target a machine that maps to one of the manifest's `architectures`.
+
+For `role: "launch"`, the archive MUST contain no `payload/` entries.
+
+This stage exists because of a real, observed failure: a package declared a
+native application while its entrypoint was a C++ SOURCE FILE. Every signature
+and hash was valid — the package was internally consistent and completely
+wrong. Source belongs in a portable-code package and must go through host-ISA
+compilation; it must never be installed as a native executable.
+
+Note the ordering: stage 7 runs AFTER hashes, so a tampered entrypoint is
+reported as an integrity failure (stage 6), not as a role failure.
 
 ## 7. Updates — `update.json`
 
