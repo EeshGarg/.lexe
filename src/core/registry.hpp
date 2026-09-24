@@ -13,6 +13,16 @@
 
 namespace lexe {
 
+/// True when `id` has the FORMAT-0.1 §5 reverse-DNS shape (2+ dot-separated
+/// segments of [a-zA-Z0-9-]+, ≤255 chars). Because that shape excludes path
+/// separators, drive designators and `.`/`..` segments, a valid id is always
+/// safe to use as a single path component. Shared by every module that joins
+/// an App ID into a path (registry, diagnostics, per-app config, launch
+/// references) so the rule is stated exactly once.
+bool app_id_is_valid(const std::string& id);
+/// app_id_is_valid, throwing lexe::Error with `context` in the message.
+void validate_app_id(const std::string& id, const char* context);
+
 /// Contents of `apps/<id>/installation.json` (FORMAT-0.1 §9). The pinned
 /// publisher key recorded here is the trust anchor for updates (§7.1).
 struct InstallationRecord {
@@ -33,6 +43,28 @@ struct InstallationRecord {
     /// anchor an update's permission-delta gate compares against.
     std::vector<std::string> approved_permissions;
     std::string permissions_digest;
+
+    // --- runtime resolution, resolved at install/repair (Definitive
+    // Architecture §16 "intelligence before exec, native performance after").
+    // The expensive dependency analysis happens ONCE, here; a normal native
+    // launch only confirms that the recorded state still holds and then execs.
+    /// When the dependency contract was last resolved (RFC 3339 UTC; "" = never).
+    std::string runtime_resolved_at;
+    /// Where the application's dependencies come from: "bundled", "host" or
+    /// "mixed" (§7 RUNTIME RESOLUTION).
+    std::string runtime_source;
+    /// Sonames that could NOT be resolved at install time. Non-empty means the
+    /// dependency contract is not satisfied and launch records a
+    /// runtime-resolution failure instead of exec'ing into a broken loader.
+    std::vector<std::string> runtime_unresolved;
+    /// The highest glibc requirement across the graph, e.g. "2.38" ("" = none).
+    std::string runtime_glibc;
+
+    // --- last execution report (§7 "record execution report") ---
+    /// Execution chain used by the last launch ("native", "box64", …).
+    std::string last_chain;
+    /// Declared launch presentation of the last launch (gui/console/service).
+    std::string last_launch_mode;
 
     /// Parse installation.json text. Throws Error on malformed contents.
     static InstallationRecord from_json(std::string_view json_text);

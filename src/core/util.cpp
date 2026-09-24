@@ -22,6 +22,7 @@
 #else
 #include <spawn.h>
 #include <sys/wait.h>
+#include <poll.h>
 #include <unistd.h>
 extern char** environ;
 #endif
@@ -454,6 +455,11 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     if (opts.capture_stdout && ::pipe(pipefd) != 0) {
         throw Error("run_process: pipe() failed");
     }
+    int errfd[2] = {-1, -1};
+    if (opts.capture_stderr && ::pipe(errfd) != 0) {
+        if (opts.capture_stdout) { ::close(pipefd[0]); ::close(pipefd[1]); }
+        throw Error("run_process: pipe() failed");
+    }
 
     posix_spawn_file_actions_t fa;
     ::posix_spawn_file_actions_init(&fa);
@@ -461,6 +467,11 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
         ::posix_spawn_file_actions_addclose(&fa, pipefd[0]);
         ::posix_spawn_file_actions_adddup2(&fa, pipefd[1], STDOUT_FILENO);
         ::posix_spawn_file_actions_addclose(&fa, pipefd[1]);
+    }
+    if (opts.capture_stderr) {
+        ::posix_spawn_file_actions_addclose(&fa, errfd[0]);
+        ::posix_spawn_file_actions_adddup2(&fa, errfd[1], STDERR_FILENO);
+        ::posix_spawn_file_actions_addclose(&fa, errfd[1]);
     }
     std::string cwd_str;
     if (opts.cwd.has_value()) {
@@ -472,33 +483,69 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     const int err = ::posix_spawnp(&pid, cargv[0], &fa, nullptr, cargv.data(), environ);
     ::posix_spawn_file_actions_destroy(&fa);
     if (opts.capture_stdout) ::close(pipefd[1]);
+    if (opts.capture_stderr) ::close(errfd[1]);
     if (err != 0) {
         if (opts.capture_stdout) ::close(pipefd[0]);
+        if (opts.capture_stderr) ::close(errfd[0]);
         throw Error("run_process: cannot start process: " + argv[0] + ": " +
                     std::strerror(err));
     }
 
+    // Drain both pipes concurrently: reading one to EOF before the other would
+    // deadlock as soon as the child filled the pipe we are not reading.
     std::string output;
-    if (opts.capture_stdout) {
-        char buf[4096];
-        ssize_t n = 0;
-        while ((n = ::read(pipefd[0], buf, sizeof(buf))) > 0) {
-            output.append(buf, static_cast<std::size_t>(n));
+    std::string errors;
+    {
+        struct Stream {
+            int fd;
+            std::string* sink;
+        };
+        std::vector<Stream> streams;
+        if (opts.capture_stdout) streams.push_back({pipefd[0], &output});
+        if (opts.capture_stderr) streams.push_back({errfd[0], &errors});
+        while (!streams.empty()) {
+            std::vector<pollfd> fds;
+            fds.reserve(streams.size());
+            for (const Stream& s : streams) {
+                fds.push_back(pollfd{s.fd, POLLIN, 0});
+            }
+            if (::poll(fds.data(), static_cast<nfds_t>(fds.size()), -1) < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            for (std::size_t i = fds.size(); i-- > 0;) {
+                if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
+                    continue;
+                }
+                char buf[4096];
+                const ssize_t n = ::read(streams[i].fd, buf, sizeof(buf));
+                if (n > 0) {
+                    streams[i].sink->append(buf, static_cast<std::size_t>(n));
+                } else if (n == 0 || (n < 0 && errno != EINTR &&
+                                      errno != EAGAIN)) {
+                    ::close(streams[i].fd);
+                    streams.erase(streams.begin() +
+                                  static_cast<std::ptrdiff_t>(i));
+                }
+            }
         }
-        ::close(pipefd[0]);
     }
 
     int status = 0;
     if (::waitpid(pid, &status, 0) < 0) {
         throw Error("run_process: waitpid failed");
     }
-    int code = 1;
+    ProcessResult result;
+    result.exit_code = 1;
     if (WIFEXITED(status)) {
-        code = WEXITSTATUS(status);
+        result.exit_code = WEXITSTATUS(status);
     } else if (WIFSIGNALED(status)) {
-        code = 128 + WTERMSIG(status);
+        result.exit_code = 128 + WTERMSIG(status);
+        result.signal = WTERMSIG(status);
     }
-    return ProcessResult{code, std::move(output)};
+    result.stdout_text = std::move(output);
+    result.stderr_text = std::move(errors);
+    return result;
 }
 
 #endif

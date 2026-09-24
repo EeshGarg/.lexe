@@ -27,6 +27,7 @@ std::string to_string(IsolationControl c) {
         case IsolationControl::EnvironmentSanitized: return "environment-sanitized";
         case IsolationControl::NoNewPrivileges: return "no-new-privileges";
         case IsolationControl::PidNamespace: return "pid-namespace";
+        case IsolationControl::DisplayIsolated: return "display-isolated";
     }
     return "?";
 }
@@ -67,10 +68,78 @@ sanitize_environment(const IsolationRequest& req) {
     env["LEXE_APP_ID"] = req.app_id;
     env["LEXE_APP_DATA"] = kSandboxData;
     env["LEXE_APP_CACHE"] = kSandboxCache;
-    // GUI display variables are deliberately NOT forwarded in 0.1 (headless /
-    // terminal isolation only); see the isolation docs.
+
+    // Display variables are forwarded ONLY for a declared GUI launch mode
+    // (Definitive Architecture §14.4), and even then they are rewritten to the
+    // fixed sandbox paths so the host's real runtime directory layout is never
+    // exposed. A console or service application still gets no display at all.
+    if (req.gui) {
+        const auto host = [&](const char* name) -> std::string {
+            const auto it = req.inherited_env.find(name);
+            return it == req.inherited_env.end() ? std::string() : it->second;
+        };
+        const std::string wayland = host("WAYLAND_DISPLAY");
+        const std::string display = host("DISPLAY");
+        if (!wayland.empty()) {
+            env["XDG_RUNTIME_DIR"] = kSandboxRuntime;
+            // A bare socket name resolves inside XDG_RUNTIME_DIR; an absolute
+            // WAYLAND_DISPLAY is remapped to the sandbox location.
+            env["WAYLAND_DISPLAY"] = fs::path(wayland).filename().string();
+        }
+        if (!display.empty()) {
+            env["DISPLAY"] = display;
+        }
+        // Toolkit/session hints that only affect rendering, never authority.
+        for (const char* name :
+             {"XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "GDK_BACKEND",
+              "QT_QPA_PLATFORM", "LANG", "LC_ALL", "LC_MESSAGES"}) {
+            const std::string value = host(name);
+            if (!value.empty()) env[name] = value;
+        }
+    }
     return env;
 }
+
+namespace {
+
+/// The host path of the Wayland display socket, or "" when there is none.
+std::string wayland_socket_path(const IsolationRequest& req) {
+    const auto find = [&](const char* name) -> std::string {
+        const auto it = req.inherited_env.find(name);
+        return it == req.inherited_env.end() ? std::string() : it->second;
+    };
+    const std::string display = find("WAYLAND_DISPLAY");
+    if (display.empty()) return {};
+    if (!display.empty() && display.front() == '/') return display; // absolute
+    const std::string runtime = find("XDG_RUNTIME_DIR");
+    if (runtime.empty()) return {};
+    return (fs::path(runtime) / display).generic_string();
+}
+
+/// The host path of the X11 display socket for `DISPLAY`, or "".
+std::string x11_socket_path(const IsolationRequest& req) {
+    const auto it = req.inherited_env.find("DISPLAY");
+    if (it == req.inherited_env.end() || it->second.empty()) return {};
+    const std::string display = it->second;
+    // ":0", ":0.0", "unix:0" -> screen 0 socket /tmp/.X11-unix/X0. A remote
+    // "host:0" DISPLAY has no local socket and is deliberately not supported:
+    // it would need network access the sandbox does not grant.
+    const std::size_t colon = display.rfind(':');
+    if (colon == std::string::npos) return {};
+    const std::string head = display.substr(0, colon);
+    if (!head.empty() && head != "unix") return {};
+    std::string number = display.substr(colon + 1);
+    if (const std::size_t dot = number.find('.'); dot != std::string::npos) {
+        number = number.substr(0, dot);
+    }
+    if (number.empty()) return {};
+    for (const char c : number) {
+        if (c < '0' || c > '9') return {};
+    }
+    return "/tmp/.X11-unix/X" + number;
+}
+
+} // namespace
 
 IsolationPlan build_plan(const IsolationRequest& req,
                          const IsolationCapabilities& caps) {
@@ -137,6 +206,41 @@ IsolationPlan build_plan(const IsolationRequest& req,
 
     // Home is never bound → not visible.
     plan.controls[IsolationControl::HomeHidden] = ControlState::Enforced;
+
+    // Display access (Definitive Architecture §14.4). A GUI application gets
+    // exactly ONE extra thing: the session's display socket. Not the runtime
+    // directory, not D-Bus, not the home directory. When the manifest declares
+    // any other launch mode, no display socket is reachable at all and the
+    // control is reported as enforced — truthfully, because it is.
+    if (req.gui) {
+        bool granted = false;
+        if (const std::string wayland = wayland_socket_path(req);
+            !wayland.empty()) {
+            // Writable: connecting to a unix socket requires write access.
+            plan.binds.push_back(
+                {wayland,
+                 std::string(kSandboxRuntime) + "/" +
+                     fs::path(wayland).filename().string(),
+                 /*read_only=*/false, /*optional=*/true});
+            granted = true;
+        }
+        if (const std::string x11 = x11_socket_path(req); !x11.empty()) {
+            plan.binds.push_back({x11, x11, /*read_only=*/false,
+                                  /*optional=*/true});
+            granted = true;
+        }
+        // Font configuration and the GPU nodes: rendering resources only.
+        for (const char* f : {"/etc/fonts", "/etc/machine-id", "/var/cache/fontconfig"}) {
+            plan.binds.push_back({f, f, /*read_only=*/true, /*optional=*/true});
+        }
+        plan.dev_binds.push_back({"/dev/dri", "/dev/dri", /*read_only=*/false,
+                                  /*optional=*/true});
+        plan.controls[IsolationControl::DisplayIsolated] =
+            granted ? ControlState::NotApplicable : ControlState::Enforced;
+    } else {
+        plan.controls[IsolationControl::DisplayIsolated] =
+            ControlState::Enforced;
+    }
 
     // Sanitized environment (allowlist) + a safe writable working directory
     // that is NOT the caller's cwd.
@@ -213,6 +317,14 @@ std::vector<std::string> render_bwrap_argv(const IsolationPlan& plan,
     a.push_back("/proc");
     a.push_back("--dev");
     a.push_back("/dev");
+
+    // Device binds go AFTER --dev; placed before it they would be shadowed by
+    // the minimal /dev that --dev establishes.
+    for (const BindMount& b : plan.dev_binds) {
+        a.push_back(b.optional ? "--dev-bind-try" : "--dev-bind");
+        a.push_back(b.host);
+        a.push_back(b.sandbox);
+    }
 
     a.push_back("--chdir");
     a.push_back(plan.working_dir);
@@ -339,10 +451,17 @@ public:
         }
         const std::vector<std::string> argv = render_bwrap_argv(plan, bwrap);
         util::RunOptions o;
-        o.capture_stdout = false; // the app owns our stdout on a normal launch
+        // On a normal launch the application owns our stdout/stderr; capture
+        // is requested only when .LEXE has to record the output itself.
+        o.capture_stdout = plan.capture_output;
+        o.capture_stderr = plan.capture_output;
         IsolationResult result;
         try {
-            result.exit_code = util::run_process(argv, o).exit_code;
+            const util::ProcessResult process = util::run_process(argv, o);
+            result.exit_code = process.exit_code;
+            result.stdout_text = process.stdout_text;
+            result.stderr_text = process.stderr_text;
+            result.signal = process.signal;
         } catch (const Error& e) {
             throw IsolationError(
                 std::string("isolation: backend execution failed: ") + e.what());

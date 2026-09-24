@@ -60,12 +60,11 @@ fs::path make_single_arch_package(const fs::path& work,
                                   const std::string& arch) {
     test::TestAppSpec spec;
     spec.public_key = test::encode_public_key_str(key.public_key);
+    // The payload entrypoint has to be an ELF for `arch`, or the payload-role
+    // stage rejects the package before the compatibility stage runs.
+    spec.architectures = {arch};
     const test::TestAppTree tree =
         test::make_test_app_tree(work / ("arch-tree-" + arch), spec);
-    nlohmann::json manifest =
-        nlohmann::json::parse(util::slurp_text(tree.manifest_file));
-    manifest["architectures"] = nlohmann::json::array({arch});
-    util::spit(tree.manifest_file, std::string_view(manifest.dump(2) + "\n"));
     PackageWriter::Inputs inputs;
     inputs.payload_dir = tree.payload_dir;
     inputs.manifest_file = tree.manifest_file;

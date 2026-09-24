@@ -163,7 +163,11 @@ TEST_CASE("a locally blocked application refuses to launch, allowed once unblock
     CHECK(Registry(paths).is_installed(kId));
 
     TrustStore(paths).unblock(kId);
-    CHECK(run_app(paths, kId, {}) == 0); // launches normally again
+    if (test::have_native_compiler()) { // else the payload is not runnable
+        CHECK(run_app(paths, kId, {}) == 0); // launches normally again
+    } else {
+        CHECK_NOTHROW(run_app(paths, kId, {})); // no longer refused
+    }
 }
 
 TEST_CASE("a corrupt trust record fails the launch closed") {

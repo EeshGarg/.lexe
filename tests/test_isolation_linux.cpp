@@ -109,13 +109,36 @@ void install_probe(const Paths& paths, const crypto::KeyPair& key,
 
     const fs::path proj = work / ("proj-" + id);
     fs::create_directories(proj / "payload" / "bin");
-    util::spit(proj / "payload" / "bin" / "probe", std::string_view(script));
+    // The probe logic stays a shell script, but a native package's ENTRYPOINT
+    // must be a compiled executable (verify's "payload-role" stage), so
+    // bin/probe is a tiny C stub that execs /bin/sh on bin/probe.sh next to
+    // it. It locates itself through /proc/self/exe — argv[0] is not guaranteed
+    // to carry a directory, and /proc is mounted inside the sandbox.
+    util::spit(proj / "payload" / "bin" / "probe.sh", std::string_view(script));
     std::error_code ec;
-    fs::permissions(proj / "payload" / "bin" / "probe",
+    fs::permissions(proj / "payload" / "bin" / "probe.sh",
                     fs::perms::owner_all | fs::perms::group_read |
                         fs::perms::group_exec | fs::perms::others_read |
                         fs::perms::others_exec,
                     ec);
+    REQUIRE(test::compile_native_executable(
+        proj / "payload" / "bin" / "probe",
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "int main(void) {\n"
+        "    char self[4096];\n"
+        "    ssize_t n = readlink(\"/proc/self/exe\", self, sizeof(self) - 16);\n"
+        "    if (n <= 0) return 127;\n"
+        "    while (n > 0 && self[n - 1] != '/') --n;\n"
+        "    self[n] = 0;\n"
+        "    strcat(self, \"probe.sh\");\n"
+        "    char* args[3];\n"
+        "    args[0] = \"sh\";\n"
+        "    args[1] = self;\n"
+        "    args[2] = 0;\n"
+        "    execv(\"/bin/sh\", args);\n"
+        "    return 127;\n"
+        "}\n"));
     nlohmann::json m = {
         {"lexeVersion", "0.1"},
         {"id", id},
@@ -158,6 +181,10 @@ TEST_CASE("no-network app: filesystem/home/cross-app/env/network all denied") {
     if (!isolation_available(paths)) {
         MESSAGE("SKIP: bubblewrap isolation unavailable on this host "
                 "(unprivileged user namespaces / netns)");
+        return;
+    }
+    if (!test::have_native_compiler()) {
+        MESSAGE("SKIP: no host C compiler to build the probe entrypoint");
         return;
     }
     const crypto::KeyPair key = test::make_keypair();
@@ -215,6 +242,10 @@ TEST_CASE("network-permitted app can reach the host network") {
         MESSAGE("SKIP: bubblewrap isolation unavailable on this host");
         return;
     }
+    if (!test::have_native_compiler()) {
+        MESSAGE("SKIP: no host C compiler to build the probe entrypoint");
+        return;
+    }
     const crypto::KeyPair key = test::make_keypair();
     const fs::path work = home.path() / "work";
     fs::create_directories(work);
@@ -241,6 +272,10 @@ TEST_CASE("FAIL CLOSED: a hidden/broken backend never runs the app directly") {
     const Paths paths = Paths::detect();
     if (!isolation_available(paths)) {
         MESSAGE("SKIP: bubblewrap isolation unavailable on this host");
+        return;
+    }
+    if (!test::have_native_compiler()) {
+        MESSAGE("SKIP: no host C compiler to build the probe entrypoint");
         return;
     }
     const crypto::KeyPair key = test::make_keypair();

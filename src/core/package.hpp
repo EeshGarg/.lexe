@@ -76,6 +76,10 @@ public:
         /// Optional directory stored as `metadata/…` (hashes.json is always
         /// generated and must not exist here).
         std::optional<std::filesystem::path> metadata_dir;
+        /// Permit a package with NO payload entries. Only a launch reference
+        /// (Definitive Architecture §15.1, manifest role "launch") may do
+        /// this: it names an installed application instead of carrying one.
+        bool allow_empty_payload = false;
     };
 
     /// Build `out_lexe`: collect entries, compute `metadata/hashes.json`

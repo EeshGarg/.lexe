@@ -58,10 +58,16 @@ void unset_env(const std::string& name);
 struct ProcessResult {
     int exit_code = -1;
     std::string stdout_text; // captured child stdout (empty when not captured)
+    std::string stderr_text; // captured child stderr (empty when not captured)
+    /// The signal that killed the child, when it was killed rather than
+    /// exiting. Diagnostics must distinguish "exited 1" from "killed by
+    /// SIGSEGV" (Definitive Architecture §9).
+    std::optional<int> signal;
 };
 struct RunOptions {
     std::optional<std::filesystem::path> cwd; // child working directory
     bool capture_stdout = true; // false: child inherits our stdout (launcher)
+    bool capture_stderr = false; // false: child inherits our stderr
 };
 /// Spawn argv[0] (searched on PATH) with argv[1..] as arguments, wait for
 /// exit. stderr is inherited. Throws Error if the process cannot be started.

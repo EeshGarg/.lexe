@@ -151,10 +151,20 @@ json record_on_disk(const std::string& id) {
 
 // ------------------------------------------------------------- app fixture
 
-/// Unpacked source tree for the e2e app: a payload whose entrypoint exits
-/// with its first argument (default 0) after printing a marker, plus a
-/// FORMAT-0.1 §5 lexe.json carrying `public_key` and (optionally) an updates
-/// block pointing at `update_url`.
+/// The e2e payload's exit status, chosen PER VERSION. A native package's
+/// entrypoint is a compiled binary (the verify pipeline's "payload-role" stage
+/// rejects shell scripts), so it cannot take its exit status from an argument
+/// any more — instead each version exits with its own distinctive non-zero
+/// code, which makes `lexe run`'s exit code prove BOTH that the exit status
+/// propagates and WHICH version actually executed.
+int payload_exit_code(const std::string& version) {
+    return version == "1.1.0" ? 7 : 41;
+}
+
+/// Unpacked source tree for the e2e app: a payload whose entrypoint prints a
+/// per-version marker plus its arguments and exits with payload_exit_code(),
+/// plus a FORMAT-0.1 §5 lexe.json carrying `public_key` and (optionally) an
+/// updates block pointing at `update_url`.
 struct E2eTree {
     fs::path payload_dir;
     fs::path manifest_file;
@@ -167,27 +177,16 @@ E2eTree make_e2e_tree(const fs::path& root, const std::string& version,
     tree.payload_dir = root / "payload";
     tree.manifest_file = root / "lexe.json";
 
-    util::spit(tree.payload_dir / "bin" / "app.sh",
-               std::string_view("#!/bin/sh\necho e2e app " + version +
-                                "\nexit \"${1:-0}\"\n"));
-    util::spit(tree.payload_dir / "bin" / "app.cmd",
-               std::string_view("@echo e2e app " + version +
-                                "\r\n@exit /b %1\r\n"));
+#ifdef _WIN32
+    const std::string entrypoint = "bin/app.exe";
+#else
+    const std::string entrypoint = "bin/app";
+#endif
+    test::write_native_executable(tree.payload_dir / entrypoint,
+                                  "e2e app " + version,
+                                  payload_exit_code(version));
     util::spit(tree.payload_dir / "share" / "version.txt",
                std::string_view(version + "\n"));
-#ifndef _WIN32
-    std::error_code ec;
-    fs::permissions(tree.payload_dir / "bin" / "app.sh",
-                    fs::perms::owner_all | fs::perms::group_read |
-                        fs::perms::others_read,
-                    fs::perm_options::replace, ec);
-#endif
-
-#ifdef _WIN32
-    const std::string entrypoint = "bin/app.cmd";
-#else
-    const std::string entrypoint = "bin/app.sh";
-#endif
     json manifest = {
         {"lexeVersion", "0.1"},
         {"id", kId},
@@ -318,12 +317,12 @@ TEST_CASE("full product lifecycle: keygen -> pack -> verify -> info -> "
         const auto r = run_cli({"verify", pkg1.string()});
         CHECK(r.exit_code == 0);
         CHECK(contains(r.stdout_text, "OK"));
-        // Machine-readable report: all six pre-install stages green.
+        // Machine-readable report: all seven pre-install stages green.
         const auto rj = run_cli({"verify", pkg1.string(), "--json"});
         CHECK(rj.exit_code == 0);
         const json report = json::parse(rj.stdout_text);
         CHECK(report.at("ok").get<bool>());
-        REQUIRE(report.at("stages").size() == 6);
+        REQUIRE(report.at("stages").size() == 7);
         for (const auto& stage : report["stages"]) {
             CHECK(stage.at("ok").get<bool>());
         }
@@ -376,7 +375,7 @@ TEST_CASE("full product lifecycle: keygen -> pack -> verify -> info -> "
         // Installer restores the entrypoint exec bit (ZIP mode bits are not
         // preserved by the deterministic writer).
         const fs::perms perms =
-            fs::status(app_dir / "versions" / "1.0.0" / "bin" / "app.sh")
+            fs::status(app_dir / "versions" / "1.0.0" / "bin" / "app")
                 .permissions();
         CHECK((perms & fs::perms::owner_exec) != fs::perms::none);
 #endif
@@ -394,10 +393,19 @@ TEST_CASE("full product lifecycle: keygen -> pack -> verify -> info -> "
     }
 
     // ------------------------------------------- run (exit-code propagation)
-    {
-        CHECK(run_cli({"run", kId}).exit_code == 0);
-        CHECK(run_cli({"run", kId, "--", "5"}).exit_code == 5);
-        CHECK(run_cli({"run", kId, "--", "41"}).exit_code == 41);
+    // The payload is a compiled binary, so these blocks need a host compiler
+    // (helpers.hpp falls back to a valid-but-not-runnable ELF without one).
+    const bool runnable = test::have_native_compiler();
+    if (runnable) {
+        // The 1.0.0 payload exits 41 and echoes its argv.
+        const auto plain = run_cli({"run", kId});
+        CHECK(plain.exit_code == 41);
+        CHECK(contains(plain.stdout_text, "e2e app 1.0.0"));
+
+        const auto with_args = run_cli({"run", kId, "--", "5", "two words"});
+        CHECK(with_args.exit_code == 41);
+        CHECK(contains(with_args.stdout_text, "arg: 5"));
+        CHECK(contains(with_args.stdout_text, "arg: two words"));
 
         // lastRun {at, exitCode} lands in installation.json on disk (§9).
         const json rec = record_on_disk(kId);
@@ -446,8 +454,13 @@ TEST_CASE("full product lifecycle: keygen -> pack -> verify -> info -> "
         CHECK(json::parse(util::slurp_text(app_dir / "manifest.json"))
                   .at("version") == "1.1.0");
 
-        // The updated app actually runs (and still propagates exit codes).
-        CHECK(run_cli({"run", kId, "--", "7"}).exit_code == 7);
+        // The updated app actually runs: 1.1.0's payload exits 7, so the
+        // exit code alone proves the NEW version is what executed.
+        if (runnable) {
+            const auto ran = run_cli({"run", kId, "--", "7"});
+            CHECK(ran.exit_code == 7);
+            CHECK(contains(ran.stdout_text, "e2e app 1.1.0"));
+        }
 
         // Nothing newer now: clean no-op, registry unchanged.
         CHECK(run_cli({"update", kId}).exit_code == 0);
@@ -466,8 +479,12 @@ TEST_CASE("full product lifecycle: keygen -> pack -> verify -> info -> "
         // Both version trees still on disk after the flip.
         CHECK(fs::is_directory(app_dir / "versions" / "1.0.0"));
         CHECK(fs::is_directory(app_dir / "versions" / "1.1.0"));
-        // And the rolled-back version is the one that runs.
-        CHECK(run_cli({"run", kId, "--", "3"}).exit_code == 3);
+        // And the rolled-back version is the one that runs (1.0.0 exits 41).
+        if (runnable) {
+            const auto ran = run_cli({"run", kId, "--", "3"});
+            CHECK(ran.exit_code == 41);
+            CHECK(contains(ran.stdout_text, "e2e app 1.0.0"));
+        }
     }
 
     // -------------------------------------------------------------- remove

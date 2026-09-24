@@ -70,12 +70,18 @@ TEST_CASE("a package whose declared entrypoint is missing is REFUSED") {
     const crypto::KeyPair key = test::make_keypair();
     const fs::path work = home.path() / "work";
     fs::create_directories(work);
-    // Verifies (§6) but declares an entrypoint not present in the payload.
+    // Declares an entrypoint that is not present in the payload. The verify
+    // pipeline's "payload-role" stage now catches this BEFORE anything is
+    // extracted, so the refusal happens even earlier than the post-install
+    // health gate (which remains as defence in depth).
     const fs::path bad =
         build_pkg(work, key, kId, "1.0.0", "bin/does-not-exist");
 
     CHECK_THROWS_WITH_AS(Installer(paths).install(bad, InstallOptions{}),
-                         doctest::Contains("health check"),
+                         doctest::Contains("payload-role"),
+                         lexe::VerificationError);
+    CHECK_THROWS_WITH_AS(Installer(paths).install(bad, InstallOptions{}),
+                         doctest::Contains("bin/does-not-exist"),
                          lexe::VerificationError);
     // Rolled back: nothing installed.
     CHECK_FALSE(Registry(paths).is_installed(kId));
@@ -92,11 +98,12 @@ TEST_CASE("an unhealthy UPGRADE leaves the previous version active (rollback)") 
     Installer(paths).install(build_pkg(work, key, kId, "1.0.0"), InstallOptions{});
     REQUIRE(Registry(paths).current_version(kId) == "1.0.0");
 
-    // Attempt to upgrade to a 2.0.0 that fails its health check.
+    // Attempt to upgrade to a 2.0.0 whose declared entrypoint is absent — the
+    // payload-role stage refuses it before the staged tree is ever promoted.
     const fs::path bad2 =
         build_pkg(work, key, kId, "2.0.0", "bin/does-not-exist");
     CHECK_THROWS_WITH_AS(Installer(paths).install(bad2, InstallOptions{}),
-                         doctest::Contains("health check"),
+                         doctest::Contains("payload-role"),
                          lexe::VerificationError);
 
     // The previous known-good version is still active and healthy; the bad

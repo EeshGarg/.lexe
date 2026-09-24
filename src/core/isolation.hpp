@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,6 +37,7 @@ enum class IsolationControl {
     EnvironmentSanitized, // environment cleared to a safe allowlist
     NoNewPrivileges,      // setuid/privilege escalation prevented
     PidNamespace,         // private PID namespace
+    DisplayIsolated,      // no display server socket is reachable
 };
 
 /// The truthful state of a control for a given launch.
@@ -89,7 +91,15 @@ struct IsolationRequest {
     std::filesystem::path data_root;  // private persistent (host path)
     std::filesystem::path cache_root; // private cache (host path)
     bool network_allowed = false;     // "network" permission approved
-    bool gui = false;                 // needs a display (advisory in 0.1)
+    /// The application declared launch.mode "gui" (Definitive Architecture
+    /// §14.4) and therefore needs the session's display server. This is a
+    /// DELIBERATE, declared reduction of isolation: the display socket is the
+    /// one host resource a graphical application cannot do without. It is
+    /// granted only when the manifest declares a GUI launch mode, it is
+    /// reported truthfully in the control map (DisplayIsolated becomes
+    /// NotApplicable, never silently "enforced"), and nothing else about the
+    /// session — no D-Bus, no home, no network — comes with it.
+    bool gui = false;
     std::map<std::string, std::string> inherited_env; // caller env (to sanitize)
 };
 
@@ -97,6 +107,10 @@ struct IsolationRequest {
 /// tests inspect it directly.
 struct IsolationPlan {
     std::vector<BindMount> binds;
+    /// Binds that must be applied AFTER the minimal /dev is established (a
+    /// /dev/... bind placed before it would simply be shadowed). Used for GPU
+    /// device nodes when a GUI application is granted display access.
+    std::vector<BindMount> dev_binds;
     std::vector<std::string> tmpfs;   // sandbox tmpfs mount points (private temp)
     std::vector<std::pair<std::string, std::string>> symlinks; // sandbox symlinks
     std::map<std::string, std::string> env; // sanitized environment (allowlist)
@@ -104,12 +118,20 @@ struct IsolationPlan {
     std::string working_dir;          // sandbox chdir (never the caller's cwd)
     std::vector<std::string> app_argv;// entrypoint + args, inside the sandbox
     std::map<IsolationControl, ControlState> controls; // what WILL be enforced
+    /// Capture the child's stdout/stderr instead of letting it inherit ours.
+    /// Used when .LEXE must be able to put the output into a structured error
+    /// record (Definitive Architecture §9) — e.g. a console application
+    /// launched from the desktop with no terminal available.
+    bool capture_output = false;
 };
 
 /// The outcome of running a plan.
 struct IsolationResult {
     int exit_code = -1;
     std::map<IsolationControl, ControlState> enforced;
+    std::string stdout_text; // only when the plan requested capture
+    std::string stderr_text;
+    std::optional<int> signal; // set when the child was killed by a signal
 };
 
 // ------------------------------------------------------------- pure policy
@@ -119,6 +141,10 @@ struct IsolationResult {
 inline constexpr const char* kSandboxData = "/run/lexe/data";
 inline constexpr const char* kSandboxCache = "/run/lexe/cache";
 inline constexpr const char* kSandboxTemp = "/tmp";
+/// Fixed sandbox location of the session runtime directory when a GUI
+/// application is granted display access. The host's real XDG_RUNTIME_DIR is
+/// never exposed — only the individual display socket is bound in here.
+inline constexpr const char* kSandboxRuntime = "/run/lexe/session";
 
 /// Build the safe environment for `req`: clears everything and sets only HOME,
 /// PATH, TMPDIR and LEXE_APP_* to sandbox values. Dangerous variables

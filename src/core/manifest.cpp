@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -250,6 +251,77 @@ void parse_updates(const json& root, Manifest& m) {
         *updates, "allowSourceChange", "updates.allowSourceChange", true);
 }
 
+/// Definitive Architecture §6/§8 — the execution-policy block. Absent means
+/// "the boring native path only", which is the safe default.
+void parse_execution(const json& root, Manifest& m) {
+    const json* execution = optional_object(root, "execution", "execution");
+    if (execution == nullptr) {
+        m.allowed_chains = {"native"};
+        return;
+    }
+    m.mission_critical = optional_bool(*execution, "missionCritical",
+                                       "execution.missionCritical", false);
+    m.allowed_chains = optional_string_array(*execution, "allowedChains",
+                                             "execution.allowedChains");
+    if (m.allowed_chains.empty()) {
+        m.allowed_chains = {"native"};
+    }
+    for (const std::string& chain : m.allowed_chains) {
+        if (chain.empty()) {
+            fail("\"execution.allowedChains\" must not contain empty strings");
+        }
+        if (chain.size() > limits::kMaxNameBytes) {
+            fail("\"execution.allowedChains\" entry is too long");
+        }
+        for (const char c : chain) {
+            if (!is_ascii_alnum(c) && c != '-' && c != '+' && c != '_') {
+                fail("invalid execution chain id \"" + chain +
+                     "\" (use [a-zA-Z0-9-+_])");
+            }
+        }
+    }
+    // §6 FORBID: a mission-critical package may not carry a compatibility
+    // policy at all. Rejecting the contradiction in the manifest is better
+    // than silently ignoring it at launch time.
+    if (m.mission_critical) {
+        for (const std::string& chain : m.allowed_chains) {
+            if (chain != "native") {
+                fail("execution.missionCritical forbids compatibility chains, "
+                     "but execution.allowedChains contains \"" + chain + "\"");
+            }
+        }
+    }
+}
+
+/// Definitive Architecture §14.4 — declared launch presentation, and (for a
+/// launch reference) the App ID being launched.
+void parse_launch(const json& root, Manifest& m) {
+    const json* launch = optional_object(root, "launch", "launch");
+    if (launch != nullptr) {
+        const std::string mode =
+            optional_string(*launch, "mode", "launch.mode", "gui");
+        if (!launch_mode_from_string(mode, m.launch_mode)) {
+            fail("invalid launch.mode \"" + mode +
+                 "\" (choose gui, console or service)");
+        }
+        m.launch_single_instance = optional_bool(
+            *launch, "singleInstance", "launch.singleInstance", false);
+        m.launch_application_id =
+            optional_string(*launch, "applicationId", "launch.applicationId",
+                            "");
+    }
+
+    if (m.role == PackageRole::Launch) {
+        if (m.launch_application_id.empty()) {
+            fail("a launch reference (role \"launch\") must declare "
+                 "\"launch.applicationId\"");
+        }
+        validate_id(m.launch_application_id);
+    } else if (!m.launch_application_id.empty()) {
+        fail("\"launch.applicationId\" is only valid for role \"launch\"");
+    }
+}
+
 void parse_integration(const json& root, Manifest& m) {
     const json* integration =
         optional_object(root, "integration", "integration");
@@ -347,45 +419,81 @@ Manifest Manifest::parse(std::string_view json_text) {
     m.publisher_website =
         optional_string(publisher, "website", "publisher.website", "");
 
-    m.application_type =
-        require_nonempty_string(root, "applicationType", "applicationType");
-    if (m.application_type != "native") {
-        fail("applicationType \"" + m.application_type +
-             "\" is unsupported in 0.1 (only \"native\" is supported)");
-    }
-
-    const json* architectures = find_member(root, "architectures");
-    if (architectures == nullptr) {
-        fail("missing required field \"architectures\"");
-    }
-    if (!architectures->is_array() || architectures->empty()) {
-        fail("\"architectures\" must be a non-empty array");
-    }
-    for (const json& element : *architectures) {
-        if (!element.is_string()) {
-            fail("\"architectures\" must contain only string elements");
+    // Definitive Architecture §15.1 — the role decides WHICH remaining fields
+    // are required. It is part of the signed manifest, so renaming the file
+    // cannot turn a launch reference into an installable package.
+    {
+        const std::string role =
+            optional_string(root, "role", "role", "application");
+        if (role == "application") {
+            m.role = PackageRole::Application;
+        } else if (role == "launch") {
+            m.role = PackageRole::Launch;
+        } else {
+            fail("unknown role \"" + role +
+                 "\" (this runtime understands \"application\" and "
+                 "\"launch\")");
         }
-        const std::string arch = element.get<std::string>();
-        if (arch != "x86_64" && arch != "aarch64") {
-            fail("unrecognised architecture \"" + arch +
-                 "\" (0.1 recognises x86_64, aarch64)");
-        }
-        m.architectures.push_back(arch);
     }
 
-    const json& entrypoint = require_object(root, "entrypoint", "entrypoint");
-    m.entrypoint_executable = require_nonempty_string(
-        entrypoint, "executable", "entrypoint.executable");
-    validate_entrypoint_path(m.entrypoint_executable);
-    m.entrypoint_arguments = optional_string_array(entrypoint, "arguments",
-                                                   "entrypoint.arguments");
+    if (m.role == PackageRole::Application) {
+        m.application_type =
+            require_nonempty_string(root, "applicationType", "applicationType");
+        if (m.application_type != "native") {
+            fail("applicationType \"" + m.application_type +
+                 "\" is unsupported in 0.1 (only \"native\" is supported)");
+        }
 
-    parse_install(root, m);
+        const json* architectures = find_member(root, "architectures");
+        if (architectures == nullptr) {
+            fail("missing required field \"architectures\"");
+        }
+        if (!architectures->is_array() || architectures->empty()) {
+            fail("\"architectures\" must be a non-empty array");
+        }
+        for (const json& element : *architectures) {
+            if (!element.is_string()) {
+                fail("\"architectures\" must contain only string elements");
+            }
+            const std::string arch = element.get<std::string>();
+            if (arch != "x86_64" && arch != "aarch64") {
+                fail("unrecognised architecture \"" + arch +
+                     "\" (0.1 recognises x86_64, aarch64)");
+            }
+            m.architectures.push_back(arch);
+        }
+
+        const json& entrypoint =
+            require_object(root, "entrypoint", "entrypoint");
+        m.entrypoint_executable = require_nonempty_string(
+            entrypoint, "executable", "entrypoint.executable");
+        validate_entrypoint_path(m.entrypoint_executable);
+        m.entrypoint_arguments =
+            optional_string_array(entrypoint, "arguments",
+                                  "entrypoint.arguments");
+
+        parse_install(root, m);
+    } else {
+        // A launch reference carries NO payload and NO entrypoint: it names an
+        // installed application. Rejecting these fields keeps the two roles
+        // structurally distinct instead of merely differently labelled.
+        for (const char* forbidden :
+             {"applicationType", "architectures", "entrypoint", "install"}) {
+            if (find_member(root, forbidden) != nullptr) {
+                fail(std::string("a launch reference (role \"launch\") must "
+                                 "not declare \"") +
+                     forbidden + "\"");
+            }
+        }
+        m.install_mode = "bundled"; // structural default; nothing is installed
+    }
 
     // --- optional blocks with defaults (§5) ---
     m.permissions = optional_string_array(root, "permissions", "permissions");
     parse_updates(root, m);
     parse_integration(root, m);
+    parse_execution(root, m);
+    parse_launch(root, m);
 
     return m;
 }
@@ -396,6 +504,7 @@ std::string Manifest::to_json() const {
     j["id"] = id;
     j["name"] = name;
     j["version"] = version;
+    j["role"] = to_string(role);
 
     ordered_json publisher;
     publisher["name"] = publisher_name;
@@ -403,21 +512,38 @@ std::string Manifest::to_json() const {
     publisher["publicKey"] = publisher_public_key;
     j["publisher"] = std::move(publisher);
 
-    j["applicationType"] = application_type;
-    j["architectures"] = architectures;
+    if (role == PackageRole::Application) {
+        j["applicationType"] = application_type;
+        j["architectures"] = architectures;
 
-    ordered_json entrypoint;
-    entrypoint["executable"] = entrypoint_executable;
-    entrypoint["arguments"] = entrypoint_arguments;
-    j["entrypoint"] = std::move(entrypoint);
+        ordered_json entrypoint;
+        entrypoint["executable"] = entrypoint_executable;
+        entrypoint["arguments"] = entrypoint_arguments;
+        j["entrypoint"] = std::move(entrypoint);
 
-    ordered_json install;
-    install["scope"] = install_scope;
-    install["mode"] = install_mode;
-    if (install_estimated_size != 0) {
-        install["estimatedSize"] = install_estimated_size;
+        ordered_json install;
+        install["scope"] = install_scope;
+        install["mode"] = install_mode;
+        if (install_estimated_size != 0) {
+            install["estimatedSize"] = install_estimated_size;
+        }
+        j["install"] = std::move(install);
     }
-    j["install"] = std::move(install);
+
+    ordered_json launch;
+    launch["mode"] = to_string(launch_mode);
+    launch["singleInstance"] = launch_single_instance;
+    if (role == PackageRole::Launch) {
+        launch["applicationId"] = launch_application_id;
+    }
+    j["launch"] = std::move(launch);
+
+    ordered_json execution;
+    execution["missionCritical"] = mission_critical;
+    execution["allowedChains"] =
+        allowed_chains.empty() ? std::vector<std::string>{"native"}
+                               : allowed_chains;
+    j["execution"] = std::move(execution);
 
     j["permissions"] = permissions;
 
@@ -448,6 +574,44 @@ std::string Manifest::to_json() const {
 
 crypto::PublicKey Manifest::decoded_public_key() const {
     return crypto::decode_public_key(publisher_public_key);
+}
+
+const char* to_string(PackageRole r) {
+    switch (r) {
+    case PackageRole::Application: return "application";
+    case PackageRole::Launch: return "launch";
+    }
+    return "application";
+}
+
+const char* to_string(LaunchMode m) {
+    switch (m) {
+    case LaunchMode::Gui: return "gui";
+    case LaunchMode::Console: return "console";
+    case LaunchMode::Service: return "service";
+    }
+    return "gui";
+}
+
+bool launch_mode_from_string(const std::string& text, LaunchMode& out) {
+    if (text == "gui") { out = LaunchMode::Gui; return true; }
+    if (text == "console") { out = LaunchMode::Console; return true; }
+    if (text == "service") { out = LaunchMode::Service; return true; }
+    return false;
+}
+
+std::vector<std::string> Manifest::effective_allowed_chains() const {
+    // §6 FORBID — mission-critical execution permits the native chain only,
+    // whatever the list says. The parser already rejects the contradiction;
+    // this is the belt-and-braces enforcement point used at launch.
+    if (mission_critical) return {"native"};
+    if (allowed_chains.empty()) return {"native"};
+    return allowed_chains;
+}
+
+bool Manifest::chain_allowed(const std::string& chain) const {
+    const std::vector<std::string> chains = effective_allowed_chains();
+    return std::find(chains.begin(), chains.end(), chain) != chains.end();
 }
 
 } // namespace lexe

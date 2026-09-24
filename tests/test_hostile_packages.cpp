@@ -62,17 +62,22 @@ json base_manifest(const std::string& key_str) {
         {"publisher", {{"name", "P"}, {"publicKey", key_str}}},
         {"applicationType", "native"},
         {"architectures", json::array({"x86_64", "aarch64"})},
-        {"entrypoint", {{"executable", "bin/hello.sh"}}},
+        {"entrypoint", {{"executable", test::TestAppSpec{}.entrypoint}}},
         {"install", {{"scope", "user"}, {"mode", "bundled"}}},
     };
 }
 
 /// Pack a package whose lexe.json is exactly `manifest` (well-formed JSON, but
-/// possibly §5-invalid), signed with `key`.
+/// possibly §5-invalid), signed with `key`. `architectures` selects which ELF
+/// the payload's entrypoint is built for — it must agree with the manifest, or
+/// the payload-role stage fires before the stage under test.
 fs::path pack_manifest(const fs::path& work, const crypto::KeyPair& key,
-                       const json& manifest, const std::string& tag) {
+                       const json& manifest, const std::string& tag,
+                       const std::vector<std::string>& architectures = {
+                           "x86_64", "aarch64"}) {
     test::TestAppSpec spec;
     spec.public_key = test::encode_public_key_str(key.public_key);
+    spec.architectures = architectures;
     const test::TestAppTree tree =
         test::make_test_app_tree(work / ("tree-" + tag), spec);
     util::spit(tree.manifest_file, std::string_view(manifest.dump(2) + "\n"));
@@ -231,7 +236,7 @@ TEST_CASE("an architecture-incompatible package fails at the compatibility stage
         host_architecture() == "x86_64" ? "aarch64" : "x86_64";
     json m = base_manifest(test::encode_public_key_str(key.public_key));
     m["architectures"] = json::array({other});
-    const fs::path pkg = pack_manifest(w, key, m, "wrong-arch");
+    const fs::path pkg = pack_manifest(w, key, m, "wrong-arch", {other});
     // Passes structure/manifest/key/signatures/hashes, fails compatibility.
     expect_stage(pkg, /*check_arch=*/true, "compatibility");
 }

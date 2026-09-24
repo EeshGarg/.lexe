@@ -31,6 +31,28 @@ namespace lexe {
 
 namespace {
 
+/// The bare top-level `role` string of a `lexe.json`, WITHOUT validating the
+/// manifest (Definitive Architecture §15.1). Structure rules differ by role,
+/// and structure is checked before the manifest module ever runs, so the
+/// reader needs this one hint. Anything unreadable/absent reads as
+/// "application" — the stricter of the two rule sets.
+std::string declared_role(const std::vector<std::uint8_t>& lexe_json_bytes) {
+    try {
+        const nlohmann::json doc = json_strict::parse(
+            std::string_view(
+                reinterpret_cast<const char*>(lexe_json_bytes.data()),
+                lexe_json_bytes.size()),
+            "manifest", limits::kMaxManifestBytes);
+        if (!doc.is_object()) return "application";
+        const auto it = doc.find("role");
+        if (it == doc.end() || !it->is_string()) return "application";
+        return it->get<std::string>();
+    } catch (const std::exception&) {
+        return "application";
+    }
+}
+
+
 // ------------------------------------------------------------------ paths
 
 bool is_ascii_alpha(char c) {
@@ -326,14 +348,23 @@ PackageReader::PackageReader(const fs::path& lexe_file)
                                     std::string(required));
         }
     }
-    const bool has_payload = std::any_of(
-        impl_->files.begin(), impl_->files.end(), [](const Impl::File& f) {
-            return f.entry.path.rfind("payload/", 0) == 0 &&
-                   f.entry.path.size() > 8;
-        });
-    if (!has_payload) {
-        throw VerificationError(
-            "package: required payload/ entries missing (bundled mode)");
+    // Definitive Architecture §15.1 — the ROLE decides whether payload/ is
+    // required. An installable application in bundled mode must carry payload
+    // bytes; a launch reference names an installed application and carries
+    // none. The role is read here as a bare structural hint; the manifest
+    // module still performs full §5 validation (and the payload-role stage of
+    // the §6 pipeline still checks that the bytes match the declared role), so
+    // a lying `role` cannot buy anything — it only moves which rule rejects it.
+    if (declared_role(read_entry("lexe.json")) != "launch") {
+        const bool has_payload = std::any_of(
+            impl_->files.begin(), impl_->files.end(), [](const Impl::File& f) {
+                return f.entry.path.rfind("payload/", 0) == 0 &&
+                       f.entry.path.size() > 8;
+            });
+        if (!has_payload) {
+            throw VerificationError(
+                "package: required payload/ entries missing (bundled mode)");
+        }
     }
 }
 
@@ -609,7 +640,7 @@ void PackageWriter::write(const Inputs& inputs, const crypto::KeyPair& key,
 
     const std::size_t before_payload = entries.size();
     collect_tree(inputs.payload_dir, "payload/", entries);
-    if (entries.size() == before_payload) {
+    if (entries.size() == before_payload && !inputs.allow_empty_payload) {
         throw Error("pack: payload directory contains no files: " +
                     inputs.payload_dir.string());
     }

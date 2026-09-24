@@ -447,9 +447,15 @@ TEST_CASE("POSIX: missing exec bit is set before launch") {
 
 TEST_CASE("launches the shared test-app payload (helpers tree)") {
     // The tree make_test_app_tree/make_test_package produce (per-platform
-    // entrypoint: bin/hello.cmd on Windows, bin/hello.sh on POSIX) must be
-    // launchable — installer/updater/e2e tests all rely on this payload.
+    // entrypoint: bin/hello.exe on Windows, bin/hello on POSIX — a COMPILED
+    // executable, as the verify pipeline's payload-role stage requires) must
+    // be launchable: installer/updater/e2e tests all rely on this payload.
     lexe::test::TempLexeHome home;
+    if (!lexe::test::have_native_compiler()) {
+        MESSAGE("SKIP: no host C compiler, the fixture entrypoint is a "
+                "synthesized (non-runnable) ELF");
+        return;
+    }
     const lexe::Paths paths = lexe::Paths::detect();
 
     const lexe::test::TestAppTree tree = lexe::test::make_test_app_tree(

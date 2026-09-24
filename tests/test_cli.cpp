@@ -139,33 +139,28 @@ fs::path make_versioned_package(const fs::path& work,
     return test::make_test_package(work, key, spec);
 }
 
-/// Signed package whose entrypoint exits with its first argument
-/// (default 0) — exercises `lexe run` argument forwarding and exit-code
-/// propagation.
+/// Signed package whose entrypoint is a COMPILED native binary that echoes
+/// its arguments ("arg: <value>" per line) and exits with `exit_code` —
+/// exercises `lexe run` argument forwarding and exit-code propagation.
+/// (A native package cannot use a shell script: the verify pipeline's
+/// "payload-role" stage requires a real ELF entrypoint.)
 fs::path make_exit_code_package(const fs::path& work,
                                 const crypto::KeyPair& key,
                                 const std::string& id,
-                                const std::string& version) {
+                                const std::string& version, int exit_code) {
     test::TestAppSpec spec;
     spec.id = id;
     spec.version = version;
 #ifdef _WIN32
-    spec.entrypoint = "bin/code.cmd";
+    spec.entrypoint = "bin/code.exe";
 #else
-    spec.entrypoint = "bin/code.sh";
+    spec.entrypoint = "bin/code";
 #endif
     spec.public_key = test::encode_public_key_str(key.public_key);
     const test::TestAppTree tree = test::make_test_app_tree(
         work / ("tree-" + id + "-" + version), spec);
-    util::spit(tree.payload_dir / "bin" / "code.cmd",
-               std::string_view("@exit /b %1\r\n"));
-    util::spit(tree.payload_dir / "bin" / "code.sh",
-               std::string_view("#!/bin/sh\nexit \"${1:-0}\"\n"));
-#ifndef _WIN32
-    std::error_code ec;
-    fs::permissions(tree.payload_dir / "bin" / "code.sh",
-                    fs::perms::owner_all, fs::perm_options::add, ec);
-#endif
+    test::write_native_executable(tree.payload_dir / spec.entrypoint,
+                                  "code payload " + version, exit_code);
     PackageWriter::Inputs inputs;
     inputs.payload_dir = tree.payload_dir;
     inputs.manifest_file = tree.manifest_file;
@@ -353,8 +348,9 @@ TEST_CASE("build turns a project folder into an installable .lexe") {
     // A Lexe project folder: lexe.json (publicKey "AUTO") + payload/.
     const fs::path project = work.dir / "myapp";
     fs::create_directories(project / "payload" / "bin");
-    util::spit(project / "payload" / "bin" / "app",
-               std::string_view("#!/bin/sh\necho hi\n"));
+    // A native package's entrypoint must be a COMPILED executable — the
+    // verify pipeline's payload-role stage rejects scripts and source text.
+    test::write_native_executable(project / "payload" / "bin" / "app", "hi");
     util::spit(
         project / "lexe.json",
         std::string_view(
@@ -468,9 +464,10 @@ TEST_CASE("verify --json reports every stage; tampering exits 3") {
     CHECK(ok.exit_code == 0);
     const json report = json::parse(ok.stdout_text);
     CHECK(report.at("ok").get<bool>());
-    REQUIRE(report.at("stages").size() == 6); // no architecture stage
+    REQUIRE(report.at("stages").size() == 7); // no architecture stage
     CHECK(report["stages"][0]["name"] == "structure");
     CHECK(report["stages"][5]["name"] == "hashes");
+    CHECK(report["stages"][6]["name"] == "payload-role");
     for (const auto& stage : report["stages"]) {
         CHECK(stage.at("ok").get<bool>());
     }
@@ -664,13 +661,32 @@ TEST_CASE("run launches the entrypoint, forwards args after -- and "
     test::TempLexeHome home;
     TempWorkDir work;
     const crypto::KeyPair key = test::make_keypair();
+    if (!test::have_native_compiler()) return; // needs a RUNNABLE payload
+
+    // Two apps: one whose payload exits 0, one whose payload exits 42 — a
+    // native entrypoint is a compiled binary, so its exit status is baked in
+    // rather than taken from an argument.
+    const std::string ok_id = "com.example.exitzero";
     const std::string id = "com.example.exitcode";
-    const fs::path pkg = make_exit_code_package(work.dir, key, id, "1.0.0");
+    const fs::path ok_pkg =
+        make_exit_code_package(work.dir, key, ok_id, "1.0.0", 0);
+    const fs::path pkg = make_exit_code_package(work.dir, key, id, "1.0.0", 42);
+    REQUIRE(run_cli({"install", ok_pkg.string(), "--yes"}).exit_code == 0);
     REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
 
-    CHECK(run_cli({"run", id}).exit_code == 0);
-    CHECK(run_cli({"run", id, "--", "7"}).exit_code == 7);
-    CHECK(run_cli({"run", id, "--", "42"}).exit_code == 42);
+    CHECK(run_cli({"run", ok_id}).exit_code == 0);
+
+    // Everything after `--` reaches the payload verbatim (it echoes its argv).
+    const auto forwarded =
+        run_cli({"run", ok_id, "--", "7", "two words", "--flag"});
+    CHECK(forwarded.exit_code == 0);
+    CHECK(contains(forwarded.stdout_text, "arg: 7"));
+    CHECK(contains(forwarded.stdout_text, "arg: two words"));
+    CHECK(contains(forwarded.stdout_text, "arg: --flag"));
+
+    // A non-zero payload exit propagates through `lexe run`.
+    CHECK(run_cli({"run", id}).exit_code == 42);
+    CHECK(run_cli({"run", id, "--", "7"}).exit_code == 42);
 
     // lastRun {at, exitCode} recorded in installation.json (FORMAT-0.1 §9).
     const InstallationRecord record =
@@ -900,7 +916,9 @@ TEST_CASE("trust commands: show / block / unblock / forget over the CLI") {
 
     // unblock restores normal operation.
     CHECK(run_cli({"trust", "unblock", kId}).exit_code == 0);
-    CHECK(run_cli({"run", kId}).exit_code == 0);
+    if (test::have_native_compiler()) { // else the payload is not runnable
+        CHECK(run_cli({"run", kId}).exit_code == 0);
+    }
 
     // forget is refused while the app is installed (usage error), unless forced.
     CHECK(run_cli({"trust", "forget", kId}).exit_code == 2);

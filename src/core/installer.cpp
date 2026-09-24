@@ -18,6 +18,7 @@
 
 #include "core/crypto.hpp"
 #include "core/desktop.hpp"
+#include "core/integration.hpp"
 #include "core/error.hpp"
 #include "core/fault.hpp"
 #include "core/json_strict.hpp"
@@ -443,9 +444,19 @@ InstallResult Installer::install(const fs::path& lexe_file,
             util::remove_recursive(icons_staging);
             try {
                 extract_icons(reader, icons_staging);
-                const desktop::IntegrationResult integration =
-                    desktop::integrate_app(paths_, manifest, icons_staging);
-                merge_created_files(created_files, integration.created_files);
+                // Definitive Architecture §14.1/§15.1: integration is
+                // INSTALLED SYSTEM STATE, recorded and repairable — and it
+                // produces the first-class run.lexe launch artifact, so the
+                // raw payload never becomes the user-facing launch object.
+                DesktopIntegration integration(paths_);
+                (void)integration.install_runtime_handler();
+                const IntegrationReport app_integration =
+                    integration.install_app(manifest, icons_staging);
+                std::vector<std::string> integration_files;
+                for (const ArtifactCheck& check : app_integration.checks) {
+                    integration_files.push_back(check.artifact.path);
+                }
+                merge_created_files(created_files, integration_files);
             } catch (...) {
                 util::remove_recursive(icons_staging);
                 throw;
@@ -576,9 +587,14 @@ void Installer::recover_locked(const std::string& id) {
     rec.version = journal.target_version;
     std::vector<std::string> created = rec.created_files;
     try {
-        const desktop::IntegrationResult integration = desktop::integrate_app(
-            paths_, manifest, app_dir / ".txn-staging" / "no-icons");
-        merge_created_files(created, integration.created_files);
+        DesktopIntegration integration(paths_);
+        const IntegrationReport app_integration = integration.install_app(
+            manifest, app_dir / ".txn-staging" / "no-icons");
+        std::vector<std::string> integration_files;
+        for (const ArtifactCheck& check : app_integration.checks) {
+            integration_files.push_back(check.artifact.path);
+        }
+        merge_created_files(created, integration_files);
     } catch (...) {
         // Desktop integration is best-effort; a recovered install still works
         // from the CLI and a later `lexe repair` restores full integration.
@@ -697,8 +713,10 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     }
 
     // Application binaries + integration are removed in EVERY mode.
-    // Desktop-side removal first (refreshes the databases on Linux) …
-    desktop::remove_integration(paths_, record.created_files);
+    // Desktop-side removal first: this also forgets the app in the durable
+    // integration state, so `lexe doctor` does not later try to "repair" an
+    // application that is deliberately gone (§15.1).
+    DesktopIntegration(paths_).remove_app(id);
     // … then a portable sweep so every recorded file is gone even where the
     // desktop module is a recorded no-op (FORMAT-0.1 §9: uninstall removes
     // everything recorded in installation.json, then the app directory).

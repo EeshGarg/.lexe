@@ -12,6 +12,8 @@
 
 #include "core/verify.hpp"
 
+#include "core/elf.hpp"
+
 #include "core/crypto.hpp"
 #include "core/error.hpp"
 #include "core/json_strict.hpp"
@@ -42,6 +44,7 @@ constexpr const char* kManifestSignature = "manifest-signature";
 constexpr const char* kPayloadSignature = "payload-signature";
 constexpr const char* kHashes = "hashes";
 constexpr const char* kCompatibility = "compatibility";
+constexpr const char* kPayloadRole = "payload-role";
 
 void pass(VerificationReport& report, const char* name, std::string detail) {
     report.stages.push_back({name, true, std::move(detail)});
@@ -189,6 +192,82 @@ hash_problems(const PackageReader& reader,
     return problems;
 }
 
+/// Definitive Architecture §14.2 / §15.1 — "does the artifact actually BE what
+/// its manifest declares?". Returns a description of the first violation, or
+/// nullopt when the payload matches the declared role.
+std::optional<std::string> payload_role_problem(const PackageReader& reader,
+                                                const Manifest& manifest) {
+    if (manifest.role == PackageRole::Launch) {
+        // A launch reference names an installed app; it carries no payload at
+        // all. A "launch reference" that smuggles payload bytes is rejected.
+        for (const PackageEntry& entry : reader.entries()) {
+            if (entry.path.rfind("payload/", 0) == 0) {
+                return "a launch reference (role \"launch\") must not carry "
+                       "payload entries, but the archive contains \"" +
+                       entry.path + "\"";
+            }
+        }
+        return std::nullopt;
+    }
+
+    // role == application, applicationType == native (the only 0.1 type):
+    // the declared entrypoint must be a real, executable ELF object for a
+    // declared architecture.
+    const std::string entry_path = "payload/" + manifest.entrypoint_executable;
+    if (!reader.has_entry(entry_path)) {
+        return "the declared entrypoint \"" + manifest.entrypoint_executable +
+               "\" is not present in the package";
+    }
+
+    std::vector<std::uint8_t> bytes;
+    try {
+        bytes = reader.read_entry(entry_path);
+    } catch (const Error& e) {
+        return std::string("the declared entrypoint cannot be read: ") +
+               e.what();
+    }
+
+    const elf::ElfInfo info = elf::read_bytes(bytes.data(), bytes.size());
+    if (!info.is_elf) {
+        return "applicationType \"native\" declares \"" +
+               manifest.entrypoint_executable +
+               "\" as the entrypoint, but those bytes are not an ELF object "
+               "(a native package must contain a COMPILED executable — source "
+               "files belong in a portable-code package)";
+    }
+    if (info.type != elf::Type::Executable &&
+        info.type != elf::Type::SharedObject) {
+        return "the entrypoint \"" + manifest.entrypoint_executable +
+               "\" is an ELF " + elf::to_string(info.type) +
+               " object, which is not runnable (expected an executable or a "
+               "position-independent executable)";
+    }
+    const std::string entry_arch = info.arch();
+    if (entry_arch.empty()) {
+        return "the entrypoint \"" + manifest.entrypoint_executable +
+               "\" targets an unrecognised machine (" +
+               elf::to_string(info.machine) + ")";
+    }
+    if (std::find(manifest.architectures.begin(), manifest.architectures.end(),
+                  entry_arch) == manifest.architectures.end()) {
+        return "the entrypoint \"" + manifest.entrypoint_executable +
+               "\" is a " + entry_arch +
+               " binary, which is not among the declared architectures (" +
+               join(manifest.architectures, ", ") + ")";
+    }
+    return std::nullopt;
+}
+
+std::string payload_role_detail(const Manifest& manifest) {
+    if (manifest.role == PackageRole::Launch) {
+        return "role \"launch\": a launch reference for " +
+               manifest.launch_application_id + " (no payload, as required)";
+    }
+    return "role \"application\": the declared entrypoint \"" +
+           manifest.entrypoint_executable +
+           "\" is a runnable ELF object for a declared architecture";
+}
+
 /// Full pipeline run: the report plus (once stage 2 passed) the parsed
 /// manifest, so verify_package_or_throw does not parse twice.
 struct PipelineOutcome {
@@ -294,8 +373,21 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
              " covered entries present, coverage is exact (both directions), "
              "every SHA-256 digest matches");
 
-    // ---- stage 7: compatibility (§6.7, install/update only) --------------
-    if (check_architecture) {
+    // ---- stage 7: payload role (Definitive Architecture §14.2) -----------
+    // The alpha shipped a package that DECLARED a native application while its
+    // entrypoint was `helloworld.cpp`: source text where a compiled ELF was
+    // expected. Nothing in the §6 pipeline caught it, so the bad state only
+    // surfaced as a mysterious launch failure. This stage checks that what the
+    // manifest SAYS the artifact is matches what the bytes actually ARE, before
+    // installation — for both roles.
+    if (const auto problem = payload_role_problem(*reader, manifest)) {
+        fail(report, kPayloadRole, *problem);
+        return out;
+    }
+    pass(report, kPayloadRole, payload_role_detail(manifest));
+
+    // ---- stage 8: compatibility (§6.7, install/update only) --------------
+    if (check_architecture && manifest.role == PackageRole::Application) {
         const std::string host = host_architecture();
         const bool supported =
             std::find(manifest.architectures.begin(),

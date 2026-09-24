@@ -29,10 +29,13 @@ namespace fs = std::filesystem;
 using lexe::VerificationReport;
 using lexe::test::TempLexeHome;
 
-// FORMAT-0.1 §6 normative stage order (names from verify.hpp).
-const std::array<std::string, 7> kStageOrder = {
-    "structure",         "manifest", "key",   "manifest-signature",
-    "payload-signature", "hashes",   "compatibility"};
+// FORMAT-0.1 §6 normative stage order (names from verify.hpp). "payload-role"
+// sits between "hashes" and "compatibility": the payload bytes must first be
+// intact, and only then are they checked against the role the manifest
+// declares (see test_payload_role.cpp).
+const std::array<std::string, 8> kStageOrder = {
+    "structure",    "manifest",      "key",           "manifest-signature",
+    "payload-signature", "hashes",   "payload-role",  "compatibility"};
 
 /// Assert the report failed exactly at `stage_name`: every earlier stage is
 /// present, correctly named and green; the failing stage is last (stages
@@ -210,13 +213,12 @@ fs::path make_package_with_architectures(
     const std::vector<std::string>& architectures) {
     lexe::test::TestAppSpec spec;
     spec.public_key = lexe::test::encode_public_key_str(key.public_key);
+    // The entrypoint must be an ELF for a DECLARED architecture or the
+    // payload-role stage (6.5) rejects the package before compatibility is
+    // ever reached — make_test_app_tree emits one for `architectures`.
+    spec.architectures = architectures;
     const lexe::test::TestAppTree tree =
         lexe::test::make_test_app_tree(work_dir / "arch-tree", spec);
-    nlohmann::json manifest = nlohmann::json::parse(
-        lexe::util::slurp_text(tree.manifest_file));
-    manifest["architectures"] = architectures;
-    lexe::util::spit(tree.manifest_file,
-                     std::string_view(manifest.dump(2) + "\n"));
     lexe::PackageWriter::Inputs inputs;
     inputs.payload_dir = tree.payload_dir;
     inputs.manifest_file = tree.manifest_file;
@@ -233,7 +235,7 @@ TEST_SUITE("verify") {
 // The good path
 // ===================================================================
 
-TEST_CASE("good package passes all six stages in normative order") {
+TEST_CASE("good package passes all seven stages in normative order") {
     TempLexeHome home;
     const lexe::crypto::KeyPair key = lexe::test::make_keypair();
     const fs::path pkg = lexe::test::make_test_package(home.path(), key);
@@ -241,7 +243,7 @@ TEST_CASE("good package passes all six stages in normative order") {
     const VerificationReport report = lexe::verify_package(pkg);
     CHECK(report.ok());
     CHECK(report.first_failure() == nullptr);
-    REQUIRE(report.stages.size() == 6); // no compatibility stage by default
+    REQUIRE(report.stages.size() == 7); // no compatibility stage by default
     for (std::size_t i = 0; i < report.stages.size(); ++i) {
         CAPTURE(i);
         CHECK(report.stages[i].name == kStageOrder[i]);
@@ -250,7 +252,7 @@ TEST_CASE("good package passes all six stages in normative order") {
     }
 }
 
-TEST_CASE("good package passes all seven stages with architecture check") {
+TEST_CASE("good package passes all eight stages with architecture check") {
     TempLexeHome home;
     // The test package lists both recognised architectures, so this holds on
     // any supported host.
@@ -263,13 +265,13 @@ TEST_CASE("good package passes all seven stages with architecture check") {
     const VerificationReport report =
         lexe::verify_package(pkg, /*check_architecture=*/true);
     CHECK(report.ok());
-    REQUIRE(report.stages.size() == 7);
+    REQUIRE(report.stages.size() == 8);
     for (std::size_t i = 0; i < report.stages.size(); ++i) {
         CAPTURE(i);
         CHECK(report.stages[i].name == kStageOrder[i]);
         CHECK(report.stages[i].ok);
     }
-    CHECK(contains(report.stages[6].detail, host));
+    CHECK(contains(report.stages[7].detail, host));
 }
 
 TEST_CASE("verify_package_or_throw returns the parsed manifest") {
@@ -684,12 +686,12 @@ TEST_CASE("compatibility: unsupported architecture fails at stage 7 only "
     const fs::path pkg =
         make_package_with_architectures(home.path(), key, {other});
 
-    // `lexe verify` (no architecture check): six green stages, no seventh.
+    // `lexe verify` (no architecture check): seven green stages, no eighth.
     const VerificationReport plain = lexe::verify_package(pkg);
     CHECK(plain.ok());
-    CHECK(plain.stages.size() == 6);
+    CHECK(plain.stages.size() == 7);
 
-    // install/update path: first six green, compatibility fails.
+    // install/update path: first seven green, compatibility fails.
     const VerificationReport checked =
         lexe::verify_package(pkg, /*check_architecture=*/true);
     expect_failure_at(checked, "compatibility");
@@ -708,7 +710,7 @@ TEST_CASE("compatibility: package listing only the host architecture passes") {
     const VerificationReport report =
         lexe::verify_package(pkg, /*check_architecture=*/true);
     CHECK(report.ok());
-    CHECK(report.stages.size() == 7);
+    CHECK(report.stages.size() == 8);
 }
 
 // ===================================================================

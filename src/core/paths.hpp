@@ -40,12 +40,51 @@ public:
     /// XDG MIME package dir (MIME XML for file associations).
     const std::filesystem::path& mime_dir() const { return mime_; }
 
+    // --- Definitive Architecture §9 / §10: state and configuration ---------
+    //
+    // These are deliberately NOT under the application store. Diagnostics are
+    // volatile STATE ($XDG_STATE_HOME) and user overrides are CONFIGURATION
+    // ($XDG_CONFIG_HOME); neither belongs to a signed package, and changing
+    // them must never touch or invalidate an installed application.
+
+    /// Runtime state root: `$XDG_STATE_HOME/lexe` or `~/.local/state/lexe`.
+    const std::filesystem::path& state_dir() const { return state_; }
+    /// User configuration root: `$XDG_CONFIG_HOME/lexe` or `~/.config/lexe`.
+    const std::filesystem::path& config_dir() const { return config_; }
+
+    /// The freedesktop default-application list (`$XDG_CONFIG_HOME/
+    /// mimeapps.list`). Writing the `.lexe` default association HERE — rather
+    /// than relying on a session-time association — is what makes the handler
+    /// survive logout and reboot (Definitive Architecture §14.1).
+    std::filesystem::path mimeapps_file() const {
+        return config_home_ / "mimeapps.list";
+    }
+
+    /// Structured execution-error records (Definitive Architecture §9):
+    /// `<state>/errors/<application-id>/`.
+    std::filesystem::path errors_dir() const { return state_ / "errors"; }
+    /// Per-application user overrides (§10): `<config>/apps/<id>.json`.
+    std::filesystem::path apps_config_dir() const { return config_ / "apps"; }
+    /// Generated `.lexe` launch references (§15.1): `<home>/launch/<id>.lexe`.
+    std::filesystem::path launch_dir() const { return home_ / "launch"; }
+    /// Machine-local key material (the launch-reference signing key, §4
+    /// "Locally Trusted"): `<home>/keys`.
+    std::filesystem::path keys_dir() const { return home_ / "keys"; }
+    /// The durable desktop-integration state file (§15.1 "Durable
+    /// integration"): `<home>/integration.json`.
+    std::filesystem::path integration_state_file() const {
+        return home_ / "integration.json";
+    }
+
 private:
     std::filesystem::path home_;
     std::filesystem::path cache_;
     std::filesystem::path applications_;
     std::filesystem::path icons_;
     std::filesystem::path mime_;
+    std::filesystem::path state_;
+    std::filesystem::path config_;
+    std::filesystem::path config_home_;
 };
 
 } // namespace lexe

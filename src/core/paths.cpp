@@ -20,6 +20,9 @@ Paths Paths::detect() {
         p.applications_ = p.home_ / "applications";
         p.icons_ = p.home_ / "icons" / "hicolor";
         p.mime_ = p.home_ / "mime";
+        p.state_ = p.home_ / "state";
+        p.config_ = p.home_ / "config";
+        p.config_home_ = p.home_ / "config-home";
         return p;
     }
 
@@ -34,10 +37,15 @@ Paths Paths::detect() {
     p.applications_ = p.home_ / "applications";
     p.icons_ = p.home_ / "icons" / "hicolor";
     p.mime_ = p.home_ / "mime";
+    p.state_ = p.home_ / "state";
+    p.config_ = p.home_ / "config";
+    p.config_home_ = p.home_ / "config-home";
 #else
     const auto home_env = util::get_env("HOME");
     const auto xdg_data = util::get_env("XDG_DATA_HOME");
     const auto xdg_cache = util::get_env("XDG_CACHE_HOME");
+    const auto xdg_state = util::get_env("XDG_STATE_HOME");
+    const auto xdg_config = util::get_env("XDG_CONFIG_HOME");
 
     fs::path data_home;
     if (xdg_data.has_value() && !xdg_data->empty()) {
@@ -58,11 +66,34 @@ Paths Paths::detect() {
         cache_home = data_home / ".cache"; // degenerate fallback
     }
 
+    // Definitive Architecture §9/§10: diagnostics are STATE and user
+    // overrides are CONFIG — separate XDG roots, never the application store.
+    fs::path state_home;
+    if (xdg_state.has_value() && !xdg_state->empty()) {
+        state_home = fs::path(*xdg_state);
+    } else if (home_env.has_value() && !home_env->empty()) {
+        state_home = fs::path(*home_env) / ".local" / "state";
+    } else {
+        state_home = data_home / ".state"; // degenerate fallback
+    }
+
+    fs::path config_home;
+    if (xdg_config.has_value() && !xdg_config->empty()) {
+        config_home = fs::path(*xdg_config);
+    } else if (home_env.has_value() && !home_env->empty()) {
+        config_home = fs::path(*home_env) / ".config";
+    } else {
+        config_home = data_home / ".config"; // degenerate fallback
+    }
+
     p.home_ = data_home / "lexe";
     p.cache_ = cache_home / "lexe";
     p.applications_ = data_home / "applications";
     p.icons_ = data_home / "icons" / "hicolor";
     p.mime_ = data_home / "mime";
+    p.state_ = state_home / "lexe";
+    p.config_ = config_home / "lexe";
+    p.config_home_ = config_home;
 #endif
     return p;
 }

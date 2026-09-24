@@ -51,22 +51,7 @@ bool id_segment_ok(std::string_view segment) {
 /// of [a-zA-Z0-9-]+, ≤255 chars). Because the shape excludes separators,
 /// drive designators and `.`/`..` segments, a validated id is always safe to
 /// join under apps/. Throws lexe::Error otherwise.
-void validate_id(const std::string& id) {
-    bool ok = !id.empty() && id.size() <= 255;
-    std::size_t segments = 0;
-    std::size_t start = 0;
-    while (ok) {
-        const std::size_t dot = id.find('.', start);
-        const std::size_t end = (dot == std::string::npos) ? id.size() : dot;
-        ok = id_segment_ok(std::string_view(id).substr(start, end - start));
-        ++segments;
-        if (dot == std::string::npos) break;
-        start = dot + 1;
-    }
-    if (!ok || segments < 2) {
-        throw Error("registry: invalid application id: \"" + id + "\"");
-    }
-}
+void validate_id(const std::string& id) { validate_app_id(id, "registry"); }
 
 /// Version strings are free-form (FORMAT-0.1 §5) but become a single path
 /// component under versions/, so reject anything that could traverse or
@@ -105,6 +90,28 @@ std::string trim_whitespace(std::string text) {
 }
 
 } // namespace
+
+bool app_id_is_valid(const std::string& id) {
+    bool ok = !id.empty() && id.size() <= 255;
+    std::size_t segments = 0;
+    std::size_t start = 0;
+    while (ok) {
+        const std::size_t dot = id.find('.', start);
+        const std::size_t end = (dot == std::string::npos) ? id.size() : dot;
+        ok = id_segment_ok(std::string_view(id).substr(start, end - start));
+        ++segments;
+        if (dot == std::string::npos) break;
+        start = dot + 1;
+    }
+    return ok && segments >= 2;
+}
+
+void validate_app_id(const std::string& id, const char* context) {
+    if (!app_id_is_valid(id)) {
+        throw Error(std::string(context) + ": invalid application id: \"" + id +
+                    "\"");
+    }
+}
 
 // ------------------------------------------------------- InstallationRecord
 
@@ -171,6 +178,37 @@ InstallationRecord InstallationRecord::from_json(std::string_view json_text) {
         }
     }
     r.permissions_digest = optional_string(j, "permissionsDigest", "");
+
+    // Runtime resolution (§16) and the last execution report (§7). All
+    // optional: a record written by an earlier runtime simply has none, which
+    // reads as "not resolved yet" and is re-resolved by `lexe repair`.
+    if (const json* runtime = find_member(j, "runtime")) {
+        if (!runtime->is_object()) {
+            fail_record("\"runtime\" must be a JSON object");
+        }
+        r.runtime_resolved_at = optional_string(*runtime, "resolvedAt", "");
+        r.runtime_source = optional_string(*runtime, "source", "");
+        r.runtime_glibc = optional_string(*runtime, "glibc", "");
+        if (const json* unresolved = find_member(*runtime, "unresolved")) {
+            if (!unresolved->is_array()) {
+                fail_record("\"runtime.unresolved\" must be an array");
+            }
+            for (const auto& element : *unresolved) {
+                if (!element.is_string()) {
+                    fail_record("\"runtime.unresolved\" entries must be "
+                                "strings");
+                }
+                r.runtime_unresolved.push_back(element.get<std::string>());
+            }
+        }
+    }
+    if (const json* execution = find_member(j, "lastExecution")) {
+        if (!execution->is_object()) {
+            fail_record("\"lastExecution\" must be a JSON object");
+        }
+        r.last_chain = optional_string(*execution, "chain", "");
+        r.last_launch_mode = optional_string(*execution, "launchMode", "");
+    }
     return r;
 }
 
@@ -192,6 +230,16 @@ std::string InstallationRecord::to_json() const {
     j["createdFiles"] = created_files;
     j["approvedPermissions"] = approved_permissions;
     j["permissionsDigest"] = permissions_digest;
+    j["runtime"] = ordered_json{{"resolvedAt", runtime_resolved_at},
+                                {"source", runtime_source},
+                                {"glibc", runtime_glibc},
+                                {"unresolved", runtime_unresolved}};
+    if (last_chain.empty() && last_launch_mode.empty()) {
+        j["lastExecution"] = nullptr;
+    } else {
+        j["lastExecution"] = ordered_json{{"chain", last_chain},
+                                          {"launchMode", last_launch_mode}};
+    }
     return j.dump(2) + "\n";
 }
 
