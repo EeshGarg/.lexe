@@ -1029,6 +1029,7 @@ inline std::string format_handler_state(const IntegrationReport& report) {
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <system_error>
 #include <utility>
@@ -1112,6 +1113,9 @@ struct Ui {
     /// What the DESKTOP wants, snapshotted before the first style::apply
     /// overwrites the flag that answers it. See apply_theme().
     gboolean desktop_prefers_dark = FALSE;
+    /// The navigation items, by page name, so the current one can be marked.
+    /// A nav pane that does not show where you are is a list of links.
+    std::map<std::string, GtkWidget*> nav_buttons;
     std::string installed_id;
     std::string installed_version;
 
@@ -1170,56 +1174,69 @@ GtkWidget* add_body(GtkWidget* box, const std::string& text) {
     return label;
 }
 
-/// A Pango-markup label. `text` is ESCAPED first: names, paths and core detail
-/// strings are data, and may legitimately contain markup metacharacters.
-GtkWidget* add_markup(GtkWidget* box, const char* format,
-                      const std::string& text) {
-    GtkWidget* label = gtk_label_new(nullptr);
-    gchar* escaped = g_markup_escape_text(text.c_str(), -1);
-    gchar* markup = g_strdup_printf(format, escaped);
-    gtk_label_set_markup(GTK_LABEL(label), markup);
-    g_free(markup);
-    g_free(escaped);
+/// A page title. PLAIN TEXT with the size and weight in CSS: Pango markup wins
+/// over the stylesheet, so a baked-in `size="x-large"` renders at its own size
+/// whatever `.lexe-title` says — and leaves one more place where a
+/// user-controlled string has to be escaped correctly.
+GtkWidget* add_title(GtkWidget* box, const std::string& text) {
+    GtkWidget* label = gtk_label_new(text.c_str());
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
     gtk_widget_set_halign(label, GTK_ALIGN_START);
+    style::add_class(label, "lexe-title");
     gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
     return label;
 }
 
-GtkWidget* add_title(GtkWidget* box, const std::string& text) {
-    return add_markup(box, "<span size=\"x-large\" weight=\"bold\">%s</span>",
-                      text);
-}
-
 GtkWidget* add_heading(GtkWidget* box, const std::string& text) {
-    return add_markup(box, "<b>%s</b>", text);
-}
-
-void add_section(GtkWidget* box, const std::string& heading,
-                 const std::string& body) {
-    add_heading(box, heading);
-    add_body(box, body);
-}
-
-/// A severity-coloured line. The colour reflects the SEVERITY the core model
-/// reported — it is never this file's own claim about trust or safety.
-GtkWidget* add_severity(GtkWidget* box, const std::string& severity,
-                        const std::string& text) {
-    const char* colour = severity == "ok"        ? "#1a7f37"
-                         : severity == "caution" ? "#9a6700"
-                                                 : "#b00020";
-    GtkWidget* label = gtk_label_new(nullptr);
-    gchar* escaped = g_markup_escape_text(text.c_str(), -1);
-    gchar* markup = g_strdup_printf(
-        "<span weight=\"bold\" foreground=\"%s\">%s</span>", colour, escaped);
-    gtk_label_set_markup(GTK_LABEL(label), markup);
-    g_free(markup);
-    g_free(escaped);
+    GtkWidget* label = gtk_label_new(text.c_str());
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
     gtk_widget_set_halign(label, GTK_ALIGN_START);
+    style::add_class(label, "lexe-section-heading");
     gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+    return label;
+}
+
+/// A labelled block of detail, as a CARD.
+///
+/// These used to be a bare heading followed by a paragraph, repeated down the
+/// page — which on a review screen with eight of them is one undifferentiated
+/// wall of text, and the reader has to find the boundaries themselves. A
+/// hairline card per block is what the installer already does and what makes
+/// "Permissions" legible as a thing separate from "Isolation".
+void add_section(GtkWidget* box, const std::string& heading,
+                 const std::string& body) {
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    style::add_class(card, "lexe-card");
+    add_heading(card, heading);
+    add_body(card, body);
+    gtk_box_pack_start(GTK_BOX(box), card, FALSE, FALSE, 0);
+}
+
+/// A severity CALLOUT — tinted fill, an edge bar and matching text. The
+/// severity is the one the core model reported; it is never this file's own
+/// claim about trust or safety.
+///
+/// The colours are CSS classes, not Pango markup. They used to be markup
+/// (`foreground="#1a7f37"`), which is the trap `style.hpp` documents for
+/// exactly this reason: a colour baked into Pango survives a theme flip, so
+/// those three light-theme colours stayed put on a dark background. Worse, the
+/// most important line on the screen — whether a key has been seen before —
+/// rendered as merely coloured text while the installer gave it a banner.
+GtkWidget* add_severity(GtkWidget* box, const std::string& severity,
+                        const std::string& text) {
+    GtkWidget* strip = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    style::add_class(strip, "lexe-banner");
+    style::add_class(strip, severity == "ok"        ? "ok"
+                            : severity == "caution" ? "caution"
+                                                    : "danger");
+    GtkWidget* label = gtk_label_new(text.c_str());
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(strip), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), strip, FALSE, FALSE, 0);
     return label;
 }
 
@@ -3185,6 +3202,19 @@ void update_title(Ui* ui) {
 void refresh(Ui* ui) {
     if (ui->window == nullptr) return;
     ui->building = true;
+    // Mark where we are. The nav pane is rebuilt only once, so this is the
+    // only place the selection can follow the page.
+    for (const auto& [page, button] : ui->nav_buttons) {
+        if (button == nullptr) continue;
+        GtkStyleContext* context = gtk_widget_get_style_context(button);
+        const bool here =
+            page == ui->page || (ui->page == "app" && page == "apps");
+        if (here) {
+            gtk_style_context_add_class(context, "selected");
+        } else {
+            gtk_style_context_remove_class(context, "selected");
+        }
+    }
     // Controls from the page being replaced are about to be destroyed.
     ui->compat_auto_radio = nullptr;
     ui->compat_manual_radio = nullptr;
@@ -3294,9 +3324,14 @@ void build_window(Ui* ui) {
     GtkWidget* body = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
 
-    GtkWidget* nav = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(nav), 10);
-    gtk_widget_set_size_request(nav, 170, -1);
+    // A navigation PANE, not a column of dialog buttons: flat, full-width,
+    // left-aligned items on their own surface. Stock GTK buttons here are the
+    // single strongest "this is a toolkit demo" cue in the whole window, and
+    // they also read as four things to press rather than as where you are.
+    GtkWidget* nav = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    style::add_class(nav, "lexe-nav");
+    gtk_container_set_border_width(GTK_CONTAINER(nav), 8);
+    gtk_widget_set_size_request(nav, 176, -1);
     gtk_box_pack_start(GTK_BOX(body), nav, FALSE, FALSE, 0);
     const struct {
         const char* page;
@@ -3307,8 +3342,15 @@ void build_window(Ui* ui) {
                  {"settings", "Settings"}};
     for (const auto& item : items) {
         GtkWidget* button = gtk_button_new_with_label(item.label);
+        gtk_button_set_relief(GTK_BUTTON(button), GTK_RELIEF_NONE);
+        style::add_class(button, "lexe-nav-item");
+        // Label left, like every navigation pane and unlike every button.
+        if (GtkWidget* child = gtk_bin_get_child(GTK_BIN(button))) {
+            gtk_label_set_xalign(GTK_LABEL(child), 0.0f);
+        }
         connect_action(button, "clicked", G_CALLBACK(on_nav_clicked), ui,
                        item.page);
+        ui->nav_buttons[item.page] = button;
         gtk_box_pack_start(GTK_BOX(nav), button, FALSE, FALSE, 0);
     }
     GtkWidget* version = gtk_label_new(("Lexe " + ui->runtime_version).c_str());

@@ -1306,16 +1306,13 @@ GtkWidget* build_details_page(AppState* st) {
     // Install button they had just pressed. The window came back looking
     // completely unchanged, and pressing Install again failed again, silently.
 
-    // Application name (user-controlled: escape before markup).
-    GtkWidget* name_label = gtk_label_new(nullptr);
-    {
-        gchar* escaped = g_markup_escape_text(vm.app_name.c_str(), -1);
-        gchar* markup = g_strdup_printf(
-            "<span size=\"x-large\" weight=\"bold\">%s</span>", escaped);
-        gtk_label_set_markup(GTK_LABEL(name_label), markup);
-        g_free(markup);
-        g_free(escaped);
-    }
+    // Application name. PLAIN TEXT with the size and weight in CSS, not Pango
+    // markup: markup wins over the stylesheet, so `size="x-large"` here left
+    // the title rendering at its own size no matter what `.lexe-title` said —
+    // the same trap the `.lexe-success` class exists to avoid, one property
+    // over. Plain text also means one less place where a name full of markup
+    // metacharacters has to be escaped correctly.
+    GtkWidget* name_label = gtk_label_new(vm.app_name.c_str());
     gtk_label_set_xalign(GTK_LABEL(name_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(name_label), TRUE);
     style::add_class(name_label, "lexe-title");

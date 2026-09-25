@@ -44,156 +44,224 @@ namespace lexe::gui::style {
 inline const char* stylesheet(bool dark) {
     if (dark) {
         return R"CSS(
-@define-color lexe_canvas  #0f1115;
-@define-color lexe_surface #181b21;
-@define-color lexe_text    #e7eaf0;
-@define-color lexe_muted   #98a2b3;
-@define-color lexe_accent  #3b82f6;
+@define-color lexe_canvas  #202020;
+@define-color lexe_surface #2b2b2b;
+@define-color lexe_border  #3d3d3d;
+@define-color lexe_text    #ffffff;
+@define-color lexe_muted   #c5c5c5;
+@define-color lexe_accent  #60cdff;
 
 
 window { background-color: @lexe_canvas; color: @lexe_text; }
 
-.lexe-title    { font-size: 26px; font-weight: 700; color: @lexe_text; }
-.lexe-subtitle { font-size: 13px; color: @lexe_muted; }
-.lexe-body     { font-size: 14px; color: @lexe_text; }
-.lexe-muted    { font-size: 13px; color: @lexe_muted; }
-.lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_muted; }
+.lexe-title    { font-size: 20px; font-weight: 600; color: @lexe_text; }
+.lexe-subtitle { font-size: 12px; color: @lexe_muted; }
+.lexe-body     { font-size: 13px; color: @lexe_text; }
+.lexe-muted    { font-size: 12px; color: @lexe_muted; }
+.lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_text; }
 /* A success heading. A CLASS, not a colour in markup: a colour baked into
    Pango when a build finished kept the old palette's green after a theme flip,
    leaving mint text on a white card at ~1.4:1 contrast. */
-.lexe-success { font-size: 17px; font-weight: 700; color: #6ee7a8; }
+.lexe-success { font-size: 15px; font-weight: 600; color: #6ccb5f; }
 
 .lexe-card {
   background-color: @lexe_surface;
-  border-radius: 16px;
-  padding: 18px 20px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.40), 0 4px 12px rgba(0,0,0,0.28);
+  border: 1px solid @lexe_border;
+  border-radius: 4px;
+  padding: 12px 14px;
 }
 
 .lexe-banner {
-  padding: 16px 20px;
-  font-size: 14px;
+  padding: 10px 14px;
+  font-size: 13px;
   font-weight: 600;
+  border: 1px solid @lexe_border;
+  border-radius: 4px;
   background-color: @lexe_surface;
+  color: @lexe_text;
 }
-.lexe-banner.ok      { background-color: #12271b; color: #6ee7a8; border-left: 4px solid #22c55e; }
-.lexe-banner.caution { background-color: #2a2113; color: #fbbf5c; border-left: 4px solid #f59e0b; }
-.lexe-banner.danger  { background-color: #2b1517; color: #ff8f8a; border-left: 4px solid #ef4444; }
+.lexe-banner.ok      { background-color: #393d1b; color: #6ccb5f; border-left: 4px solid #6ccb5f; }
+.lexe-banner.caution { background-color: #433519; color: #fce100; border-left: 4px solid #fce100; }
+.lexe-banner.danger  { background-color: #442726; color: #ff99a4; border-left: 4px solid #ff99a4; }
 
-.lexe-actionbar { background-color: @lexe_surface; padding: 14px 20px; }
-.lexe-stepbar   { background-color: @lexe_surface; padding: 20px 22px 18px 22px; }
+/* The command bar of a setup dialog: pinned, hairline-separated, buttons right.
+   The separator is what makes the buttons read as the window's commands rather
+   than as more content. */
+.lexe-actionbar {
+  background-color: @lexe_canvas;
+  border-top: 1px solid @lexe_border;
+  padding: 12px 16px;
+}
+.lexe-stepbar {
+  background-color: @lexe_surface;
+  border-bottom: 1px solid @lexe_border;
+  padding: 14px 16px 12px 16px;
+}
 
 button {
-  border-radius: 999px;
-  padding: 8px 20px;
+  border-radius: 4px;
+  padding: 5px 14px;
   min-height: 22px;
+  min-width: 82px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   background-image: none;
-  background-color: #252932;
+  background-color: #373737;
   color: @lexe_text;
-  border: none;
+  border: 1px solid @lexe_border;
   box-shadow: none;
-  transition: background-color 120ms ease-out;
+  transition: background-color 90ms ease-out;
 }
-button:hover { background-color: #2e333e; }
+button:hover { background-color: #3d3d3d; }
+button.lexe-primary {
+  background-color: @lexe_accent;
+  color: #000000;
+  font-weight: 600;
+  border: 1px solid @lexe_accent;
+}
+button.lexe-primary:hover    { background-color: #7cd7ff; border-color: #7cd7ff; }
+button.lexe-primary:disabled { background-color: #404040; color: #7a7a7a; border-color: @lexe_border; }
+button:disabled              { background-color: #2f2f2f; color: #7a7a7a; }
+
+entry {
+  border-radius: 4px;
+  padding: 6px 10px;
+  min-height: 24px;
+  font-size: 13px;
+  background-image: none;
+  background-color: #2d2d2d;
+  border: 1px solid @lexe_border;
+  color: @lexe_text;
+}
+entry:focus { border-color: @lexe_accent; }
+entry:disabled { color: #7a7a7a; }
+/* The navigation pane: its own surface, flat full-width items, and a clear
+   "you are here" marked by an accent bar rather than by a pressed-looking
+   button. Buttons styled as buttons in a nav column are what makes a window
+   look like a toolkit sample. */
+.lexe-nav { background-color: @lexe_surface; border-right: 1px solid @lexe_border; }
+.lexe-nav-item {
+  background-color: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+  min-width: 0;
+  padding: 7px 10px;
+  font-weight: 400;
+  color: @lexe_text;
+}
+.lexe-nav-item:hover           { background-color: #353535; }
+.lexe-nav-item.selected        { background-color: #3a3a3a; border-left: 3px solid @lexe_accent; font-weight: 600; }
+.lexe-nav-item.selected:hover  { background-color: #404040; }
+
+.lexe-mono { font-family: monospace; font-size: 12px; }
+)CSS";
+    }
+    return R"CSS(
+@define-color lexe_canvas  #f3f3f3;
+@define-color lexe_surface #ffffff;
+@define-color lexe_border  #e0e0e0;
+@define-color lexe_text    #1b1b1b;
+@define-color lexe_muted   #5d5d5d;
+@define-color lexe_accent  #005fb8;
+
+
+window { background-color: @lexe_canvas; color: @lexe_text; }
+
+.lexe-title    { font-size: 20px; font-weight: 600; color: @lexe_text; }
+.lexe-subtitle { font-size: 12px; color: @lexe_muted; }
+.lexe-body     { font-size: 13px; color: @lexe_text; }
+.lexe-muted    { font-size: 12px; color: @lexe_muted; }
+.lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_text; }
+/* A success heading - see the dark palette for why this is a class. */
+.lexe-success { font-size: 15px; font-weight: 600; color: #0f7b0f; }
+
+.lexe-card {
+  background-color: @lexe_surface;
+  border: 1px solid @lexe_border;
+  border-radius: 4px;
+  padding: 12px 14px;
+}
+
+.lexe-banner {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid @lexe_border;
+  border-radius: 4px;
+  background-color: @lexe_surface;
+  color: @lexe_text;
+}
+.lexe-banner.ok      { background-color: #dff6dd; color: #0f7b0f; border-left: 4px solid #0f7b0f; }
+.lexe-banner.caution { background-color: #fff4ce; color: #9d5d00; border-left: 4px solid #9d5d00; }
+.lexe-banner.danger  { background-color: #fde7e9; color: #c42b1c; border-left: 4px solid #c42b1c; }
+
+/* The command bar of a setup dialog - see the dark palette. */
+.lexe-actionbar {
+  background-color: @lexe_canvas;
+  border-top: 1px solid @lexe_border;
+  padding: 12px 16px;
+}
+.lexe-stepbar {
+  background-color: @lexe_surface;
+  border-bottom: 1px solid @lexe_border;
+  padding: 14px 16px 12px 16px;
+}
+
+button {
+  border-radius: 4px;
+  padding: 5px 14px;
+  min-height: 22px;
+  min-width: 82px;
+  font-size: 13px;
+  font-weight: 400;
+  background-image: none;
+  background-color: #fdfdfd;
+  color: @lexe_text;
+  border: 1px solid #d1d1d1;
+  box-shadow: none;
+  transition: background-color 90ms ease-out;
+}
+button:hover { background-color: #f5f5f5; }
 button.lexe-primary {
   background-color: @lexe_accent;
   color: #ffffff;
   font-weight: 600;
-  padding: 8px 24px;
+  border: 1px solid @lexe_accent;
 }
-button.lexe-primary:hover    { background-color: #5b9bf8; }
-button.lexe-primary:disabled { background-color: #262a33; color: #616b7d; }
-button:disabled              { background-color: #1d2129; color: #616b7d; }
+button.lexe-primary:hover    { background-color: #1a6cc0; border-color: #1a6cc0; }
+button.lexe-primary:disabled { background-color: #e5e5e5; color: #a0a0a0; border-color: #e0e0e0; }
+button:disabled              { background-color: #f5f5f5; color: #a0a0a0; }
 
 entry {
-  border-radius: 10px;
-  padding: 9px 12px;
-  min-height: 26px;
-  font-size: 14px;
-  background-image: none;
-  background-color: #1d2129;
-  border: none;
-  color: @lexe_text;
-}
-entry:disabled { color: #616b7d; }
-.lexe-mono { font-family: monospace; font-size: 13px; }
-)CSS";
-    }
-    return R"CSS(
-@define-color lexe_canvas  #f5f6f8;
-@define-color lexe_surface #ffffff;
-@define-color lexe_text    #0f172a;
-@define-color lexe_muted   #64748b;
-@define-color lexe_accent  #2563eb;
-
-
-window { background-color: @lexe_canvas; color: @lexe_text; }
-
-.lexe-title    { font-size: 26px; font-weight: 700; color: @lexe_text; }
-.lexe-subtitle { font-size: 13px; color: @lexe_muted; }
-.lexe-body     { font-size: 14px; color: @lexe_text; }
-.lexe-muted    { font-size: 13px; color: @lexe_muted; }
-.lexe-section-heading { font-size: 12px; font-weight: 600; color: @lexe_muted; }
-/* A success heading - see the dark palette for why this is a class. */
-.lexe-success { font-size: 17px; font-weight: 700; color: #15803d; }
-
-.lexe-card {
-  background-color: @lexe_surface;
-  border-radius: 16px;
-  padding: 18px 20px;
-  box-shadow: 0 1px 2px rgba(15,23,42,0.06), 0 4px 12px rgba(15,23,42,0.05);
-}
-
-.lexe-banner {
-  padding: 16px 20px;
-  font-size: 14px;
-  font-weight: 600;
-  background-color: @lexe_surface;
-}
-.lexe-banner.ok      { background-color: #ecfdf3; color: #15803d; border-left: 4px solid #22c55e; }
-.lexe-banner.caution { background-color: #fff8eb; color: #b45309; border-left: 4px solid #f59e0b; }
-.lexe-banner.danger  { background-color: #fef2f2; color: #b91c1c; border-left: 4px solid #ef4444; }
-
-.lexe-actionbar { background-color: @lexe_surface; padding: 14px 20px; }
-.lexe-stepbar   { background-color: @lexe_surface; padding: 20px 22px 18px 22px; }
-
-button {
-  border-radius: 999px;
-  padding: 8px 20px;
-  min-height: 22px;
+  border-radius: 4px;
+  padding: 6px 10px;
+  min-height: 24px;
   font-size: 13px;
-  font-weight: 500;
   background-image: none;
-  background-color: #eef0f4;
+  background-color: @lexe_surface;
+  border: 1px solid #d1d1d1;
   color: @lexe_text;
+}
+entry:focus { border-color: @lexe_accent; }
+entry:disabled { color: #a0a0a0; }
+/* The navigation pane - see the dark palette. */
+.lexe-nav { background-color: @lexe_surface; border-right: 1px solid @lexe_border; }
+.lexe-nav-item {
+  background-color: transparent;
   border: none;
-  box-shadow: none;
-  transition: background-color 120ms ease-out;
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+  min-width: 0;
+  padding: 7px 10px;
+  font-weight: 400;
+  color: @lexe_text;
 }
-button:hover { background-color: #e4e7ec; }
-button.lexe-primary {
-  background-color: @lexe_accent;
-  color: @lexe_surface;
-  font-weight: 600;
-}
-button.lexe-primary:hover    { background-color: #1d4ed8; }
-button.lexe-primary:disabled { background-color: #dfe3ea; color: #9aa4b2; }
-button:disabled              { background-color: #f1f3f6; color: #9aa4b2; }
+.lexe-nav-item:hover           { background-color: #ededed; }
+.lexe-nav-item.selected        { background-color: #e8e8e8; border-left: 3px solid @lexe_accent; font-weight: 600; }
+.lexe-nav-item.selected:hover  { background-color: #e0e0e0; }
 
-entry {
-  border-radius: 10px;
-  padding: 9px 12px;
-  min-height: 26px;
-  font-size: 14px;
-  background-image: none;
-  background-color: #f1f3f6;
-  border: none;
-  color: @lexe_text;
-}
-entry:disabled { color: #9aa4b2; }
-.lexe-mono { font-family: monospace; font-size: 13px; }
+.lexe-mono { font-family: monospace; font-size: 12px; }
 )CSS";
 }
 
