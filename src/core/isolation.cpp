@@ -368,12 +368,19 @@ std::vector<std::string> render_bwrap_argv(const IsolationPlan& plan,
     // Binds. Writable roots use --bind; required read-only binds use --ro-bind;
     // optional ones use --ro-bind-try so a missing host source is skipped.
     for (const BindMount& b : plan.binds) {
+        // `optional` means "skip it when the host source is absent", and it
+        // has to mean that for a WRITABLE bind too. It did not: a writable
+        // optional bind rendered as `--bind`, so bwrap refused to start at all
+        // over a source the plan had already said was skippable. The display
+        // socket is exactly such a bind — writable because connecting to a
+        // unix socket needs write access — so a GUI launch on a host whose
+        // socket path does not exist died with a bwrap error instead of
+        // starting with no display granted, which the control map is built to
+        // report honestly.
         if (!b.read_only) {
-            a.push_back("--bind");
-        } else if (b.optional) {
-            a.push_back("--ro-bind-try");
+            a.push_back(b.optional ? "--bind-try" : "--bind");
         } else {
-            a.push_back("--ro-bind");
+            a.push_back(b.optional ? "--ro-bind-try" : "--ro-bind");
         }
         a.push_back(b.host);
         a.push_back(b.sandbox);

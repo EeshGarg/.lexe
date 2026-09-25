@@ -277,4 +277,44 @@ TEST_CASE("no private runtime directory is requested, none is created") {
     }
 }
 
+TEST_CASE("an optional bind is optional whether or not it is writable") {
+    lexe::test::TempLexeHome home;
+    IsolationRequest r = sample_request(false);
+    // The display socket is the case that made this matter: writable, because
+    // connecting to a unix socket needs write access, and optional, because a
+    // host may simply not have one at that path.
+    r.gui = true;
+    r.inherited_env["DISPLAY"] = ":0";
+
+    const IsolationPlan plan = build_plan(r, full_caps());
+    const std::vector<std::string> argv =
+        render_bwrap_argv(plan, "/usr/bin/bwrap");
+
+    // A writable optional bind must render as --bind-try. Rendering it as a
+    // plain --bind made bwrap refuse to start over a source the plan had
+    // already declared skippable, so a GUI launch on a host without that
+    // socket died instead of starting with no display granted.
+    CHECK(argv_has_pair(argv, "--bind-try", "/tmp/.X11-unix/X0"));
+    CHECK_FALSE(argv_has_pair(argv, "--bind", "/tmp/.X11-unix/X0"));
+
+    // The required writable binds are still mandatory: a missing private data
+    // root is a real failure, not something to skip.
+    CHECK(argv_has_pair(argv, "--bind", "/lexehome/data/com.example.app"));
+    CHECK(argv_has_pair(argv, "--bind", "/lexehome/cache/apps/com.example.app"));
+
+    // …and the read-only side keeps the distinction it already had.
+    CHECK(argv_has_pair(argv, "--ro-bind", "/usr"));
+    CHECK(argv_has_pair(argv, "--ro-bind-try", "/etc/fonts"));
+
+    // Every optional bind in the plan renders with a -try form, and every
+    // required one without.
+    for (const BindMount& b : plan.binds) {
+        CAPTURE(b.host);
+        const std::string flag = b.read_only
+                                     ? (b.optional ? "--ro-bind-try" : "--ro-bind")
+                                     : (b.optional ? "--bind-try" : "--bind");
+        CHECK(argv_has_pair(argv, flag, b.host));
+    }
+}
+
 } // TEST_SUITE("isolation")
