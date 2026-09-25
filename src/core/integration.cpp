@@ -75,7 +75,9 @@ std::string handler_desktop_entry() {
     text += "TryExec=lexe-ui\n";
     text += "Icon=lexe\n";
     text += "Terminal=false\n";
-    text += "Categories=System;PackageManager;Settings;\n";
+    // One MAIN category (System) plus an Additional one (PackageManager):
+    // listing System AND Settings makes the entry appear twice in some menus.
+    text += "Categories=System;PackageManager;\n";
     text += std::string("MimeType=") + kCanonicalMime + ";" + kLegacyMime +
             ";\n";
     text += "StartupNotify=true\n";

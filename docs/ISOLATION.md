@@ -37,8 +37,9 @@ When they do not work, the backend reports `unavailable` and the launcher
 
 Verified working on WSL2 (Ubuntu 24.04, kernel 6.x): unprivileged user and
 network namespaces function, and all the denials below were demonstrated.
-WSLg (the Wayland/X bridge) is **not** forwarded into the sandbox in 0.1 — see
-GUI below.
+WSLg (the Wayland/X bridge) exposes an ordinary Wayland/X socket, so the display
+rules below apply to it unchanged — but this has not been re-verified on WSL2
+since display access was implemented.
 
 ## Capability detection
 
@@ -128,15 +129,45 @@ There is **no silent fallback to unrestricted networking**.
 * No seccomp filter is applied in 0.1 (a real, maintained policy is future work;
   a fake or overly-permissive filter would be dishonest, so none is claimed).
 
-## GUI forwarding
+## Display access
 
-**Not implemented in 0.1.** No display, Wayland/X, or D-Bus socket is forwarded
-into the sandbox, so a `.lexe` GUI application launched via `lexe run` runs
-headless (isolation is terminal/headless only). The Builder and Installer GTK
-apps are the runtime's own tools — they are not `.lexe` applications and are
-not launched through this isolation path, so they are unaffected. GUI capability
-is reported as **not forwarded**; the filesystem and network controls are never
-weakened to make GUI launch work.
+Display access is **granted only to an application whose manifest declares
+`launch.mode: "gui"`** (Definitive Architecture §14.4). It is a deliberate,
+declared reduction of isolation — the display socket is the one host resource a
+graphical application genuinely cannot do without — and it is reported as such
+rather than claimed away.
+
+**What a GUI launch gets:**
+
+| Resource | Bind | Why |
+|---|---|---|
+| the Wayland socket | read-write, at `/run/lexe/session/<name>` | connecting to a unix socket requires write access; the host's real `XDG_RUNTIME_DIR` layout is never exposed — only the one socket is bound in, and `XDG_RUNTIME_DIR` is rewritten to the fixed sandbox path |
+| the X11 socket | read-write, at `/tmp/.X11-unix/X<n>` | derived from `DISPLAY`; a remote `host:0` DISPLAY is deliberately unsupported, since it would need network access the sandbox does not grant |
+| `/etc/fonts`, `/var/cache/fontconfig`, `/etc/machine-id` | read-only, optional | font configuration only |
+| `/dev/dri` | dev-bind, optional | GPU rendering |
+
+Plus a small set of rendering-only environment variables
+(`XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`, `GDK_BACKEND`, `QT_QPA_PLATFORM`,
+and the locale variables). These affect how the application draws, never what
+it may reach.
+
+**What it does NOT get:** D-Bus (neither session nor system bus), the home
+directory, the network, the user's real runtime directory, or any relaxation of
+the filesystem controls. Those are never weakened to make a GUI launch work.
+
+**A console or service application gets no display socket at all.** Because the
+mode is declared in the signed manifest rather than guessed, this is a decision
+the publisher makes explicitly and the user can inspect before installing.
+
+**Truthful reporting.** The control map carries `display-isolated`. It is
+`enforced` for a console/service launch, and `not-applicable` for a GUI launch
+where a socket was actually bound — never a silent claim that the display is
+still isolated when it is not. If a GUI application is launched in a session
+with no Wayland or X socket at all, the control stays `enforced`, because
+nothing was granted.
+
+The `lexe-ui` and `lexe-builder` GTK apps are the runtime's own tools — they are
+not `.lexe` applications and are not launched through this isolation path.
 
 ## Fail-closed behavior
 
@@ -170,7 +201,9 @@ Baseline controls, independent of requested permissions:
 | no shell / verbatim argv | enforced (proven) |
 | no-setuid-escalation (user namespace) | enforced |
 | private PID namespace | enforced |
-| GUI forwarding | **not implemented** (headless only) |
+| display isolation (console/service launch) | enforced |
+| display isolation (declared GUI launch) | **deliberately not applicable** — one display socket is bound, and that is reported, not hidden |
+| D-Bus access (any launch mode) | never forwarded |
 | seccomp syscall filter | **not implemented** |
 
 ## Exact guarantees / non-guarantees
@@ -182,7 +215,10 @@ caller's working directory, or use the network without the `network` permission;
 and if the sandbox cannot be established, the app is not run.
 
 **Not guaranteed:** any containment on a platform without a backend (reported as
-unsupported); syscall-level restriction (no seccomp); GUI isolation (no GUI
-forwarding at all in 0.1); `user-files-selected` enforcement (advisory); and
-protection on kernels where unprivileged namespaces are disabled (there the
-launch fails closed rather than running unconfined).
+unsupported); syscall-level restriction (no seccomp); isolation from the display
+server for an application that DECLARES `launch.mode: "gui"` (it is given the
+session's display socket, with everything that implies — on X11 in particular, a
+client with socket access can observe input to other clients);
+`user-files-selected` enforcement (advisory); and protection on kernels where
+unprivileged namespaces are disabled (there the launch fails closed rather than
+running unconfined).
