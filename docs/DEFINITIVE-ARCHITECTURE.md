@@ -550,9 +550,30 @@ run, and tests that need to *execute* a payload skip with a message.
 
 ### End-to-end acceptance
 
-See [`tests/acceptance/`](../tests/acceptance/) for the scripted criteria, and
-[`tests/acceptance/REBOOT.md`](../tests/acceptance/REBOOT.md) for the parts that
-genuinely require a real reboot and a real double-click.
+```sh
+bash tests/acceptance/run_all.sh
+```
+
+Four scripted suites covering install + launch, persistence and repair, failure
+diagnostics, and the native steady state (which asserts the process tree is
+`lexe → bwrap → gui-hello` with no compatibility process in it). Everything runs
+against a throwaway `LEXE_HOME`; the real `~/.local/share/lexe` is never
+touched.
+
+**Automated tests are headless by construction.** `tests/acceptance/lib.sh`
+severs `WAYLAND_DISPLAY`/`DISPLAY` for the whole harness before any test runs,
+so no window can appear on a developer's screen — a window that steals focus
+mid-run is disruptive, and a test whose result depends on a live desktop session
+is not reproducible on a build machine. The GUI example's `--selftest` and
+`--sleep` flags return before GTK is initialised, and the guard means a future
+change that tried to open a window would fail loudly rather than silently
+render. Anything that genuinely must draw brings its own synthetic display:
+`scripts/gui-smoke.sh` runs the GTK frontends under `xvfb-run`, and refuses to
+fall back to the real session.
+
+[`tests/acceptance/REBOOT.md`](../tests/acceptance/REBOOT.md) covers the parts
+that genuinely require a real reboot and a real double-click — those are
+explicitly manual and are the one place a window is expected on screen.
 
 ### A manual end-to-end run against a scratch home
 

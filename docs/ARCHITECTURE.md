@@ -147,6 +147,11 @@ with a first-run welcome screen (shown once).
 
 ## Tests — `tests/` → binary `lexe_tests` (doctest, run via CTest)
 
+* **No automated test may put a window on screen.** The acceptance harness
+  severs `WAYLAND_DISPLAY`/`DISPLAY` for its whole run, and `gui-smoke.sh`
+  requires `xvfb-run` and unsets the real session before invoking it. A test
+  that needs to render brings its own synthetic display; one that steals focus
+  from the developer, or that only passes on a live desktop, is a broken test.
 * Every test creates a temp dir and sets `LEXE_HOME` into it — no test touches
   the real home.
 * `tests/helpers.hpp`: `make_keyfile()`, `make_test_app_tree()`,

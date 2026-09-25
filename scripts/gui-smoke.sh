@@ -23,14 +23,21 @@ BUILD_DIR="${1:-build}"
 TIMEOUT="${TIMEOUT:-6}"
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 LEXE="$BUILD_DIR/lexe"
-INSTALLER="$BUILD_DIR/lexe-installer"
+UI="$BUILD_DIR/lexe-ui"
 BUILDER="$BUILD_DIR/lexe-builder"
 
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 die() { printf '  \033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
 
-command -v xvfb-run >/dev/null 2>&1 || die "xvfb-run is required (install the xvfb package)"
-[ -x "$INSTALLER" ] || die "no lexe-installer in $BUILD_DIR (build the GTK GUI first)"
+# HEADLESS ONLY. This smoke test renders real windows, so it MUST run on a
+# synthetic display — never on the developer's session, where it would steal
+# focus and where the result would depend on a live desktop.
+command -v xvfb-run >/dev/null 2>&1 || die "xvfb-run is required (Fedora: sudo dnf install xorg-x11-server-Xvfb · Debian/Ubuntu: sudo apt install xvfb)"
+# Sever the real session before xvfb-run supplies its own DISPLAY, so a bug in
+# the invocation cannot fall back to the developer's screen.
+unset WAYLAND_DISPLAY DISPLAY
+export GDK_BACKEND=x11
+[ -x "$UI" ] || die "no lexe-ui in $BUILD_DIR (build the GTK GUI first)"
 [ -x "$BUILDER" ]   || die "no lexe-builder in $BUILD_DIR"
 [ -x "$LEXE" ]      || die "no lexe CLI in $BUILD_DIR"
 
@@ -95,7 +102,7 @@ ok "built a package whose name + publisher contain & < > \""
 
 # --- The installer renders the markup-hostile package -------------------------
 export LEXE_HOME="$WORK/home"
-smoke "installer (markup-hostile package)" "$INSTALLER" "$WORK/hostile.lexe"
+smoke "lexe-ui (markup-hostile package)" "$UI" --open "$WORK/hostile.lexe"
 
 # --- The builder builds every section heading at startup ----------------------
 smoke "builder (startup)" "$BUILDER"

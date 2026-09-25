@@ -139,4 +139,13 @@ if(LEXE_GUI_ENABLED)
   # the manifest, generate/choose a signing key, and build a signed .lexe.
   add_executable(lexe-builder src/gui/builder.cpp)
   target_link_libraries(lexe-builder PRIVATE lexe_core PkgConfig::GTK3)
+
+  # lexe-ui — GTK 3 consumer/power-user frontend: Home, Install, Apps (Launch /
+  # Compatibility / Runtime / Permissions / Diagnostics / Error History /
+  # Uninstall) and Settings. Single-instance (GtkApplication), and the `.lexe`
+  # handler entry point: `lexe-ui --open <file>` dispatches on the SIGNED
+  # manifest role. ".LEXE Menu" is `--app <id>`; ".LEXE Error" is
+  # `--errors <id>`; both navigate this one window.
+  add_executable(lexe-ui src/gui/ui.cpp)
+  target_link_libraries(lexe-ui PRIVATE lexe_core PkgConfig::GTK3)
 endif()

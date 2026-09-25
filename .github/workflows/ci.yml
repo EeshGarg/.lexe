@@ -29,7 +29,7 @@ jobs:
       - name: Build and test
         run: ./scripts/build.sh build-ci
       - name: Assert GUI was built
-        run: test -x build-ci/lexe-installer
+        run: test -x build-ci/lexe-ui && test -x build-ci/lexe-builder
       - name: Headless GUI smoke test (warning-clean, markup-safe)
         run: ./scripts/gui-smoke.sh build-ci
 

@@ -1,0 +1,42 @@
+{
+  "lexeVersion": "0.1",
+  "id": "com.usha.guihello",
+  "name": "Lexe GUI Hello",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Usha",
+    "publicKey": "AUTO",
+    "website": "https://example.invalid/lexe"
+  },
+  "role": "application",
+  "applicationType": "native",
+  "architectures": [
+    "x86_64"
+  ],
+  "entrypoint": {
+    "executable": "bin/gui-hello",
+    "arguments": []
+  },
+  "execution": {
+    "missionCritical": false,
+    "allowedChains": [
+      "native"
+    ]
+  },
+  "launch": {
+    "mode": "gui",
+    "singleInstance": true
+  },
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "integration": {
+    "desktopEntry": true,
+    "categories": [
+      "Utility",
+      "Development"
+    ]
+  },
+  "permissions": []
+}
