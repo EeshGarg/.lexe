@@ -56,6 +56,24 @@ Compile  →  Build .lexe  →  Distribute  →  Runs on conforming runtimes
   your app   sign + verify   any channel    (Tux32 Core 1)
 ```
 
+Or ship the **source** instead and let each machine compile it, so one file is
+native everywhere rather than one binary per architecture:
+
+```
+        SAME App.lexe                  applicationType: "portable"
+              |
+    +---------+---------+              installing it compiles the payload —
+  x86-64    ARM64    RISC-V            with your explicit approval, in the
+    |         |         |              sandbox, with the network denied, and
+  compile  compile  compile            the result checked to be a native
+    |         |         |              executable for THIS machine before
+    +---------+---------+              anything is installed.
+              |
+        Native Linux
+```
+
+See [`examples/portable-hello/`](examples/portable-hello/).
+
 ## Platform overview
 
 | Component | What it is |

@@ -13,6 +13,37 @@ Moves the runtime from the alpha prototype onto the canonical
 description, including a plainly-stated list of what is still missing.
 
 ### Added
+- **Portable code and host-ISA compilation** (`applicationType: "portable"`).
+  The payload is source; the machine that installs the package compiles it, so
+  one `.lexe` becomes native to whatever it lands on instead of carrying a
+  binary per architecture. All four of the architecture's properties are
+  implemented together, because three of them is remote code execution with
+  extra steps:
+  - **approval gates the operation** — `lexe install --approve-compile`,
+    checked before a toolchain is even probed, never implied by `--yes`, and
+    recorded with who authorized it and when;
+  - **the build runs unprivileged and isolated** — the launcher's own sandbox
+    with a writable build tree, no display, and the network denied
+    *unconditionally* (a `network` permission describes the application, not
+    its build). No sandbox means no build; there is no unconfined fallback;
+  - **the output is verified** — the declared entrypoint must exist, be an ELF,
+    be runnable, and target *this host's* ISA. A build exiting 0 proves nothing;
+  - **approval grants no privilege.**
+
+  The build runs inside the staged version directory, so a refused approval, a
+  failed build or a rejected output all leave a previously installed version
+  untouched. `meta/<version>/build.json` records the approval, the toolchain
+  that actually ran and the SHA-256 of what was produced — the compiled
+  entrypoint is not covered by the package's signed `hashes.json` because it did
+  not exist when the package was signed. The launcher checks that record before
+  exec and refuses to launch without it, and `lexe repair <id>
+  --approve-compile` rebuilds an entrypoint that cannot be copied back out of a
+  package it was never in. Worked example: `examples/portable-hello/`.
+- **`build` manifest block** (FORMAT-0.1 §5.8): `system` (`make`/`cmake`/
+  `command`), `sourceDir`, an argv `command` (never a shell string) and a
+  required non-empty `toolchain` of bare executable names, probed against the
+  host *before* an approval is sought so an unbuildable package names the
+  missing tool instead of failing part-way through a compile.
 - **Package roles.** A `.lexe` is an installable `"application"` or a
   `"launch"` reference, decided by the SIGNED manifest rather than the file
   name. The two roles are structurally distinct: a launch reference may not
@@ -64,8 +95,27 @@ description, including a plainly-stated list of what is still missing.
 - `packaging/install.sh` no longer hand-rolls MIME/desktop registration in
   shell; it installs the binaries and calls `lexe integrate`, so there is one
   implementation of registration and therefore one thing to repair.
+- `core/desktop` is now pure content generation — the `.desktop` and
+  shared-mime-info DOCUMENTS — and nothing else. Writing, registering,
+  recording and repairing them belongs to `DesktopIntegration` alone.
+- The strict (mission-critical) resolver accepts a portable package: compiled
+  on this host, for this ISA, and checked before promotion is Linux-native,
+  host-ISA-native and verified.
+
+### Removed
+- `core/desktop`'s parallel implementation of desktop registration
+  (`integrate_runtime`, `integrate_app`, `remove_integration` and the runtime
+  handler/MIME documents). Nothing in the runtime called it; it registered the
+  handler under a MIME type the runtime no longer claims, naming a binary the
+  packaging scripts now delete. Two engines for one job is how a machine ends
+  up with whichever registration ran last, and `doctor --repair` cannot restore
+  something a different implementation created.
 
 ### Fixed
+- The freedesktop caches are no longer refreshed for a confined (`LEXE_HOME`)
+  layout. No desktop reads that tree, so the refresh built a cache nobody
+  consults and printed `update-mime-database`'s "not in the search path set by
+  XDG_DATA_HOME" advice over `lexe integrate`'s own output.
 - A package whose native entrypoint is source text is now rejected before
   installation instead of becoming a mysterious launch failure.
 - Desktop integration that does not survive a reboot is now a detected, named,

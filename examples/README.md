@@ -11,6 +11,7 @@ for a Core Portable result.
 | [cli-tool/](cli-tool/) | A minimal dynamically linked C **CLI utility** (reads args, links libm). Verifies conformant. |
 | [bundled-library/](bundled-library/) | An app that carries its **own shared library** in the payload (RPATH `$ORIGIN/../lib`); the dependency engine classifies it as a *bundle*. Verifies conformant. |
 | [gui-hello/](gui-hello/) | A **GTK 3 desktop application that runs under the sandbox**: declares `launch.mode: "gui"`, shows its `LEXE_APP_ID` and writes into `$LEXE_APP_DATA`, and has a `--selftest` flag for headless CI. The payload used by [../tests/acceptance/](../tests/acceptance/). |
+| [portable-hello/](portable-hello/) | A **package whose payload is source**: `applicationType: "portable"`, compiled by the machine that installs it. Ships `payload/src/` and deliberately no entrypoint binary; installing it needs `--approve-compile`. The payload used by [../tests/acceptance/05_portable_compile.sh](../tests/acceptance/05_portable_compile.sh). |
 | [gtk-app/](gtk-app/) | A minimal **GTK desktop application** — shows the Core 1 boundary: Core 1 is headless in this Alpha, so `lexe sdk verify` reports a GUI app non-conformant, and GTK's `dlopen`-ed graphics stack illustrates the dlopen limitation. |
 | [../sdk/tux32-core-1/reference-app/](../sdk/tux32-core-1/reference-app/) | The **reference package**: dynamic libm, persistent data/cache/temp — the artifact the portability proof carries across the distribution boundary. |
 

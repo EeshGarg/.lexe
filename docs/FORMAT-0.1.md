@@ -332,6 +332,76 @@ be used to smuggle the other's payload past verification.
 Note the ordering: stage 7 runs AFTER hashes, so a tampered entrypoint is
 reported as an integrity failure (stage 6), not as a role failure.
 
+### 6.8 Compatibility
+
+Stage 8 runs for `lexe install` and for an update, and is skipped for
+`lexe verify` unless asked for and for `role: "launch"` (which declares no
+architectures). The host's ISA MUST appear in `architectures`.
+
+For `applicationType: "portable"` this is a statement about what the build
+recipe is declared to produce, not about bytes already in the package. It is
+still a hard gate: a package that does not claim this ISA is not installed on
+it, and the compile in §6.9 never runs.
+
+### 6.9 Host-ISA compilation (portable packages)
+
+Installing a `applicationType: "portable"` package COMPILES its source on the
+destination machine. That is the point of the type — one `.lexe` becomes native
+to the machine it lands on — and it is also the most dangerous thing a package
+format can ask for, so all four of the following MUST hold. A runtime that
+implements any three of them has implemented remote code execution.
+
+**1. Approval gates the operation.** The compilation MUST require explicit
+authorization from the owner of the installation, obtained for this package and
+this version, and MUST NOT be implied by a general "yes" to installing. Without
+it the install MUST be refused before any toolchain is probed and before
+anything is staged. The authorization MUST be recorded (§9 `build.json`).
+
+The authorizing party for an `install.scope: "user"` installation — the only
+scope 0.1 supports — is the user who owns that installation. A runtime MUST NOT
+present this as an administrator's approval when no privileged authority was
+involved.
+
+**2. The build runs unprivileged and isolated.** It MUST run with no more
+privilege than the installed application would receive, inside the same
+isolation the runtime launches applications in, with:
+
+* the **network denied unconditionally** — a `network` permission in the
+  manifest MUST NOT reach the build. A build that downloads is fetching
+  unsigned code onto the machine at install time, behind a signature that says
+  nothing about what was fetched;
+* **no display access**, whatever `launch.mode` says;
+* a **writable build tree** (the staged version directory) and nothing else of
+  the user's writable by it;
+* a sanitized environment, as for a launch.
+
+If the isolation cannot be established, the install MUST fail. Building
+unconfined is not a fallback.
+
+**3. The output is verified before it is used.** A build exiting 0 proves
+nothing. The file named by `entrypoint.executable` MUST, after the build:
+
+* exist;
+* be a valid ELF object;
+* have ELF type `ET_EXEC` or `ET_DYN`;
+* target **the host's** machine — not merely one of `architectures`. A recipe
+  that cross-compiles has not produced a host-ISA native executable.
+
+This is §6.7's question asked of bytes that did not exist when the package was
+signed.
+
+**4. Approval grants no privilege.** It authorizes the operation. It MUST NOT
+elevate the build, the installer, or the application.
+
+**The build must happen before promotion.** Every failure above — including a
+refused approval — MUST leave a previously installed version of the application
+exactly as it was.
+
+**The result MUST be recorded** as described in §9, because it is not covered
+by the package's signed `hashes.json`: it did not exist when the package was
+signed. A runtime that does not record it cannot detect tampering with exactly
+the binaries it compiled itself.
+
 ## 7. Updates — `update.json`
 
 `manifest.updates.manifest` is an `https://` URL (the runtime also accepts
@@ -395,7 +465,8 @@ Base directory (`LEXE_HOME` environment variable overrides; used by tests):
 <LEXE_HOME>/apps/<id>/
 ├── versions/<version>/           immutable extracted payload/ contents
 ├── meta/<version>/               exact lexe.json + hashes.json bytes for that
-│                                 version (repair hash source; rollback restore)
+│                                 version (repair hash source; rollback restore),
+│                                 plus build.json for a portable package (§6.9)
 ├── current                       symlink to versions/<version>; where symlinks are
 │                                 unavailable, a text file `current.txt` containing
 │                                 the version string is written instead
@@ -418,6 +489,43 @@ Base directory (`LEXE_HOME` environment variable overrides; used by tests):
 ├── <id>.v.<version>.lease        per-version launch lease (shared while running)
 └── global.recovery.lock          global recovery coordination
 ```
+
+### `meta/<version>/build.json` — what a portable package's build produced
+
+Written by the install that compiled the package (§6.9), and by a repair that
+compiled it again. Absent for a native package, which is not an error.
+
+```json
+{
+  "schema": "lexe.build/1",
+  "applicationId": "com.example.app",
+  "applicationVersion": "1.0.0",
+  "buildSystem": "make",
+  "sourceDir": "src",
+  "hostIsa": "x86_64",
+  "builtAt": "2026-09-25T02:48:16Z",
+  "runtimeVersion": "0.1.0-alpha",
+  "approval": {
+    "granted": true,
+    "authority": "user",
+    "approvedBy": "someone",
+    "approvedAt": "2026-09-25T02:48:16Z"
+  },
+  "toolchain": [{ "name": "cc", "path": "/usr/bin/cc" }],
+  "products": { "payload/bin/app": "<sha256>" }
+}
+```
+
+`products` is keyed exactly like `hashes.json`, so one lookup answers "what
+should this file hash to?" for a compiled entrypoint and an extracted one
+alike. A runtime MUST check a compiled entrypoint against it before executing,
+and MUST fail closed — refusing to launch — when a portable application has no
+recorded hash for its entrypoint. Falling back to "unchecked" would leave
+exactly the binaries the runtime compiled itself as the only ones it never
+notices being replaced.
+
+`approval.authority` records what the approval actually was. It MUST NOT claim
+a privileged authority that was not involved (§6.9 property 1).
 
 ### Desktop integration is written to one of two places
 

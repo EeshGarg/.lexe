@@ -130,13 +130,21 @@ entrypoint must now, **before installation**:
   object, not a core file),
 * target a machine listed in the manifest's `architectures`.
 
+For `role: "application"` with `applicationType: "portable"` (§5A) the stage
+asks the mirror image: the archive must carry source under `build.sourceDir`,
+and must **not** carry the entrypoint it declares — that file is what the build
+produces on the destination machine. A portable package shipping a prebuilt
+entrypoint is the same lie told backwards, and it would install a binary this
+host never compiled.
+
 For `role: "launch"`, the archive must carry no payload entries.
 
 The failure message says so in plain words — *"a native package must contain a
 COMPILED executable — source files belong in a portable-code package"* — rather
 than leaving the developer to guess. `tests/test_payload_role.cpp` covers the
 exact alpha bug plus the wrong-architecture, relocatable-object, missing-
-entrypoint and happy-path cases, and pins the stage's position in the pipeline.
+entrypoint, portable-with-prebuilt-entrypoint, portable-without-source and
+happy-path cases, and pins the stage's position in the pipeline.
 
 ---
 
@@ -231,6 +239,93 @@ for rendering. It does **not** forward D-Bus, the home directory, or the
 network. The control map records this honestly: `display-isolated` becomes
 `not-applicable` when a display was granted, never a silent claim that it is
 still enforced.
+
+---
+
+## 5A. Portable code — the destination machine compiles it
+
+```
+        SAME App.lexe
+              |
+    +---------+---------+
+    |         |         |
+  x86-64    ARM64    RISC-V
+    |         |         |
+  compile  compile  compile      <- on the destination machine
+    |         |         |
+    +---------+---------+
+              |
+        Native Linux
+```
+
+`applicationType: "portable"` is the type whose payload is **source**. The
+program named by `entrypoint.executable` does not exist in the package: it is
+what the build produces on the machine that installs it. One `.lexe` therefore
+becomes native to the machine it lands on, instead of being several
+architecture-specific packages carried together.
+
+Verification asks the mirror image of the question it asks a native package
+(§3). A native package must carry a compiled ELF; a portable package must carry
+source under `build.sourceDir` and must **not** carry the entrypoint it
+declares. A prebuilt entrypoint in a portable package is the alpha's
+source-packaged-as-native bug told backwards — the binary that would end up
+installed is one this host never compiled — so stage 7 refuses it.
+
+### The four properties, and why all four
+
+Compiling a downloaded package is the most dangerous thing a package format can
+ask a machine to do. Implementing three of these four is remote code execution
+with extra steps.
+
+| Property | What it means here |
+|---|---|
+| **Approval gates the operation** | `--approve-compile`. Checked before a toolchain is even probed. A bare `--yes` does not set it: consenting to an install is not consenting to run a build. Recorded in `build.json` with who and when. |
+| **The build is unprivileged and isolated** | The launcher's own sandbox with a writable build tree, **no network at all** and no display. Fails closed: no sandbox, no build. |
+| **The output is verified** | Exiting 0 proves nothing. The declared entrypoint must exist, be an ELF, be runnable, and target **this host's** ISA — a recipe that cross-compiles has not produced a host-ISA native executable. |
+| **Approval grants no privilege** | It authorizes the operation. The build gets strictly less authority than the installed application would. |
+
+The build runs inside the **staged** version directory, before promotion, so
+every failure — including a refused approval — leaves a previously installed
+version exactly as it was.
+
+There is no privileged administrator in a per-user installation, and the
+runtime does not pretend otherwise: `approval.authority` records `"user"`,
+meaning the owner of this installation authorized it. A system-scope install
+would need a different authority, and system scope is not supported in 0.1.
+
+### The build has no network, whatever the manifest says
+
+A `network` permission describes what the *application* may do once installed.
+It does not reach the build. A build that downloads is fetching unsigned code
+onto the machine at install time, behind a signature that says nothing about
+what was fetched — so `IsolationRequest::build` denies the network
+unconditionally, and refuses to build at all if network denial cannot be
+enforced.
+
+### The compiled binary is protected like an extracted one
+
+The output is not covered by the package's signed `hashes.json`: it did not
+exist when the package was signed. It is recorded in `meta/<version>/build.json`
+instead, keyed exactly like `hashes.json`, and everything downstream uses one
+lookup for both kinds of entrypoint. The launcher checks it before exec and
+**fails closed** when a portable application has no recorded product hash —
+falling back to "unchecked" would leave the binaries the runtime compiled
+itself as the only ones it never notices being replaced.
+
+Repair cannot copy a portable entrypoint back out of the package, because it
+was never in there. Repairing one **compiles again**, behind the same explicit
+approval (`lexe repair <id> --approve-compile`): a repair command must not
+silently build code.
+
+### It is native afterwards, including for mission-critical policy
+
+A compiled portable package resolves to the `native` chain with no argv prefix
+— it is an ordinary host-ISA ELF at that point. The strict resolver (§4)
+accepts it for the same reason: compiled here, for this ISA, checked before
+promotion is Linux-native, host-ISA-native and verified.
+
+`examples/portable-hello/` is the worked example, and
+`tests/acceptance/05_portable_compile.sh` is the end-to-end evidence.
 
 ---
 
@@ -471,6 +566,15 @@ install.lexe / App.lexe
    v  validate package ROLE and entrypoint TYPE
    v  admin/user install approval + permission consent
    |
+   +-- applicationType "portable" --> COMPILE APPROVAL
+   |                                  v  probe the declared toolchain
+   |                                  v  build, unprivileged + isolated,
+   |                                  |  network denied, in the STAGED tree
+   |                                  v  verify the output is a host-ISA ELF
+   |                                  v  record build.json (approval, tools,
+   |                                  |  product hashes)
+   |                                  |  any failure: nothing is promoted
+   |                                  v
    +---------------------------+---------------------------+
    |                                                       |
    v internal application store                v persistent integration
@@ -601,12 +705,16 @@ rm "$LEXE_HOME/applications/lexe-handler.desktop" \
 Stated plainly, because an architecture document that hides its gaps is worse
 than useless.
 
-* **Portable code / host-ISA compilation (§5 of the design reference).** The
-  manifest still accepts only `applicationType: "native"`. The
-  `ADMIN COMPILE APPROVAL` flow, the isolated unprivileged build environment and
-  the verified host-ISA result are **not implemented**. The execution policy and
-  resolver are shaped to accommodate it, but no portable package can be built or
-  run today.
+* **Portable code has not been exercised on a second ISA.** The path itself is
+  implemented and tested (§5A below), but every build so far has happened on
+  x86_64. "The same `.lexe` compiles on ARM64 too" is the architecture's claim
+  and it remains unproven on hardware, exactly like the cross-ISA claims below.
+* **Only `make`, `cmake` and an explicit `command` are understood** as build
+  systems. Anything else must be expressed as a `command`.
+* **A portable package is compiled at install and never again** unless it is
+  repaired or reinstalled. A host whose toolchain or libraries move underneath
+  it keeps running the binary that was built at install time; the runtime
+  notices a *changed* entrypoint, not a stale one.
 * **Foreign-OS payloads.** The resolver knows the Wine/Proton chain shapes and
   will select and prefix them, but no package can currently *declare* a
   foreign-OS payload, so those chains are unreachable in practice on a 0.1

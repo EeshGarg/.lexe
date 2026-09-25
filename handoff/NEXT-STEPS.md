@@ -6,9 +6,31 @@ this file adds the "how to start" half.
 
 ---
 
-## 1. Portable code and host-ISA compilation — §5 and §7
+> **Item 1 is DONE** (2026-09-25). It is kept below, struck through at the top,
+> because the entry points it names are still the right map of where the
+> feature lives. What remains of it is item 1b.
 
-**The largest remaining gap.** `applicationType` still accepts only `"native"`.
+## 1b. Portable code on a second ISA
+
+The portable path is implemented, tested and documented — see
+`docs/DEFINITIVE-ARCHITECTURE.md` §5A, `src/core/hostbuild.{hpp,cpp}`,
+`tests/test_hostbuild.cpp` and `tests/acceptance/05_portable_compile.sh`.
+
+What is left is the part no amount of code closes: **every build so far has
+happened on x86_64.** "The same `.lexe` compiles on ARM64 too" is the whole
+promise of the type and it is unproven on hardware. This is the same class of
+gap as item 3 below, and it wants the same thing: an ARM64 machine.
+
+Cheaper than hardware, and worth doing first: a portable package built under
+`qemu-user` + an aarch64 sysroot would at least exercise the
+"output targets a machine that is not the builder's" refusal path, which is
+currently only covered by unit tests with synthesized ELFs.
+
+---
+
+## ~~1. Portable code and host-ISA compilation — §5 and §7~~ (DONE)
+
+**~~The largest remaining gap.~~** ~~`applicationType` still accepts only `"native"`.~~
 
 The architecture's promise is that one `.lexe` becomes native to the machine it
 lands on, instead of being three architecture-specific packages bundled
@@ -52,9 +74,25 @@ will reject it. Decide deliberately whether the compiled result is hashed into
 the per-version meta store (probably yes — it makes repair and tamper detection
 work identically for both package types).
 
+> **How it was resolved:** the compiled entrypoint is hashed into
+> `meta/<version>/build.json`, keyed exactly like `hashes.json`. The launcher
+> consults that record and FAILS CLOSED when a portable application has no
+> recorded product hash — the alternative was leaving the binaries the runtime
+> compiled itself as the only ones it never noticed being replaced. Repair
+> counts the products in its expected set and rebuilds them, because they
+> cannot be copied back out of a package that never contained them.
+
 ---
 
 ## 2. Foreign-OS payloads — §8
+
+**Now the largest remaining gap**, and the natural next piece: the portable
+work above laid down the pattern it needs. `applicationType` is no longer a
+single-value field — `ApplicationType` is an enum, `parse_build()` shows how a
+type-conditional manifest block is validated and refused for the wrong type,
+and `resolve_chain`'s `linux_native` check is now an explicit enumeration of
+the types that are Linux-native, precisely so adding a foreign-OS type is a
+compile error at that line rather than a silent default.
 
 The resolver knows the Wine/Proton chain shapes, probes for the providers, and
 will select and argv-prefix them. But **no package can currently declare a
@@ -102,13 +140,25 @@ availability flags the frontends already render.
 ## 6. Smaller, worth doing
 
 * **Run the manual reboot checklist** (`tests/acceptance/REBOOT.md`) and record
-  the result. This is the one acceptance criterion an agent cannot close.
+  the result. This is the one acceptance criterion an agent cannot close — and
+  on the current machine (see [MACHINE.md](MACHINE.md)) it needs a real Linux
+  desktop, which WSL does not provide.
 * **Click through `lexe-ui`** once — Compatibility→Apply, the three Uninstall
   modes, the Error History buttons. Their wiring was reviewed and their view
   models are tested, but no human has pressed them.
-* **Install the missing dev tooling** when a password is available:
-  `sudo dnf install libasan libubsan valgrind ccache strace xorg-x11-server-Xvfb`.
-  Xvfb in particular unblocks `scripts/gui-smoke.sh` locally (CI already has it).
+* **Surface the compile approval in the GUIs.** `lexe-ui` and `lexe-builder`
+  have no equivalent of `--approve-compile`: installing a portable package
+  through them will be refused with the CLI's message and no way to say yes.
+  The frontends already render permission consent; this is the same shape.
+  `InstallOptions::approve_compile` is the seam, `probe_toolchain()` gives the
+  dialog its "what this machine will run" line, and the refusal text in
+  `hostbuild.cpp` is the wording to reuse rather than reinvent.
+* **`lexe-builder` cannot build a portable project.** It writes
+  `applicationType: "native"` unconditionally (`src/gui/builder.cpp`) and has no
+  UI for the `build` block.
+* ~~**Install the missing dev tooling**~~ — done, see [MACHINE.md](MACHINE.md).
+  bubblewrap, GTK 3, valgrind, strace, xvfb, ccache and unzip are all present
+  in WSL now, so nothing is skipped for want of a tool.
 * **Push the commits** — see the constraints section of `HANDOFF-PROMPT.txt`.
 * **`lexe-ui` Settings → theme** is persisted but not applied to the running UI.
 * **Update `docs/ALPHA.md`** — the alpha support contract predates all of this.
@@ -125,6 +175,13 @@ availability flags the frontends already render.
 * **The headless test rule.** No automated test may put a window on the user's
   screen. See `tests/acceptance/lib.sh`.
 * **One implementation of desktop registration.** `packaging/install.sh` calls
-  `lexe integrate`; it must never hand-roll MIME XML again.
+  `lexe integrate`; it must never hand-roll MIME XML again. `core/desktop` is
+  content generation only — the second copy that used to live there is gone,
+  and `tests/test_desktop.cpp` pins that it stays gone.
 * **Fail-closed isolation.** A backend that should work but does not never
-  degrades to an unconfined launch.
+  degrades to an unconfined launch — and, since the portable work, never
+  degrades to an unconfined *build* either.
+* **Approval is not consent to everything.** `--approve-compile` is separate
+  from `--yes`, from `--accept-permissions` and from `--trust` for the same
+  reason those three are separate from each other: each authorizes one specific
+  thing. Do not collapse them into a single "yes".

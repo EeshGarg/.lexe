@@ -1,4 +1,10 @@
-# Session log — Definitive Architecture convergence
+# Session log
+
+Newest session at the bottom.
+
+---
+
+# Session 1 — Definitive Architecture convergence
 
 **Date:** 2026-09-24 · **Host:** Fedora 44, KDE Plasma (Wayland), x86_64
 **Base:** `badf9f5` · **Head:** 11 commits later · **Tree:** clean
@@ -177,3 +183,129 @@ limit; 2 ran concurrently at peak):
 * No compatibility cruft. Superseded alpha artifacts (`lexe-installer`,
   `application-x-lexe.xml`) are removed on install rather than carried forever;
   the legacy MIME type survives only as a proper `<alias>`.
+
+---
+
+# Session 2 — 2026-09-25 — portable code, and one less engine
+
+First session on the **new machine** (Windows 11 + WSL2 Ubuntu 24.04; see
+[MACHINE.md](MACHINE.md)). Four commits.
+
+## Before any feature work: a green baseline
+
+The merge that moved the repository to this machine left the suite red: one
+`desktop` test looked for `packaging/application-x-lexe.xml`, a file an earlier
+commit had deliberately deleted when `packaging/install.sh` stopped hand-rolling
+registration.
+
+Chasing that one assertion found the real problem. `core/desktop.cpp` still
+contained the **alpha's entire desktop-registration implementation** — it
+planned files, wrote them, copied icons into the hicolor theme, refreshed the
+freedesktop databases, and registered the runtime handler under
+`application/x-lexe` with an `Exec=lexe-installer %f` line naming a binary the
+packaging scripts now delete. Nothing in `src/` called any of it. Only its tests
+did, which is exactly how a duplicated engine stays green while diverging from
+the one that ships.
+
+**`6748e44` — desktop: one implementation of registration, not two.** The
+writing half is gone; what remains is the part `integration.cpp` actually calls
+(`desktop_entry_text`, `mime_xml_text` — pure manifest→document functions). The
+obsolete tests were replaced rather than deleted: the suite now pins that this
+module writes nothing, that `packaging/` delegates to the runtime instead of
+hand-rolling registration in shell, that `application/x-lexe` survives only as
+an alias, and that registration under `LEXE_HOME` still writes nothing outside
+it.
+
+The excision also exposed a real regression from the convergence: the durable
+engine refreshed the freedesktop caches even for a confined layout, building a
+cache nobody reads and printing `update-mime-database`'s "not in the search
+path" advice over `lexe integrate`'s own output — and over every test that
+registered anything. The old module had skipped it deliberately; the new one
+does too now.
+
+## The gap itself: portable code and host-ISA compilation
+
+Split into three commits so each one is a coherent, tested piece.
+
+**`4c9c925` — the declarative half.** `applicationType: "portable"` and the
+`build` block (FORMAT-0.1 §5.8), plus the `payload-role` stage for it. The
+interesting decision here is what the stage demands: source under
+`build.sourceDir`, and the declared entrypoint **absent**. A portable package
+shipping a prebuilt entrypoint is the alpha's source-packaged-as-native bug told
+backwards — the installed binary would be one this host never compiled — so
+neither type can smuggle the other's payload past verification now.
+
+Two smaller decisions worth knowing:
+
+* `build.command` is an **argv**, never a shell string. A shell string is a
+  second language between the manifest and `exec`, with its own quoting bugs.
+* `build.toolchain` is **required and non-empty**. It is what lets the host be
+  checked before an approval is sought, so a machine that cannot build the
+  package names the missing tool instead of failing part-way through a compile.
+
+**`d360bbb` — the engine.** `core/hostbuild.{hpp,cpp}` holds all four of the
+architecture's properties in one place, because implementing three of them is
+remote code execution with extra steps. The one that took the most thought was
+the fourth-order consequence of the third: the compiled entrypoint is **not**
+covered by the package's signed `hashes.json`, because it did not exist when the
+package was signed. `NEXT-STEPS.md` had flagged this. The resolution:
+`meta/<version>/build.json` records the product hashes, keyed exactly like
+`hashes.json`, and the launcher **fails closed** when a portable application has
+no recorded hash for its entrypoint. Skipping the check instead would have left
+the binaries the runtime compiled itself as the only ones it never noticed being
+replaced.
+
+That record also forced an honest answer on repair: a portable entrypoint cannot
+be copied back out of a package that never contained it, so repairing one
+compiles again — behind the same explicit approval, because a repair command
+must not silently build code.
+
+Three decisions the design reference did not make, taken as small as possible
+and documented:
+
+* **"ADMIN COMPILE APPROVAL" with no administrator.** A per-user installation
+  has no privileged authority to appeal to. Rather than invent one, the record
+  says what the approval actually was: `authority: "user"`, meaning the owner of
+  this installation authorized it. A system-scope install would need something
+  else, and system scope is not supported in 0.1.
+* **Mission-critical accepts portable.** Compiled here, for this ISA, verified
+  before promotion is Linux-native + host-ISA-native + verified. The
+  `linux_native` check became an explicit enumeration rather than a
+  "not foreign" test, so adding a foreign-OS type is a compile error at that
+  line instead of a silent default.
+* **The build gets no network, ever.** A `network` permission describes the
+  application, not its build. A build that downloads is fetching unsigned code
+  at install time behind a signature that says nothing about it.
+
+**`ec87e52` — the evidence.** `examples/portable-hello/` (ships `src/`, no
+binary; the program reports `__DATE__`/`__TIME__` and its ISA from the
+compiler's own macros, so the proof that it was compiled here does not come from
+the runtime's bookkeeping) and `tests/acceptance/05_portable_compile.sh`, 47
+checks including third-party witnesses (`unzip`, `file`, `sha256sum`) and the
+fail-closed paths: no approval, no sandbox, tampered binary, missing build
+record.
+
+## What went wrong along the way
+
+* The first `git` state on this machine was a **merge commit** whose two sides
+  had diverged on desktop registration. Reading the failing test as "fix the
+  assertion" would have preserved the duplicated engine. It was worth the hour.
+* `compile_for_host` was first written to **throw** for every failure. That made
+  it impossible for the caller to put the build's own output into the error
+  record — which is the only thing that makes a failed compile diagnosable. It
+  now returns a `CompileOutcome`, and the installer maps outcome → exception
+  type, so "you did not approve this" (exit 5) and "this host cannot build it"
+  (exit 3) stay distinct.
+* The launcher's tamper message was reworded, which broke an acceptance
+  assertion pinning the old phrase. The old phrase was better; it was restored.
+  The harness did its job.
+
+## Things deliberately NOT done, again
+
+* **No GUI wiring for the compile approval.** `lexe-ui` and `lexe-builder` have
+  no `--approve-compile` equivalent, so installing a portable package through
+  them is refused with no way to say yes. That is listed in `NEXT-STEPS.md`
+  rather than half-built: a consent dialog that does not exist is better than
+  one that exists and is wrong.
+* **No second ISA claimed.** Everything was built on x86_64. §15 of the
+  architecture doc now says so, in the same breath as the FEX/Box64 gap.

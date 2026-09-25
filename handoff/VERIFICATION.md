@@ -1,7 +1,11 @@
 # Verification — what was actually tested, and how to redo it
 
-Every claim below was produced on this machine (Fedora 44, KDE Plasma Wayland,
-x86_64, 24 cores). Commands are copy-pasteable. Nothing here needs root.
+> **Read [MACHINE.md](MACHINE.md) first.** Sections 1–8 below were produced on
+> **Fedora 44 / KDE Plasma Wayland**, which is no longer the development
+> machine. Sections 1 and 2 reproduce on the current machine (with the build
+> commands from MACHINE.md, and with the counts updated in §9). Sections 3–8
+> involved a real desktop session and **cannot** be reproduced under WSL.
+> Section 9 is what was verified on the current machine.
 
 ---
 
@@ -43,6 +47,7 @@ bash tests/acceptance/run_all.sh
 | `02_persistence` | delete the handler / association / launch reference, assert `doctor` NAMES each, repair, assert restored and still launching |
 | `03_failure_diagnostics` | forced failure produces a structured record with the expected JSON fields; a tampered entrypoint is refused |
 | `04_native_steady_state` | the real process tree has no compatibility process |
+| `05_portable_compile` | *(added later — see §9)* a source-only package: refused without approval, compiled under the sandbox with approval, recorded, run, tampered with, refused, rebuilt |
 
 Everything runs against a throwaway `LEXE_HOME` under `mktemp -d`; the real
 `~/.local/share/lexe` is never touched.
@@ -170,6 +175,62 @@ lexe run <id>          # works again
 summary, detail, host OS (`Fedora Linux 44 (KDE Plasma Desktop Edition)`), host
 ISA, runtime version, timestamp and its own path.
 
+---
+
+## 9. Portable code and host-ISA compilation (2026-09-25, WSL2 Ubuntu 24.04)
+
+Build and test commands are in [MACHINE.md](MACHINE.md).
+
+**Result:** `592 test cases, 592 passed, 0 failed` · `7551 assertions, 0 failed`.
+Zero compiler warnings under `-Wall -Wextra`. All **5** acceptance suites pass,
+including the new `05_portable_compile` (47 checks, 0 skipped).
+
+Suites worth running individually:
+
+```sh
+./lexe_tests -ts=hostbuild        # the four properties of host-ISA compilation
+./lexe_tests -ts=payload_role     # native AND portable, both directions
+./lexe_tests -ts=desktop          # one implementation of registration
+```
+
+Unlike the Fedora box, this machine has a working unprivileged `bubblewrap`, so
+nothing in the isolation or portable suites is skipped for want of a sandbox.
+
+### What was proved by hand, end to end
+
+Against a scratch `LEXE_HOME`, with the display severed
+(`env -u WAYLAND_DISPLAY -u DISPLAY`):
+
+| Step | Result |
+|---|---|
+| `lexe pack` a source-only project | 1.6 KB package, no entrypoint binary in it |
+| `lexe verify` | `payload-role` reports *"the package carries source under `src` and no prebuilt entrypoint"* |
+| `lexe info` | `Type: Portable source, compiled on this machine — x86_64` |
+| `lexe install` (no approval) | refused, **exit 5**, with a §9 record at stage `compile`; nothing installed |
+| `lexe install --approve-compile` with `LEXE_BWRAP` pointed at nothing | refused: *"refusing to build unconfined"*; nothing installed |
+| `lexe install --approve-compile` | announced the compile, built under `bwrap`, installed |
+| `meta/1.0.0/build.json` | schema, build system, host ISA, the approval (granted / authority `user` / who / when), the toolchain paths actually used, and the product SHA-256 — which matches `sha256sum` of the installed entrypoint |
+| `lexe run` | ran natively, args forwarded, `installation.json` records `lastExecution.chain = native` |
+| flip one byte of the COMPILED entrypoint, `lexe run` | refused: integrity check failed, pointing at `lexe repair --approve-compile` |
+| `lexe repair` (no approval) | refused, **exit 5**: *"repairing … means compiling its source again"* |
+| `lexe repair --approve-compile` | rebuilt `payload/bin/app`; the application runs again |
+| move `build.json` away, `lexe run` | refused — fails closed rather than treating an unverifiable compiled binary as unchecked |
+
+`unzip` independently confirms the archive carries `payload/src/main.c` and does
+**not** carry `payload/bin/portable-hello`; `file(1)` independently confirms the
+installed entrypoint is an ELF executable; and the example program reports the
+ISA from its own compiler's predefined macros, so the evidence that the compile
+happened here does not come from the runtime's own bookkeeping.
+
+### What could NOT be verified here
+
+Everything in the list at the end of this file still stands, plus:
+
+* **A second ISA.** Every build was x86_64. The portable type's central claim —
+  the same `.lexe` compiles on ARM64 — remains designed-but-unproven, exactly
+  like the FEX/Box64 chain selection in §"What could NOT be verified".
+* **The real desktop integration checks of §3.** `xdg-mime` and
+  `desktop-file-validate` have nothing to talk to under WSL.
 ---
 
 ## What could NOT be verified here
