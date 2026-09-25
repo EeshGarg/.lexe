@@ -341,6 +341,34 @@ The suite is now clean under ASan+UBSan: exit 0, zero leaks, zero first-party
 undefined behaviour, 636/636. The only UBSan reports left are signed
 left-shifts in the vendored ed25519, which is pinned and never modified.
 
+## Two things tried afterwards, one of which could not be finished
+
+**`scripts/gui-smoke.sh` could never run.** `[ -x "$INSTALLER" ]` on line 52,
+with `$INSTALLER` never assigned and `set -u` in force — a fatal unbound
+variable before the script reached anything it tested. A leftover from before
+`lexe-ui` superseded `lexe-installer`. It went unnoticed because no machine
+this was developed on had `xvfb` installed, so "Xvfb unblocks gui-smoke.sh
+locally" stayed a to-do rather than something anyone tried. Fixed; it passes —
+both GTK frontends map a real window on a virtual display and render
+warning-clean.
+
+**A graphical Windows application under Wine could not be proven here**, and
+the reason is the machine, not the runtime. WSLg mounts `/tmp/.X11-unix` as a
+READ-ONLY tmpfs containing only its own `X0`, so `Xvfb` on `:99` cannot create
+a filesystem socket there; it falls back to an abstract socket, which a
+sandboxed process cannot reach because the sandbox unshares the network
+namespace. Binding `X0` instead would have put a window on the user's real
+desktop — forbidden outright. The Win32 payload and the harness exist (see the
+session's scratch work) and should work on a host with a normal X11 setup.
+
+The attempt paid for itself anyway: it found that `render_bwrap_argv` honoured
+`BindMount::optional` **only for read-only binds**, so a writable optional bind
+— which is exactly what the display socket is — rendered as a mandatory
+`--bind`. A GUI launch on a host without that socket died with a bwrap error
+instead of starting with no display granted and reporting `display-isolated`
+truthfully. Fixed, with a test that pins every bind in a plan to its correct
+`-try`/non-`-try` form.
+
 ## What went wrong, again
 
 * `compile_for_host` was first written to throw for every failure, which made

@@ -73,3 +73,26 @@ So this machine can do things the Fedora box could not:
   `LEXE_HOME`, which is exactly what they were built to do — but the evidence in
   `VERIFICATION.md` §3 came from a real Fedora desktop and cannot be reproduced
   on this machine.
+
+* **Run a SANDBOXED graphical application against a virtual X server.** This
+  one is worth knowing before you try it, because it looks like it should work:
+
+  ```
+  $ mount | grep x11
+  none on /tmp/.X11-unix type tmpfs (ro,relatime)
+  $ ls /tmp/.X11-unix/
+  X0            <- WSLg's own display, and nothing else
+  ```
+
+  WSLg mounts `/tmp/.X11-unix` **read-only** and puts its own `X0` there, so
+  `Xvfb` on `:99` cannot create `/tmp/.X11-unix/X99`. It falls back to an
+  abstract socket, which a sandboxed process cannot reach because the sandbox
+  unshares the network namespace — abstract sockets do not cross it. So the
+  launcher has no display socket to bind for a GUI launch.
+
+  `X0` **is** the user's real desktop. Binding it would put the window on their
+  screen, which the headless rule forbids outright. Do not be tempted.
+
+  `scripts/gui-smoke.sh` is unaffected and passes: it runs the GTK frontends
+  directly under `xvfb-run`, not inside the sandbox, so it never needs a bound
+  socket.

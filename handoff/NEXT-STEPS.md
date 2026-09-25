@@ -98,8 +98,18 @@ work identically for both package types).
   currently only a unit test.
 * **A GUI Windows application.** The proof is a console program. A graphical
   one needs the display socket to reach Wine's graphics driver — the same §5
-  display grant, untested through a compatibility layer. Note the headless
-  rule: any test of this brings its own synthetic display.
+  display grant, untested through a compatibility layer.
+
+  This was attempted and **cannot be done on the current machine**: WSLg mounts
+  `/tmp/.X11-unix` read-only with only its own `X0`, so Xvfb cannot create a
+  socket there for the sandbox to bind, and `X0` is the user's real desktop.
+  See [MACHINE.md](MACHINE.md). It needs a host with a normal X11 setup — where
+  it should be straightforward, since the Win32 payload and the harness were
+  both written and are in the session log.
+
+  The attempt was not wasted: it found a real bug (a writable *optional* bind
+  rendered as a mandatory `--bind`, so a missing display socket killed the
+  launch instead of degrading to "no display granted"). Fixed.
 * **32-bit payloads cannot be declared at all**, because FORMAT-0.1 §5
   recognises only `x86_64` and `aarch64`. A 32-bit Windows program — still
   common — is refused by name. Adding an `i386` architecture id is a format

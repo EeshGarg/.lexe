@@ -363,10 +363,30 @@ The only UBSan reports remaining are signed left-shifts inside
 `third_party/ed25519`, which is pinned, vendored and never modified — a known
 property of that reference implementation, not a defect in this runtime.
 
+### The GTK frontends render, headlessly
+
+```sh
+unset WAYLAND_DISPLAY DISPLAY
+sh scripts/gui-smoke.sh ~/lexe-build/cm
+```
+
+**Result:** both `lexe-ui` (opening a package whose name and publisher are full
+of Pango-markup metacharacters) and `lexe-builder` map a real toplevel window
+on a virtual X server and render warning-clean.
+
+This had never been run anywhere: the script died on line 52 with an unbound
+`$INSTALLER` under `set -u`, and no earlier machine had `xvfb` to notice. Fixed.
+
 ### What could NOT be verified here
 
 * **A systemd user unit.** WSL has no systemd user session, so the durable form
   of `service` cannot be built or tested on this machine at all.
+* **A SANDBOXED graphical application on a virtual display** — including the
+  GUI Windows application §10 leaves unproven. WSLg mounts `/tmp/.X11-unix`
+  read-only with only its own `X0`, so Xvfb cannot create a socket there for
+  the sandbox to bind, and `X0` is the user's real desktop. See
+  [MACHINE.md](MACHINE.md). (`gui-smoke.sh` is unaffected: it runs the
+  frontends under `xvfb-run` directly, not inside the sandbox.)
 * **The GUI compile-approval control being clicked.** Its view model is tested
   headlessly (`-ts=gui`); the tick box itself needs the manual pass, because
   the headless rule forbids test windows.
