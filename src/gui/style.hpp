@@ -8,25 +8,47 @@
 // — expressed the way it is expressed now, with a soft shadow rather than a
 // bevel and a sheen.
 //
+// The second attempt then overcorrected the other way. Flat and modern is also
+// what Adwaita is: 16px cards floating on soft shadows, pill buttons, a 26px
+// title and generous padding read as a GTK sample, not as something installing
+// software. What this aims at now is the anatomy of a SETUP DIALOG — header,
+// content, command bar — in the visual language Windows uses for one, which is
+// mostly a matter of restraint.
+//
 // What the look is built from:
-//   * FLAT surfaces. One canvas tone, one card tone, no gradient anywhere. Depth
-//     comes from a two-layer shadow (a tight contact shadow plus a wider ambient
-//     one), which is what reads as "raised" today.
-//   * SPACE. Cards are padded 18/20 and separated by 12; the page is inset 22.
-//     The old layout was tight enough that everything read as one block, and no
-//     amount of colour fixes that.
-//   * A real TYPE SCALE with a neutral slate palette: 26px/700 title, 13px
-//     muted subtitle, 12px/600 muted section labels, 14px body. GTK's default
-//     11px everywhere is itself a period detail.
-//   * ONE solid accent. No gradient, no border, no bevel — a filled rounded
-//     rectangle, which is the single strongest signal that a UI is current.
-//   * Severity as an inset CALLOUT: flat tint plus a 4px bar down the leading
-//     edge, instead of a full-bleed gradient band.
+//   * HAIRLINES, not shadows. A 1px border and a 4px radius, on a card tone
+//     against a slightly darker canvas. Depth by border is what a system
+//     dialog does; a drop shadow under every panel is what a web page does.
+//   * DENSITY. Cards padded 12/14, the type scale 20px/600 title and 13px
+//     body. An oversized heading is itself a period detail, in both
+//     directions — GTK's default 11px everywhere was one, and 26px/700 was the
+//     next one.
+//   * A COMMAND BAR. The action row carries a hairline top border and sits on
+//     the canvas tone. That separator is the whole trick: it is what makes the
+//     buttons read as the window's commands rather than as more content.
+//   * RECTANGULAR buttons with a minimum width, and exactly ONE filled accent
+//     button per screen, in the Windows accent blue. Note the dark palette
+//     inverts it the way Windows does — a light blue fill with dark text, not
+//     a dark blue fill with white text.
+//   * Severity as an inset CALLOUT in the WinUI InfoBar palette: flat tint,
+//     matching text, and a 4px bar down the leading edge.
+//
+// A NAVIGATION PANE is part of this, not decoration: `lexe-ui`'s pages used
+// four stock buttons stacked in a column, which was the strongest "toolkit
+// demo" cue in the window and also read as four things to press rather than as
+// where you are.
 //
 // Constraints this file works under:
 //   * GTK 3.24 CSS only. No box-sizing, letter-spacing, text-transform or media
 //     queries — GTK warns on unknown properties, and the headless smoke test
 //     fails the build on GTK warnings.
+//   * NOTHING here can restyle what Pango markup has already decided. A
+//     `size=` or `foreground=` baked into a label WINS over this stylesheet,
+//     so a title sized in markup ignored `.lexe-title` entirely and severity
+//     colours baked in markup kept their light-theme values on a dark
+//     background. Size, weight and colour belong in a class; markup is for
+//     structure. `.lexe-success` exists because of this and was not the only
+//     case — see the comment on it.
 //   * Severity must survive the restyle. ok/caution/danger keep a distinct
 //     tint, edge-bar AND text colour, never hue alone, because the whole point
 //     of the banner is that a first-seen key is not styled like a verified one.
