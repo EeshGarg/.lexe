@@ -37,6 +37,7 @@
 #include "core/compat.hpp"
 #include "core/depengine.hpp"
 #include "core/elf.hpp"
+#include "core/manifest.hpp"
 #include "core/paths.hpp"
 #include "core/pe.hpp"
 #include "core/runtime_profile.hpp"
@@ -82,27 +83,43 @@ enum class PayloadKind {
     NotRunnable, // a script, source text, data — not a program at all
 };
 
-/// Why this entrypoint cannot go into a native package, and what to do
+/// Why this entrypoint cannot go into a package of `type`, and what to do
 /// instead. Empty when it can.
-inline std::string entrypoint_refusal(PayloadKind kind) {
-    switch (kind) {
-    case PayloadKind::NativeElf:
+///
+/// The check is the wizard's half of the `payload-role` verification stage:
+/// refusing here means a developer learns what is wrong while they can still
+/// fix it, rather than from an install that refuses a package they have
+/// already signed and shipped.
+inline std::string entrypoint_refusal(PayloadKind kind, ApplicationType type) {
+    if (type == ApplicationType::Portable) {
+        // Nothing to judge: a portable package's entrypoint is what the BUILD
+        // produces, and §6.7 requires it to be absent from the archive.
         return {};
-    case PayloadKind::WindowsPe:
-        return "That entrypoint is a WINDOWS executable, not a Linux one. It "
-               "belongs in a package declaring applicationType \"windows\", "
-               "which also has to permit a Wine or Proton execution chain. "
-               "This wizard builds native Linux packages; write the manifest "
-               "by hand and use `lexe build` for a Windows payload.";
-    case PayloadKind::NotRunnable:
-        break;
+    }
+    const bool want_windows = type == ApplicationType::Windows;
+    if (kind == PayloadKind::WindowsPe) {
+        if (want_windows) return {};
+        return "That entrypoint is a WINDOWS executable, not a Linux one. "
+               "Set the application type to \"Windows\" — it also has to "
+               "permit a Wine or Proton execution chain, which that setting "
+               "offers.";
+    }
+    if (kind == PayloadKind::NativeElf) {
+        if (!want_windows) return {};
+        return "That entrypoint is a LINUX executable, not a Windows one. A "
+               "package declaring applicationType \"windows\" must carry a "
+               "Windows .exe; set the application type back to \"Native\".";
+    }
+    if (want_windows) {
+        return "That entrypoint is not a Windows program — a \"windows\" "
+               "package's entrypoint must be a runnable .exe (not a DLL), and "
+               "verification refuses anything else before it installs.";
     }
     return "That entrypoint is not a compiled program — a native package's "
            "entrypoint must be a runnable ELF executable, and verification "
            "refuses anything else before it installs. Compile it first, or, "
-           "if you mean to ship SOURCE and have each machine compile it, "
-           "declare applicationType \"portable\" with a `build` block and use "
-           "`lexe build`.";
+           "if you mean to ship SOURCE and have each machine compile it, set "
+           "the application type to \"Portable\".";
 }
 
 /// Every field the builder form collects, as plain values. `available_entrypoints`
@@ -126,6 +143,24 @@ struct BuilderForm {
     RuntimeProfile profile = RuntimeProfile::CorePortable; // target profile
     std::uint64_t payload_size_bytes = 0;    // for install.estimatedSize
     bool bundle_icons = false;               // an icons/ folder is present to ship
+
+    // --- what KIND of package this is (FORMAT-0.1 §5.3) ------------------
+    ApplicationType application_type = ApplicationType::Native;
+
+    // `portable` only. The wizard offers the two build systems the RUNTIME
+    // drives itself (`make`, `cmake`) and deliberately not `command`: an argv
+    // typed into a text box has to be split again, and splitting a command
+    // line is the quoting bug this format avoided by making `build.command` an
+    // argv in the first place. A recipe that needs one is written by hand.
+    BuildSystem build_system = BuildSystem::Make;
+    std::string build_source_dir;            // relative dir inside the payload
+    /// Bare executable names, as typed — comma- or space-separated.
+    std::string build_toolchain;
+
+    // `windows` only: the foreign-OS chains this package permits. At least one
+    // is required, because nothing runs a Windows payload natively.
+    bool chain_wine = true;
+    bool chain_proton = true;
     /// What the chosen entrypoint's bytes are, read from the file when it was
     /// chosen. Defaults to NativeElf so a caller that does not classify keeps
     /// the old behaviour rather than being refused for a fact nobody checked.
@@ -171,6 +206,39 @@ inline std::vector<std::string> selected_architectures(const BuilderForm& form) 
     return architectures;
 }
 
+/// The execution chains the form permits (FORMAT-0.1 §5.5), in preference
+/// order. A native or portable package runs natively; a Windows one cannot,
+/// and its chains are what the form selected.
+inline std::vector<std::string> selected_chains(const BuilderForm& form) {
+    if (form.application_type != ApplicationType::Windows) return {"native"};
+    std::vector<std::string> chains;
+    if (form.chain_wine) chains.push_back("wine");
+    if (form.chain_proton) chains.push_back("proton");
+    return chains;
+}
+
+/// `build.toolchain` from the typed list: split on commas and whitespace,
+/// blanks dropped, order and duplicates preserved as typed.
+inline std::vector<std::string> selected_toolchain(const BuilderForm& form) {
+    std::vector<std::string> tools;
+    std::string current;
+    const auto flush = [&] {
+        if (!current.empty()) {
+            tools.push_back(current);
+            current.clear();
+        }
+    };
+    for (const char c : form.build_toolchain) {
+        if (c == ',' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            flush();
+        } else {
+            current.push_back(c);
+        }
+    }
+    flush();
+    return tools;
+}
+
 /// The permissions the form selected (FORMAT-0.1 §5, informational in 0.1).
 inline std::vector<std::string> selected_permissions(const BuilderForm& form) {
     std::vector<std::string> permissions;
@@ -209,26 +277,80 @@ inline ValidationResult validate_form(const BuilderForm& form) {
         result.error = "Publisher name is required.";
         return result;
     }
+    const bool portable = form.application_type == ApplicationType::Portable;
     if (form.entrypoint.empty()) {
         result.error =
-            "Choose an entrypoint — the file inside the folder that starts the "
-            "application.";
+            portable
+                ? "Name the entrypoint — the file the BUILD will produce, "
+                  "relative to the payload (for example \"bin/app\")."
+                : "Choose an entrypoint — the file inside the folder that "
+                  "starts the application.";
         return result;
     }
-    if (std::find(form.available_entrypoints.begin(),
-                  form.available_entrypoints.end(),
-                  form.entrypoint) == form.available_entrypoints.end()) {
+    // A portable package's entrypoint does not exist yet — the build produces
+    // it, and §6.7 requires the archive NOT to contain it — so it is the one
+    // case where the chosen name must not be an existing file.
+    if (!portable && std::find(form.available_entrypoints.begin(),
+                               form.available_entrypoints.end(),
+                               form.entrypoint) ==
+                         form.available_entrypoints.end()) {
         result.error = "The chosen entrypoint \"" + form.entrypoint +
                        "\" is not a file in the selected folder.";
         return result;
     }
-    if (const std::string refusal = entrypoint_refusal(form.entrypoint_kind);
+    if (portable && std::find(form.available_entrypoints.begin(),
+                              form.available_entrypoints.end(),
+                              form.entrypoint) !=
+                        form.available_entrypoints.end()) {
+        result.error =
+            "\"" + form.entrypoint +
+            "\" already exists in the payload. A portable package ships SOURCE "
+            "and the destination machine compiles it, so the entrypoint must "
+            "not be there — verification refuses a portable package that "
+            "carries a prebuilt one.";
+        return result;
+    }
+    if (const std::string refusal =
+            entrypoint_refusal(form.entrypoint_kind, form.application_type);
         !refusal.empty()) {
         // Refuse HERE, not after signing: a package whose entrypoint is not
         // what its manifest declares is rejected by `payload-role` on the way
         // in, and a developer who learns that from a failed install has been
         // told the wrong thing twice.
         result.error = refusal;
+        return result;
+    }
+    if (portable) {
+        if (form.build_source_dir.empty()) {
+            result.error = "Name the source directory the build compiles "
+                           "(for example \"src\").";
+            return result;
+        }
+        if (selected_toolchain(form).empty()) {
+            result.error =
+                "List the build tools this package needs (for example "
+                "\"make, cc\"). The destination machine is checked for them "
+                "before it is asked to approve the compile, so a package that "
+                "names none cannot say why it will not build there.";
+            return result;
+        }
+        for (const std::string& tool : selected_toolchain(form)) {
+            if (tool.find('/') != std::string::npos ||
+                tool.find('\\') != std::string::npos) {
+                result.error = "Build tool \"" + tool +
+                               "\" must be a bare executable name, not a path: "
+                               "it is resolved on the destination machine, "
+                               "which you have never seen.";
+                return result;
+            }
+        }
+    }
+    if (form.application_type == ApplicationType::Windows &&
+        selected_chains(form).empty()) {
+        result.error =
+            "A Windows package must permit Wine or Proton. Nothing runs a "
+            "Windows executable natively on Linux, so a package that permits "
+            "neither installs and can never start.";
         return result;
     }
     if (selected_architectures(form).empty()) {
@@ -258,7 +380,7 @@ inline std::string build_manifest_json(const BuilderForm& form,
     publisher["publicKey"] = public_key;
     doc["publisher"] = std::move(publisher);
 
-    doc["applicationType"] = "native";
+    doc["applicationType"] = to_string(form.application_type);
     doc["architectures"] = selected_architectures(form);
 
     nlohmann::ordered_json entrypoint;
@@ -273,6 +395,26 @@ inline std::string build_manifest_json(const BuilderForm& form,
         install["estimatedSize"] = form.payload_size_bytes;
     }
     doc["install"] = std::move(install);
+
+    // `build` is required for a portable package and forbidden for every other
+    // type (FORMAT-0.1 §5.8), so it is emitted for exactly one of them.
+    if (form.application_type == ApplicationType::Portable) {
+        nlohmann::ordered_json build;
+        build["system"] = to_string(form.build_system);
+        build["sourceDir"] = form.build_source_dir;
+        build["toolchain"] = selected_toolchain(form);
+        doc["build"] = std::move(build);
+    }
+
+    // A Windows payload cannot run natively, so its execution policy is not a
+    // default worth leaving implicit — the parser rejects one that permits no
+    // foreign-OS chain, including the default ["native"].
+    if (form.application_type == ApplicationType::Windows) {
+        nlohmann::ordered_json execution;
+        execution["missionCritical"] = false;
+        execution["allowedChains"] = selected_chains(form);
+        doc["execution"] = std::move(execution);
+    }
 
     const std::vector<std::string> permissions = selected_permissions(form);
     if (!permissions.empty()) {
@@ -948,9 +1090,21 @@ struct BuilderState {
     GtkWidget* source_summary = nullptr;
     // Step 2 — Dependencies.
     GtkWidget* deps_box = nullptr;
-    // Step 3 — Architecture.
+    // Step 3 — Architecture, and what kind of package this is.
     GtkWidget* arch_x86_check = nullptr;
     GtkWidget* arch_arm_check = nullptr;
+    /// FORMAT-0.1 §5.3. The combo's rows are Native / Portable / Windows in
+    /// that order; the fields below apply to exactly one of them each, and
+    /// `refresh_type_fields` shows only the ones that apply.
+    GtkWidget* type_combo = nullptr;
+    GtkWidget* type_note = nullptr;
+    GtkWidget* portable_box = nullptr;
+    GtkWidget* build_system_combo = nullptr;
+    GtkWidget* build_source_entry = nullptr;
+    GtkWidget* build_toolchain_entry = nullptr;
+    GtkWidget* windows_box = nullptr;
+    GtkWidget* chain_wine_check = nullptr;
+    GtkWidget* chain_proton_check = nullptr;
     // Step 4 — Installer metadata.
     GtkWidget* id_entry = nullptr;
     GtkWidget* name_entry = nullptr;
@@ -1304,6 +1458,65 @@ void on_profile_changed(GtkComboBox*, gpointer user_data) {
     }
 }
 
+lexe::ApplicationType selected_type(BuilderState* st) {
+    if (st->type_combo == nullptr) return lexe::ApplicationType::Native;
+    switch (gtk_combo_box_get_active(GTK_COMBO_BOX(st->type_combo))) {
+    case 1: return lexe::ApplicationType::Portable;
+    case 2: return lexe::ApplicationType::Windows;
+    default: return lexe::ApplicationType::Native;
+    }
+}
+
+lexe::BuildSystem selected_build_system(BuilderState* st) {
+    if (st->build_system_combo == nullptr) return lexe::BuildSystem::Make;
+    return gtk_combo_box_get_active(GTK_COMBO_BOX(st->build_system_combo)) == 1
+               ? lexe::BuildSystem::CMake
+               : lexe::BuildSystem::Make;
+}
+
+/// Show only the fields the chosen type actually uses, and explain the choice.
+/// A form that offers a build recipe for a native package invites a manifest
+/// the parser will reject (§5.8 forbids `build` there).
+void refresh_type_fields(BuilderState* st) {
+    const lexe::ApplicationType type = selected_type(st);
+    // show_all on the BOX, not set_visible: these boxes carry no_show_all, so
+    // the window's own show_all never descended into them and their children
+    // were never realised. Showing the box alone would reveal an empty box.
+    const auto reveal = [](GtkWidget* box, bool on) {
+        if (box == nullptr) return;
+        if (on) {
+            gtk_widget_show_all(box);
+        } else {
+            gtk_widget_hide(box);
+        }
+    };
+    reveal(st->portable_box, type == lexe::ApplicationType::Portable);
+    reveal(st->windows_box, type == lexe::ApplicationType::Windows);
+    if (st->type_note != nullptr) {
+        const char* note = "";
+        switch (type) {
+        case lexe::ApplicationType::Native:
+            note = "The payload is the program. Its entrypoint must be a "
+                   "compiled ELF executable for an architecture above.";
+            break;
+        case lexe::ApplicationType::Portable:
+            note = "The payload is SOURCE. The machine that installs it "
+                   "compiles it — with the user's explicit approval, "
+                   "unprivileged, with the network denied.";
+            break;
+        case lexe::ApplicationType::Windows:
+            note = "The payload is a Windows .exe. It cannot run natively on "
+                   "Linux, so the package must permit Wine or Proton.";
+            break;
+        }
+        gtk_label_set_text(GTK_LABEL(st->type_note), note);
+    }
+}
+
+void on_type_changed(GtkComboBox*, gpointer user_data) {
+    refresh_type_fields(static_cast<BuilderState*>(user_data));
+}
+
 std::vector<std::string> split_commas(const std::string& text) {
     std::vector<std::string> out;
     std::size_t start = 0;
@@ -1350,10 +1563,23 @@ lexe::gui::BuilderForm gather_form(BuilderState* st) {
     form.perm_user_files_selected =
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->perm_userfiles_check));
     form.available_entrypoints = st->detection.entrypoints;
+    form.application_type = selected_type(st);
+    form.build_system = selected_build_system(st);
+    form.build_source_dir = entry_text(st->build_source_entry);
+    form.build_toolchain = entry_text(st->build_toolchain_entry);
+    form.chain_wine =
+        st->chain_wine_check != nullptr &&
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->chain_wine_check));
+    form.chain_proton =
+        st->chain_proton_check != nullptr &&
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->chain_proton_check));
     // Read the chosen file's bytes, so the wizard refuses a payload the
-    // `payload-role` stage would refuse anyway — before it is signed.
+    // `payload-role` stage would refuse anyway — before it is signed. A
+    // portable entrypoint is not on disk yet by design, so there is nothing
+    // to classify and nothing to refuse.
     form.entrypoint_kind =
-        form.entrypoint.empty()
+        (form.entrypoint.empty() ||
+         form.application_type == lexe::ApplicationType::Portable)
             ? lexe::gui::PayloadKind::NativeElf
             : lexe::gui::classify_payload_file(fs::path(st->folder) /
                                                fs::path(form.entrypoint));
@@ -2113,6 +2339,80 @@ GtkWidget* build_arch_page(BuilderState* st) {
                        body_label("RISC-V and other architectures are planned; "
                                   "see docs/RUNTIME_PROFILES.md."),
                        FALSE, FALSE, 0);
+
+    // --- What kind of payload this package carries (FORMAT-0.1 §5.3) -------
+    gtk_box_pack_start(GTK_BOX(box), section_heading("Application type"),
+                       FALSE, FALSE, 0);
+    st->type_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->type_combo),
+                                   "Native Linux — ships a compiled program");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(st->type_combo),
+        "Portable — ships source, each machine compiles it");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(st->type_combo),
+        "Windows — ships a .exe, run through Wine or Proton");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->type_combo), 0);
+    g_signal_connect(st->type_combo, "changed", G_CALLBACK(on_type_changed), st);
+    gtk_box_pack_start(GTK_BOX(box), st->type_combo, FALSE, FALSE, 0);
+    st->type_note = body_label("");
+    gtk_box_pack_start(GTK_BOX(box), st->type_note, FALSE, FALSE, 0);
+
+    // Portable: the build recipe the destination machine will run.
+    st->portable_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_box_pack_start(GTK_BOX(st->portable_box),
+                       body_label("The entrypoint above is the file the build "
+                                  "must PRODUCE — it must not already be in "
+                                  "the payload."),
+                       FALSE, FALSE, 0);
+    st->build_system_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->build_system_combo),
+                                   "make (runs `make -C <source dir>`)");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->build_system_combo),
+                                   "cmake (configures out of tree, then builds)");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->build_system_combo), 0);
+    gtk_box_pack_start(GTK_BOX(st->portable_box), st->build_system_combo, FALSE,
+                       FALSE, 0);
+    st->build_source_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(st->build_source_entry),
+                                   "source directory inside the payload, e.g. src");
+    gtk_box_pack_start(GTK_BOX(st->portable_box), st->build_source_entry, FALSE,
+                       FALSE, 0);
+    st->build_toolchain_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(
+        GTK_ENTRY(st->build_toolchain_entry),
+        "build tools the destination needs, e.g. make, cc");
+    gtk_box_pack_start(GTK_BOX(st->portable_box), st->build_toolchain_entry,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(st->portable_box),
+                       body_label("Installing a portable package compiles it on "
+                                  "the user's machine, which they approve "
+                                  "explicitly. A recipe needing its own argv is "
+                                  "written by hand — see FORMAT-0.1 §5.8."),
+                       FALSE, FALSE, 0);
+    // Not revealed by show_all: refresh_type_fields owns its visibility.
+    gtk_widget_set_no_show_all(st->portable_box, TRUE);
+    gtk_box_pack_start(GTK_BOX(box), st->portable_box, FALSE, FALSE, 0);
+
+    // Windows: the foreign-OS chains this package permits.
+    st->windows_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_box_pack_start(
+        GTK_BOX(st->windows_box),
+        body_label("Nothing runs a Windows program natively on Linux, so this "
+                   "package must permit at least one compatibility layer."),
+        FALSE, FALSE, 0);
+    st->chain_wine_check = gtk_check_button_new_with_label("Wine");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(st->chain_wine_check), TRUE);
+    st->chain_proton_check = gtk_check_button_new_with_label("Proton");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(st->chain_proton_check),
+                                 TRUE);
+    gtk_box_pack_start(GTK_BOX(st->windows_box), st->chain_wine_check, FALSE,
+                       FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(st->windows_box), st->chain_proton_check, FALSE,
+                       FALSE, 0);
+    gtk_widget_set_no_show_all(st->windows_box, TRUE);
+    gtk_box_pack_start(GTK_BOX(box), st->windows_box, FALSE, FALSE, 0);
+
     return page_scroller(box);
 }
 
@@ -2577,6 +2877,9 @@ int main(int argc, char** argv) {
     st->desktop_prefers_dark = desktop_prefers_dark;
     build_ui(st);
     gtk_widget_show_all(st->window);
+    // AFTER show_all, which would otherwise reveal both type-specific boxes at
+    // once: they are shown by the type, not by being children of a shown page.
+    refresh_type_fields(st);
     // First run: greet the developer once (DX8); otherwise start the wizard.
     bool welcome = false;
     try {

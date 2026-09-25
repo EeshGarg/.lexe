@@ -645,9 +645,10 @@ TEST_CASE("a non-ELF entrypoint is refused before the package is built") {
     const lexe::gui::ValidationResult r = lexe::gui::validate_form(form);
     CHECK_FALSE(r.ok);
     CHECK(r.error.find("runnable ELF") != std::string::npos);
-    // …and it names both of the types that DO fit, rather than leaving the
-    // developer to discover them from a failed install.
-    CHECK(r.error.find("portable") != std::string::npos);
+    // …and it points at the type that DOES fit. It used to name the manifest
+    // field, because the wizard could not build that type; now that it can,
+    // it names the control the developer will actually use.
+    CHECK(r.error.find("\"Portable\"") != std::string::npos);
 }
 
 TEST_CASE("a Windows entrypoint is refused, and named as what it is") {
@@ -658,9 +659,10 @@ TEST_CASE("a Windows entrypoint is refused, and named as what it is") {
     const lexe::gui::ValidationResult r = lexe::gui::validate_form(form);
     CHECK_FALSE(r.ok);
     CHECK(r.error.find("WINDOWS executable") != std::string::npos);
-    CHECK(r.error.find("\"windows\"") != std::string::npos);
-    // A Windows package also needs a chain that can run it; saying only
-    // "use applicationType windows" would send them to the next refusal.
+    CHECK(r.error.find("\"Windows\"") != std::string::npos);
+    // A Windows package also needs a chain that can run it; sending them to
+    // the type setting without mentioning that would only queue up the next
+    // refusal. The setting offers both, and the message says so.
     CHECK(r.error.find("Proton") != std::string::npos);
 }
 
@@ -697,6 +699,182 @@ TEST_CASE("the no-executable summary no longer invites an unbuildable package") 
     CHECK(d.summary.find("must be a compiled ELF program") != std::string::npos);
     CHECK(d.summary.find("script or interpreted app is fine") ==
           std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// The wizard builds all THREE payload kinds (FORMAT-0.1 §5.3).
+//
+// The manifest it emits has to survive `Manifest::parse` — the same parser the
+// runtime uses — because a wizard that produces a manifest the parser rejects
+// has only moved the failure later. Every case below round-trips.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a native form still emits a native manifest") {
+    lexe::test::TempLexeHome home;
+    const lexe::Manifest m = lexe::Manifest::parse(
+        lexe::gui::build_manifest_json(valid_form(), kZeroKey));
+    CHECK(m.application_kind == lexe::ApplicationType::Native);
+    CHECK(m.application_type == "native");
+    // §5.8: `build` is forbidden for a native package, and `execution`
+    // defaults to the native chain without being written out.
+    CHECK(m.build.source_dir.empty());
+    CHECK(m.effective_allowed_chains() == std::vector<std::string>{"native"});
+}
+
+TEST_CASE("a portable form emits a build recipe that parses") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.application_type = lexe::ApplicationType::Portable;
+    form.entrypoint = "bin/app";           // what the build will PRODUCE
+    form.available_entrypoints = {"src/main.c", "src/Makefile"};
+    form.build_system = lexe::BuildSystem::Make;
+    form.build_source_dir = "src";
+    form.build_toolchain = "make, cc";
+
+    const lexe::gui::ValidationResult v = lexe::gui::validate_form(form);
+    REQUIRE(v.ok);
+
+    const lexe::Manifest m = lexe::Manifest::parse(
+        lexe::gui::build_manifest_json(form, kZeroKey));
+    CHECK(m.application_kind == lexe::ApplicationType::Portable);
+    CHECK(m.build.system == lexe::BuildSystem::Make);
+    CHECK(m.build.source_dir == "src");
+    CHECK(m.build.toolchain == std::vector<std::string>{"make", "cc"});
+    CHECK(m.entrypoint_executable == "bin/app");
+}
+
+TEST_CASE("the toolchain list is split on commas and whitespace") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.application_type = lexe::ApplicationType::Portable;
+    form.entrypoint = "bin/app";
+    form.available_entrypoints = {"src/main.c"};
+    form.build_source_dir = "src";
+    form.build_toolchain = "  make ,, cc\tg++ \n";
+
+    const lexe::Manifest m = lexe::Manifest::parse(
+        lexe::gui::build_manifest_json(form, kZeroKey));
+    CHECK(m.build.toolchain ==
+          std::vector<std::string>{"make", "cc", "g++"});
+}
+
+TEST_CASE("a portable form is refused without a source dir or a toolchain") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm base = valid_form();
+    base.application_type = lexe::ApplicationType::Portable;
+    base.entrypoint = "bin/app";
+    base.available_entrypoints = {"src/main.c"};
+    base.build_source_dir = "src";
+    base.build_toolchain = "make";
+    REQUIRE(lexe::gui::validate_form(base).ok);
+
+    lexe::gui::BuilderForm no_source = base;
+    no_source.build_source_dir.clear();
+    CHECK_FALSE(lexe::gui::validate_form(no_source).ok);
+
+    lexe::gui::BuilderForm no_tools = base;
+    no_tools.build_toolchain = "   ";
+    const lexe::gui::ValidationResult tools =
+        lexe::gui::validate_form(no_tools);
+    CHECK_FALSE(tools.ok);
+    // It says WHY the list matters, not just that it is empty.
+    CHECK(tools.error.find("approve") != std::string::npos);
+
+    // A path, not a bare name: it is resolved on a machine the publisher has
+    // never seen.
+    lexe::gui::BuilderForm path_tool = base;
+    path_tool.build_toolchain = "/usr/bin/cc";
+    const lexe::gui::ValidationResult pathed =
+        lexe::gui::validate_form(path_tool);
+    CHECK_FALSE(pathed.ok);
+    CHECK(pathed.error.find("bare executable name") != std::string::npos);
+}
+
+TEST_CASE("a portable form is refused if the entrypoint is already there") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.application_type = lexe::ApplicationType::Portable;
+    form.entrypoint = "bin/app";
+    form.build_source_dir = "src";
+    form.build_toolchain = "make";
+    // The build is supposed to produce it. Shipping it is the inverse of the
+    // alpha bug, and §6.7 refuses the package for it.
+    form.available_entrypoints = {"src/main.c", "bin/app"};
+
+    const lexe::gui::ValidationResult v = lexe::gui::validate_form(form);
+    CHECK_FALSE(v.ok);
+    CHECK(v.error.find("must not be there") != std::string::npos);
+}
+
+TEST_CASE("a windows form emits a foreign-OS policy that parses") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.application_type = lexe::ApplicationType::Windows;
+    form.entrypoint = "bin/app.exe";
+    form.available_entrypoints = {"bin/app.exe"};
+    form.entrypoint_kind = lexe::gui::PayloadKind::WindowsPe;
+
+    REQUIRE(lexe::gui::validate_form(form).ok);
+    const lexe::Manifest m = lexe::Manifest::parse(
+        lexe::gui::build_manifest_json(form, kZeroKey));
+    CHECK(m.application_kind == lexe::ApplicationType::Windows);
+    CHECK(m.allowed_chains == std::vector<std::string>{"wine", "proton"});
+    CHECK_FALSE(m.mission_critical);
+}
+
+TEST_CASE("a windows form permitting no layer is refused by the wizard") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.application_type = lexe::ApplicationType::Windows;
+    form.entrypoint = "bin/app.exe";
+    form.available_entrypoints = {"bin/app.exe"};
+    form.entrypoint_kind = lexe::gui::PayloadKind::WindowsPe;
+    form.chain_wine = false;
+    form.chain_proton = false;
+
+    const lexe::gui::ValidationResult v = lexe::gui::validate_form(form);
+    CHECK_FALSE(v.ok);
+    CHECK(v.error.find("Wine or Proton") != std::string::npos);
+    // The manifest parser would refuse it too — the wizard just says so first.
+    CHECK_THROWS_AS(
+        lexe::Manifest::parse(lexe::gui::build_manifest_json(form, kZeroKey)),
+        lexe::VerificationError);
+}
+
+TEST_CASE("the entrypoint's bytes must match the declared type, both ways") {
+    lexe::test::TempLexeHome home;
+
+    // A Linux ELF in a Windows package, and a Windows PE in a native one.
+    lexe::gui::BuilderForm elf_as_windows = valid_form();
+    elf_as_windows.application_type = lexe::ApplicationType::Windows;
+    elf_as_windows.entrypoint_kind = lexe::gui::PayloadKind::NativeElf;
+    const lexe::gui::ValidationResult a =
+        lexe::gui::validate_form(elf_as_windows);
+    CHECK_FALSE(a.ok);
+    CHECK(a.error.find("LINUX executable") != std::string::npos);
+
+    lexe::gui::BuilderForm pe_as_native = valid_form();
+    pe_as_native.entrypoint_kind = lexe::gui::PayloadKind::WindowsPe;
+    const lexe::gui::ValidationResult b =
+        lexe::gui::validate_form(pe_as_native);
+    CHECK_FALSE(b.ok);
+    CHECK(b.error.find("WINDOWS executable") != std::string::npos);
+
+    // A DLL or a script is a program in neither.
+    lexe::gui::BuilderForm junk_as_windows = valid_form();
+    junk_as_windows.application_type = lexe::ApplicationType::Windows;
+    junk_as_windows.entrypoint_kind = lexe::gui::PayloadKind::NotRunnable;
+    CHECK_FALSE(lexe::gui::validate_form(junk_as_windows).ok);
+
+    // …and a PORTABLE package's entrypoint is not on disk to judge at all.
+    lexe::gui::BuilderForm portable = valid_form();
+    portable.application_type = lexe::ApplicationType::Portable;
+    portable.entrypoint = "bin/app";
+    portable.available_entrypoints = {"src/main.c"};
+    portable.build_source_dir = "src";
+    portable.build_toolchain = "make";
+    portable.entrypoint_kind = lexe::gui::PayloadKind::NotRunnable;
+    CHECK(lexe::gui::validate_form(portable).ok);
 }
 
 } // TEST_SUITE("builder")
