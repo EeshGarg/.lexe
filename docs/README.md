@@ -20,6 +20,7 @@ implemented).
 
 | Document | Kind | What it covers |
 |---|---|---|
+| [../handoff/](../handoff/) | Informative | Continuity for a new session: what the last one did, how to reproduce its evidence, the machine's constraints, and the prioritized next work. |
 | [DEFINITIVE-ARCHITECTURE.md](DEFINITIVE-ARCHITECTURE.md) | Normative | **Start here.** What the runtime does: package roles, execution policy, launch semantics, durable integration, launch references, diagnostics, state locations, the install/run lifecycle, and what is not done yet. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Normative | The module map, build system, conventions, GUIs, and the test matrix. |
 
