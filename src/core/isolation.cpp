@@ -69,6 +69,17 @@ sanitize_environment(const IsolationRequest& req) {
     env["LEXE_APP_DATA"] = kSandboxData;
     env["LEXE_APP_CACHE"] = kSandboxCache;
 
+    if (req.build) {
+        // A build gets a stable, minimal environment and nothing of the
+        // session. LC_ALL/LANG are pinned to C so compiler diagnostics that
+        // end up in an error record read the same on every machine, and
+        // SOURCE_DATE_EPOCH is not inherited from whatever the caller had.
+        env["LC_ALL"] = "C";
+        env["LANG"] = "C";
+        env["LEXE_BUILD"] = "1";
+        return env;
+    }
+
     // Display variables are forwarded ONLY for a declared GUI launch mode
     // (Definitive Architecture §14.4), and even then they are rewritten to the
     // fixed sandbox paths so the host's real runtime directory layout is never
@@ -171,7 +182,7 @@ IsolationPlan build_plan(const IsolationRequest& req,
     // Network: denied by default (private, empty net namespace) unless the
     // "network" permission was approved. Denial REQUIRES a network namespace;
     // if the backend cannot provide one, fail closed rather than run unconfined.
-    if (req.network_allowed) {
+    if (req.network_allowed && !req.build) {
         plan.network_shared = true;
         plan.controls[IsolationControl::NetworkDenied] =
             ControlState::NotApplicable;
@@ -181,6 +192,11 @@ IsolationPlan build_plan(const IsolationRequest& req,
     } else if (caps.network_namespaces) {
         plan.network_shared = false;
         plan.controls[IsolationControl::NetworkDenied] = ControlState::Enforced;
+    } else if (req.build) {
+        throw IsolationError(
+            "isolation: a portable package's build must run with the network "
+            "denied, but network-namespace isolation is unavailable on this "
+            "host; refusing to compile with the network reachable");
     } else {
         throw IsolationError(
             "isolation: network denial is required (the application has no "
@@ -193,8 +209,12 @@ IsolationPlan build_plan(const IsolationRequest& req,
     // equals string(), and it keeps the pure functions deterministic on any
     // host that runs the tests.
     const std::string app_root = req.app_root.generic_string();
-    plan.binds.push_back({app_root, app_root, true});
-    plan.controls[IsolationControl::AppRootReadOnly] = ControlState::Enforced;
+    plan.binds.push_back({app_root, app_root, /*read_only=*/!req.build});
+    // A build writes its outputs into this tree, so read-only would be a
+    // contradiction rather than a control. Say that, instead of reporting a
+    // control as enforced when the mount is writable.
+    plan.controls[IsolationControl::AppRootReadOnly] =
+        req.build ? ControlState::NotApplicable : ControlState::Enforced;
 
     // Private writable roots at fixed sandbox paths (host layout not exposed).
     plan.binds.push_back({req.data_root.generic_string(), kSandboxData, false});
@@ -212,7 +232,7 @@ IsolationPlan build_plan(const IsolationRequest& req,
     // directory, not D-Bus, not the home directory. When the manifest declares
     // any other launch mode, no display socket is reachable at all and the
     // control is reported as enforced — truthfully, because it is.
-    if (req.gui) {
+    if (req.gui && !req.build) {
         bool granted = false;
         if (const std::string wayland = wayland_socket_path(req);
             !wayland.empty()) {
@@ -245,9 +265,15 @@ IsolationPlan build_plan(const IsolationRequest& req,
     // Sanitized environment (allowlist) + a safe writable working directory
     // that is NOT the caller's cwd.
     plan.env = sanitize_environment(req);
-    plan.working_dir = kSandboxData;
+    // A build runs IN the tree it is building; everything else runs in its own
+    // private data root and never sees the installed tree as a working dir.
+    plan.working_dir = req.build ? app_root : std::string(kSandboxData);
     plan.controls[IsolationControl::EnvironmentSanitized] =
         ControlState::Enforced;
+    // A failed build has to be explainable. Compiler diagnostics go into the
+    // structured error record (Definitive Architecture §9) rather than onto
+    // whatever terminal — possibly none — the install happened to run from.
+    if (req.build) plan.capture_output = true;
 
     // The user namespace boundary prevents setuid privilege escalation; a
     // private PID namespace is unshared below.

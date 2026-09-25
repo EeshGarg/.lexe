@@ -42,6 +42,26 @@ struct InstallOptions {
     /// (the App-ID/key binding is still recorded, but only as "accepted").
     /// Separate from permission consent, and never set by a bare "--yes".
     bool explicit_trust = false;
+    /// ADMIN COMPILE APPROVAL (Definitive Architecture §5/§7). Installing a
+    /// `applicationType: "portable"` package COMPILES its source on this
+    /// machine, and that is an operation the owner of the installation
+    /// authorizes explicitly — never something a package obtains by declaring
+    /// itself portable. Without it a portable install is refused with
+    /// PermissionError before any toolchain is probed or any build runs.
+    ///
+    /// It authorizes the OPERATION. It grants no privilege: the build runs
+    /// unprivileged, in the launcher's sandbox, with the network denied. A
+    /// bare "--yes" never sets it.
+    bool approve_compile = false;
+};
+
+/// Options for Installer::repair.
+struct RepairOptions {
+    /// Same approval as InstallOptions::approve_compile. A portable
+    /// application's entrypoint cannot be re-extracted from its package —
+    /// the package never contained it — so repairing one means compiling
+    /// again, which needs the same explicit authorization the install did.
+    bool approve_compile = false;
 };
 
 /// What an install/update produced.
@@ -135,8 +155,14 @@ public:
     /// Re-verify installed payload files against the recorded hashes; when
     /// `package` is given, re-extract mismatching/missing files from it after
     /// verifying it (§6). Without a package, reports health only.
+    ///
+    /// A portable application's recorded set also covers what its build
+    /// PRODUCED (`build.json`). Those files are not in the package and cannot
+    /// be copied back out of it, so repairing one compiles again — with
+    /// `opts.approve_compile`, or not at all.
     RepairReport repair(const std::string& id,
-                        const std::optional<std::filesystem::path>& package = std::nullopt);
+                        const std::optional<std::filesystem::path>& package = std::nullopt,
+                        const RepairOptions& opts = {});
 
     /// Post-install health check of the active version (HARDENING.md §D):
     /// re-parses the manifest and confirms identity, that the declared

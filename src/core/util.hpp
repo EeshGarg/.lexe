@@ -78,4 +78,10 @@ ProcessResult run_process(const std::vector<std::string>& argv,
 /// Current UTC time as RFC 3339, e.g. "2026-07-13T12:34:56Z".
 std::string now_utc_string();
 
+/// Search `PATH` for the executable `name` and return its absolute path, or
+/// "" when it is not there. A `name` containing a '/' is treated as a path and
+/// only checked for existence. Never executes anything: probing what a host
+/// has must be cheap and free of side effects.
+std::string find_on_path(const std::string& name);
+
 } // namespace lexe::util

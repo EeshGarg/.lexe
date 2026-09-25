@@ -14,6 +14,7 @@
 #include "core/desktop.hpp"
 #include "core/diagnostics.hpp"
 #include "core/execpolicy.hpp"
+#include "core/hostbuild.hpp"
 #include "core/integration.hpp"
 #include "core/launchref.hpp"
 #include "core/elf.hpp"
@@ -71,7 +72,7 @@ using nlohmann::ordered_json;
 
 constexpr const char* kInstallUsage =
     "usage: lexe install <file.lexe> [--yes] [--trust] [--accept-permissions] "
-    "[--channel <c>]";
+    "[--approve-compile] [--channel <c>]";
 constexpr const char* kRunUsage =
     "usage: lexe run <id> [--chain <id>] [--attached-terminal] "
     "[-- <args...>]";
@@ -79,7 +80,8 @@ constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
 constexpr const char* kRemoveUsage =
     "usage: lexe remove <id> [--remove-cache] [--purge-data] [--yes]";
-constexpr const char* kRepairUsage = "usage: lexe repair <id>";
+constexpr const char* kRepairUsage =
+    "usage: lexe repair <id> [--approve-compile]";
 constexpr const char* kInfoUsage = "usage: lexe info <file.lexe | id> [--json]";
 constexpr const char* kAnalyzeUsage =
     "usage: lexe analyze <binary | project-dir | payload-dir> [--json] "
@@ -557,8 +559,8 @@ ordered_json manifest_json(const Manifest& manifest) {
 
 int cmd_install(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(
-        args, {"--yes", "--accept-permissions", "--trust"}, {"--channel"}, false,
-        kInstallUsage);
+        args, {"--yes", "--accept-permissions", "--trust", "--approve-compile"},
+        {"--channel"}, false, kInstallUsage);
     require_positionals(parsed, 1, kInstallUsage);
     const fs::path package(parsed.positionals[0]);
     const Paths paths = Paths::detect();
@@ -630,11 +632,34 @@ int cmd_install(const std::vector<std::string>& args) {
     // consenting to this install (runtime-trust WS4) — also never implied by
     // --yes. A plain install still records the App-ID/key binding as accepted.
     opts.explicit_trust = parsed.flags.count("--trust") != 0;
+    // ADMIN COMPILE APPROVAL (Definitive Architecture §5/§7). Installing a
+    // portable package COMPILES its source here; that is an operation the
+    // owner of the installation authorizes on purpose, and --yes is consent to
+    // an install, not to running a build. Announce what is about to happen
+    // before it does, because "Installed" would otherwise be the first the
+    // user hears of a compile.
+    opts.approve_compile = parsed.flags.count("--approve-compile") != 0;
+    if (manifest.application_kind == ApplicationType::Portable &&
+        opts.approve_compile) {
+        const ToolchainReport toolchain = probe_toolchain(manifest.build);
+        std::cout << "This package carries source, not a program. Installing "
+                     "it compiles\n"
+                     "  " << manifest.build.source_dir << " for "
+                  << host_architecture()
+                  << " with `" << to_string(manifest.build.system)
+                  << "`, unprivileged and\nisolated, with the network denied.\n"
+                  << "  " << toolchain.summary << "\n\n";
+    }
+
     const InstallResult result = installer.install(package, opts);
 
     std::cout << "Installed " << manifest.name << " " << result.version << " ("
               << result.id << ")\n"
               << "Location: " << result.app_dir.string() << "\n";
+    if (manifest.application_kind == ApplicationType::Portable) {
+        std::cout << "Compiled here for " << host_architecture()
+                  << "; it runs natively from now on.\n";
+    }
     return 0;
 }
 
@@ -793,12 +818,16 @@ int cmd_remove(const std::vector<std::string>& args) {
 }
 
 int cmd_repair(const std::vector<std::string>& args) {
-    const Parsed parsed = parse_arguments(args, {}, {}, false, kRepairUsage);
+    const Parsed parsed =
+        parse_arguments(args, {"--approve-compile"}, {}, false, kRepairUsage);
     require_positionals(parsed, 1, kRepairUsage);
     const std::string& id = parsed.positionals[0];
 
+    RepairOptions repair_opts;
+    repair_opts.approve_compile = parsed.flags.count("--approve-compile") != 0;
+
     Installer installer(Paths::detect());
-    const RepairReport report = installer.repair(id);
+    const RepairReport report = installer.repair(id, std::nullopt, repair_opts);
     if (report.ok) {
         if (report.repaired_files.empty()) {
             std::cout << id << " is healthy; nothing to repair\n";

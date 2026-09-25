@@ -100,6 +100,25 @@ struct IsolationRequest {
     /// NotApplicable, never silently "enforced"), and nothing else about the
     /// session — no D-Bus, no home, no network — comes with it.
     bool gui = false;
+    /// This request is an install-time BUILD of a portable package, not a
+    /// launch (Definitive Architecture §5/§7, FORMAT-0.1 §6.9). It is the same
+    /// sandbox with three deliberate differences:
+    ///
+    ///   * `app_root` is the BUILD TREE and is bound WRITABLE — a build that
+    ///     cannot write its own outputs is not a build. AppRootReadOnly is
+    ///     reported NotApplicable, never "enforced";
+    ///   * the network is denied unconditionally. `network_allowed` is ignored,
+    ///     because a build that downloads is fetching unsigned code onto the
+    ///     user's machine at install time, behind a signature that says nothing
+    ///     about what was fetched;
+    ///   * `gui` is ignored — nothing being compiled has any business reaching
+    ///     the session's display.
+    ///
+    /// The build still runs UNPRIVILEGED, in the same user namespace, with the
+    /// same sanitized environment and the same hidden home. Approval authorizes
+    /// the OPERATION; it never gives build code any authority the launcher
+    /// would not have granted the application itself.
+    bool build = false;
     std::map<std::string, std::string> inherited_env; // caller env (to sanitize)
 };
 

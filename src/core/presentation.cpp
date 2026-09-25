@@ -322,8 +322,15 @@ std::string format_size(std::uint64_t bytes) {
 std::string application_type_line(const std::string& application_type,
                                   const std::vector<std::string>& architectures,
                                   const std::string& host_arch) {
-    const std::string type =
-        application_type == "native" ? "Native Linux" : application_type;
+    std::string type = application_type;
+    if (application_type == "native") {
+        type = "Native Linux";
+    } else if (application_type == "portable") {
+        // Say what installing it does. "Portable" on its own sounds like a
+        // property of the file; the part that matters to the reader is that
+        // their machine is going to compile it.
+        type = "Portable source, compiled on this machine";
+    }
     // The host architecture alone when this package runs here; otherwise name
     // every architecture it does offer, so "why not here" is visible.
     if (std::find(architectures.begin(), architectures.end(), host_arch) !=

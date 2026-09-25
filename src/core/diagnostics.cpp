@@ -73,6 +73,7 @@ const char* to_string(FailureStage s) {
     case FailureStage::ChainResolution: return "chain-resolution";
     case FailureStage::RuntimeResolution: return "runtime-resolution";
     case FailureStage::Integration: return "integration";
+    case FailureStage::Compile: return "compile";
     case FailureStage::Install: return "install";
     case FailureStage::Isolation: return "isolation";
     case FailureStage::Launch: return "launch";
@@ -91,6 +92,7 @@ bool failure_stage_from_string(const std::string& text, FailureStage& out) {
         {"chain-resolution", FailureStage::ChainResolution},
         {"runtime-resolution", FailureStage::RuntimeResolution},
         {"integration", FailureStage::Integration},
+        {"compile", FailureStage::Compile},
         {"install", FailureStage::Install},
         {"isolation", FailureStage::Isolation},
         {"launch", FailureStage::Launch},
@@ -379,6 +381,21 @@ std::vector<std::string> ErrorStore::applications_with_errors() const {
     }
     std::sort(ids.begin(), ids.end());
     return ids;
+}
+
+ErrorRecord make_error_record(const std::string& id, const std::string& version,
+                              FailureStage stage, const std::string& summary,
+                              const std::string& detail) {
+    ErrorRecord record;
+    record.application_id = id;
+    record.application_version = version;
+    record.stage = stage;
+    record.summary = summary;
+    record.detail = detail;
+    record.runtime_version = version::runtime_string();
+    record.host_isa = host_architecture();
+    record.host_os = host_os_description();
+    return record;
 }
 
 } // namespace lexe

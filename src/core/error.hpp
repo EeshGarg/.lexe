@@ -77,6 +77,18 @@ public:
     using LaunchError::LaunchError;
 };
 
+/// Host-ISA compilation of a portable package failed (Definitive Architecture
+/// §5/§7): the declared toolchain is incomplete on this host, a build command
+/// failed, or the build produced something that is not a host-ISA native
+/// executable. A VerificationError, because the outcome is the same one the
+/// `payload-role` stage delivers for a native package — what was going to be
+/// installed is not what the manifest says it is — and because a half-built
+/// tree must never be promoted. CLI exit code 3.
+class CompileError : public VerificationError {
+public:
+    using VerificationError::VerificationError;
+};
+
 /// An App ID is busy: another exclusive mutation (install/update/rollback/
 /// remove/recovery) holds the per-app lock, or a launch lease blocks a
 /// destructive operation (runtime-trust WS9). CLI exit code 6.

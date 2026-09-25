@@ -19,9 +19,11 @@
 #include "core/crypto.hpp"
 #include "core/depengine.hpp"
 #include "core/desktop.hpp"
+#include "core/diagnostics.hpp"
 #include "core/integration.hpp"
 #include "core/error.hpp"
 #include "core/fault.hpp"
+#include "core/hostbuild.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
 #include "core/package.hpp"
@@ -167,6 +169,67 @@ void validate_staged_tree(const fs::path& version_dir,
             " payload file(s) missing or mismatched): " +
             keys_of(corrupt).front() + (corrupt.size() > 1 ? ", …" : ""));
     }
+}
+
+/// Compile a staged portable payload for this host (Definitive Architecture
+/// §5/§7) and record what the build produced.
+///
+/// Everything happens inside the STAGING tree, so every way this can end —
+/// refused for want of approval, no sandbox to build in, the build failed, the
+/// build produced something that is not a host-ISA executable — leaves the
+/// previously installed version exactly where it was.
+///
+/// Each failure also leaves a structured §9 record carrying the build's OWN
+/// output. A failed compile without the compiler diagnostics is not a
+/// diagnosis, and the person installing may have no terminal to have seen them
+/// on.
+void compile_staged_payload(const Paths& paths, const fs::path& build_tree,
+                            const fs::path& meta_dir, const Manifest& manifest,
+                            bool approved) {
+    CompileRequest request;
+    request.manifest = manifest;
+    request.build_tree = build_tree;
+    // The build private HOME and cache live beside the staged tree and are
+    // removed with it; nothing a build writes there is ever promoted.
+    request.scratch_dir = build_tree.parent_path() / ".build-scratch";
+    if (approved) request.approval = CompileApproval::grant();
+
+    const CompileResult result = compile_for_host(paths, request);
+    util::remove_recursive(request.scratch_dir);
+    if (result.ok) {
+        result.record.save(meta_dir);
+        return;
+    }
+
+    ErrorRecord record = make_error_record(
+        manifest.id, manifest.version, FailureStage::Compile,
+        "this package could not be compiled for this machine", result.failure);
+    record.launch_mode = to_string(manifest.launch_mode);
+    // A portable package compiles TO the native chain; that is the whole point
+    // of the type, and it is what the record should say was attempted.
+    record.execution_chain = "native";
+    record = ErrorStore(paths).record(std::move(record), result.stdout_text,
+                                      result.stderr_text);
+
+    std::string message = result.failure;
+    if (!record.record_path.empty()) {
+        message += "\n  diagnostic: " + record.record_path;
+    }
+    // The outcome decides the TYPE, because "you did not approve this" (exit
+    // 5), "this host cannot build it" (exit 3) and "there is no sandbox to
+    // build in" are different answers and must not be flattened into one.
+    switch (result.outcome) {
+    case CompileOutcome::NotApproved:
+        throw PermissionError(message, result.hint);
+    case CompileOutcome::NoSandbox:
+        throw IsolationError(message, result.hint);
+    case CompileOutcome::ToolchainMissing:
+    case CompileOutcome::BuildFailed:
+    case CompileOutcome::OutputNotAccepted:
+    case CompileOutcome::Built:
+        break;
+    }
+    throw CompileError(message, result.hint);
 }
 
 /// Health checks for a version directory (HARDENING.md §D): the manifest-
@@ -459,6 +522,23 @@ InstallResult Installer::install(const fs::path& lexe_file,
 #endif
         util::spit(txn.staging_meta_dir() / "lexe.json", manifest_bytes);
         util::spit(txn.staging_meta_dir() / "hashes.json", hashes_bytes);
+
+        // (4b) HOST-ISA COMPILE (Definitive Architecture §5/§7). A portable
+        // package's payload is source; the program does not exist yet. It is
+        // built HERE — inside the staged tree, before promotion — so a build
+        // that fails, produces nothing, or produces the wrong thing leaves the
+        // previously installed version exactly where it was.
+        //
+        // The result is recorded in the per-version meta store next to
+        // hashes.json, because the compiled entrypoint is not covered by the
+        // package's signed hashes: it did not exist when the package was
+        // signed. Recording it here is what makes tamper detection and repair
+        // work identically for a compiled entrypoint and an extracted one.
+        if (manifest.application_kind == ApplicationType::Portable) {
+            compile_staged_payload(paths_, txn.staging_version_dir(),
+                                   txn.staging_meta_dir(), manifest,
+                                   opts.approve_compile);
+        }
         // Definitive Architecture §15.1 "Durable integration": per-application
         // desktop artifacts must be regenerable FROM INSTALLED STATE, with no
         // package file present. Icons are one of those artifacts, so they are
@@ -929,7 +1009,8 @@ GcReport Installer::garbage_collect(const std::string& id,
 }
 
 RepairReport Installer::repair(const std::string& id,
-                               const std::optional<fs::path>& package) {
+                               const std::optional<fs::path>& package,
+                               const RepairOptions& opts) {
     const AppLock app_lock =
         locks_->lock_app_mutation(id, "repair", mutation_wait_);
     const Registry registry(paths_);
@@ -970,7 +1051,20 @@ RepairReport Installer::repair(const std::string& id,
         throw Error("no recorded hashes for " + id + " " + current +
                     "; cannot verify the installation");
     }
-    const std::vector<PayloadHash> expected = load_payload_hashes(hashes_file);
+    std::vector<PayloadHash> expected = load_payload_hashes(hashes_file);
+
+    // A portable application's recorded set is hashes.json PLUS whatever its
+    // build produced (build.json). The compiled entrypoint is not in the
+    // package and never was, so leaving it out here would make repair report a
+    // healthy installation whose program had been replaced.
+    const std::optional<BuildRecord> build_record =
+        BuildRecord::load(meta_dir(app_dir, current));
+    if (build_record.has_value()) {
+        for (const auto& [key, digest] : build_record->products) {
+            const std::optional<fs::path> relative = payload_relative(key);
+            if (relative.has_value()) expected.push_back({key, *relative, digest});
+        }
+    }
 
     RepairReport report;
     const std::vector<PayloadHash> corrupt =
@@ -1021,6 +1115,66 @@ RepairReport Installer::repair(const std::string& id,
                     fs::copy_file(from, to, fs::copy_options::overwrite_existing);
                     report.repaired_files.push_back(entry.key);
                 }
+                // A portable application cannot be repaired by copying: the
+                // file that is damaged is the one the package never contained.
+                // Repairing it means building it again, which is the same
+                // operation the install performed and needs the same explicit
+                // approval — the alternative would be a repair command that
+                // silently compiles code.
+                if (m.application_kind == ApplicationType::Portable &&
+                    build_record.has_value()) {
+                    bool product_damaged = false;
+                    for (const PayloadHash& entry : corrupt) {
+                        if (build_record->products.count(entry.key) != 0) {
+                            product_damaged = true;
+                        }
+                    }
+                    if (product_damaged && !opts.approve_compile) {
+                        throw PermissionError(
+                            "repairing " + id +
+                                " means compiling its source again — its "
+                                "entrypoint is built on this machine, not "
+                                "carried in the package — and that was not "
+                                "approved",
+                            "Re-run with `--approve-compile`.");
+                    }
+                    if (product_damaged) {
+                        CompileRequest request;
+                        request.manifest = m;
+                        request.build_tree = staging;
+                        request.scratch_dir = app_dir / ".repair-scratch";
+                        request.approval = CompileApproval::grant();
+                        const CompileResult built =
+                            compile_for_host(paths_, request);
+                        util::remove_recursive(request.scratch_dir);
+                        if (!built.ok) {
+                            throw CompileError(built.failure, built.hint);
+                        }
+                        for (const auto& [key, digest] : built.record.products) {
+                            const std::optional<fs::path> relative =
+                                payload_relative(key);
+                            if (!relative.has_value()) continue;
+                            const fs::path from = staging / *relative;
+                            std::error_code build_ec;
+                            if (!fs::is_regular_file(from, build_ec)) continue;
+                            const fs::path to = version_dir / *relative;
+                            fs::create_directories(to.parent_path());
+                            fs::copy_file(from, to,
+                                          fs::copy_options::overwrite_existing);
+                            report.repaired_files.push_back(key);
+                        }
+                        built.record.save(meta_dir(app_dir, current));
+                        // The freshly built product has a new hash; judge the
+                        // installation against what was actually just built.
+                        for (PayloadHash& entry : expected) {
+                            const auto it =
+                                built.record.products.find(entry.key);
+                            if (it != built.record.products.end()) {
+                                entry.digest = it->second;
+                            }
+                        }
+                    }
+                }
             } catch (...) {
                 util::remove_recursive(staging);
                 throw;
@@ -1031,6 +1185,14 @@ RepairReport Installer::repair(const std::string& id,
             // install time.
             ensure_entrypoint_executable(version_dir, m.entrypoint_executable);
 #endif
+        } catch (const PermissionError&) {
+            // Not "the cached package turned out unusable": the user asked for
+            // a repair, this one needs a compile, and the compile was not
+            // approved. Swallowing that would report the application as
+            // unrepairable when the remedy is one flag away.
+            throw;
+        } catch (const CompileError&) {
+            throw; // likewise: we know exactly why it cannot be repaired
         } catch (const Error&) {
             if (explicit_package) throw;
             // The cached source turned out unusable — report health only.

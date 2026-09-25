@@ -14,6 +14,7 @@
 #include "core/appconfig.hpp"
 #include "core/crypto.hpp"
 #include "core/error.hpp"
+#include "core/hostbuild.hpp"
 #include "core/isolation.hpp"
 #include "core/json_strict.hpp"
 #include "core/limits.hpp"
@@ -103,33 +104,14 @@ std::string summarize_controls(
 
 /// Build the base of an error record from what we know so far, so every throw
 /// site records the same structured shape (§9).
+/// The launcher fills the same five fields on every gate; the rest of the
+/// record (runtime version, host OS/ISA) is machine truth the shared helper
+/// supplies. `fail_with_record` lives beside it in core/diagnostics.hpp so
+/// install-time gates pair a typed failure with a record the same way.
 ErrorRecord base_record(const std::string& id, const std::string& version,
                         FailureStage stage, const std::string& summary,
                         const std::string& detail) {
-    ErrorRecord record;
-    record.application_id = id;
-    record.application_version = version;
-    record.stage = stage;
-    record.summary = summary;
-    record.detail = detail;
-    record.runtime_version = version::runtime_string();
-    record.host_isa = host_architecture();
-    record.host_os = host_os_description();
-    return record;
-}
-
-/// Record `record` and throw `Ex` with the same message: a hard gate always
-/// produces BOTH a .lexe-error record and a typed failure (§9 "any ? bool
-/// failed --> .lexe-error message").
-template <typename Ex>
-[[noreturn]] void fail_with_record(const Paths& paths, ErrorRecord record,
-                                   const std::string& message) {
-    record = ErrorStore(paths).record(std::move(record));
-    std::string full = message;
-    if (!record.record_path.empty()) {
-        full += "\n  diagnostic: " + record.record_path;
-    }
-    throw Ex(full);
+    return make_error_record(id, version, stage, summary, detail);
 }
 
 /// Terminal emulators .LEXE will use for a console application, in preference
@@ -430,37 +412,78 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // present (every real install writes one); the launch is refused on
     // mismatch — it never falls through to direct execution.
     {
+        const std::string key = "payload/" + manifest.entrypoint_executable;
+        std::string expected;
+
+        // A portable application's entrypoint was COMPILED here, so it is not
+        // in the package's signed hashes — it did not exist when the package
+        // was signed. Its hash was recorded at build time instead. Consulting
+        // only hashes.json would find nothing for exactly those entrypoints
+        // and skip the check, leaving compiled binaries the one kind this
+        // runtime never noticed being replaced.
+        const std::optional<BuildRecord> build_record =
+            BuildRecord::load(registry.meta_dir(id, version));
+        if (build_record.has_value()) {
+            const auto product = build_record->products.find(key);
+            if (product != build_record->products.end()) {
+                expected = product->second;
+            }
+        }
+
         fs::path hashes_file = registry.meta_dir(id, version) / "hashes.json";
         if (!fs::is_regular_file(hashes_file, ec)) {
             hashes_file = registry.app_dir(id) / "hashes.json";
         }
-        if (fs::is_regular_file(hashes_file, ec)) {
+        if (expected.empty() && fs::is_regular_file(hashes_file, ec)) {
             const nlohmann::json doc =
                 json_strict::parse(util::slurp_text(hashes_file),
                                    "installed hashes.json", limits::kMaxHashesBytes);
             const auto files = doc.find("files");
             if (files != doc.end() && files->is_object()) {
-                const std::string key =
-                    "payload/" + manifest.entrypoint_executable;
                 const auto it = files->find(key);
-                if (it != files->end() && it->is_string() &&
-                    crypto::sha256_file_hex(entry) != it->get<std::string>()) {
-                    fail_with_record<LaunchError>(
-                        paths,
-                        base_record(
-                            id, version, FailureStage::Verification,
+                if (it != files->end() && it->is_string()) {
+                    expected = it->get<std::string>();
+                }
+            }
+        }
+
+        // Fail CLOSED for a portable application with no recorded product
+        // hash: that means the build record is gone, and an unverifiable
+        // compiled binary is not one to run.
+        if (expected.empty() &&
+            manifest.application_kind == ApplicationType::Portable) {
+            fail_with_record<LaunchError>(
+                paths,
+                base_record(id, version, FailureStage::Verification,
+                            "there is no record of what this application was "
+                            "built from",
+                            "the entrypoint of " + id +
+                                " is compiled on this machine, and the build "
+                                "record that says what it should hash to is "
+                                "missing — so its integrity cannot be "
+                                "checked. Run `lexe repair " + id +
+                                " --approve-compile` to build it again."),
+                "launcher: no build record for portable application " + id +
+                    "; refusing to launch an unverifiable compiled entrypoint.");
+        }
+
+        if (!expected.empty() && crypto::sha256_file_hex(entry) != expected) {
+            const std::string remedy =
+                manifest.application_kind == ApplicationType::Portable
+                    ? "Run `lexe repair " + id + " --approve-compile`."
+                    : "Run `lexe repair " + id + "`.";
+            fail_with_record<LaunchError>(
+                paths,
+                base_record(id, version, FailureStage::Verification,
                             "the installed executable failed its integrity "
                             "check",
                             "the entrypoint of " + id +
-                                " does not match the hash recorded at install "
-                                "time — it was modified after installation. "
-                                "Run `lexe repair " + id + "`."),
-                        "launcher: entrypoint of " + id +
-                            " fails its recorded integrity check (modified "
-                            "after install); refusing to launch. Run `lexe "
-                            "repair " + id + "`.");
-                }
-            }
+                                " does not match the hash recorded when it was "
+                                "installed — it was modified after "
+                                "installation. " + remedy),
+                "launcher: entrypoint of " + id +
+                    " fails its recorded integrity check (modified after "
+                    "install); refusing to launch. " + remedy);
         }
     }
 

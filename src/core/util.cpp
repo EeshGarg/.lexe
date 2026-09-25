@@ -608,4 +608,43 @@ std::string now_utc_string() {
     return std::string(buf);
 }
 
+std::string find_on_path(const std::string& name) {
+    if (name.empty()) return {};
+    if (name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos) {
+        std::error_code ec;
+        return fs::is_regular_file(name, ec) ? name : std::string();
+    }
+    const std::optional<std::string> path_env = get_env("PATH");
+    if (!path_env.has_value()) return {};
+#ifdef _WIN32
+    constexpr char kSeparator = ';';
+#else
+    constexpr char kSeparator = ':';
+#endif
+    std::size_t start = 0;
+    while (start <= path_env->size()) {
+        const std::size_t sep = path_env->find(kSeparator, start);
+        const std::string dir = path_env->substr(
+            start, sep == std::string::npos ? std::string::npos : sep - start);
+        if (!dir.empty()) {
+            const fs::path candidate = fs::path(dir) / name;
+            std::error_code ec;
+            if (fs::is_regular_file(candidate, ec)) {
+#ifdef _WIN32
+                return candidate.string();
+#else
+                const fs::perms p = fs::status(candidate, ec).permissions();
+                if (!ec && (p & fs::perms::owner_exec) != fs::perms::none) {
+                    return candidate.string();
+                }
+#endif
+            }
+        }
+        if (sep == std::string::npos) break;
+        start = sep + 1;
+    }
+    return {};
+}
+
 } // namespace lexe::util

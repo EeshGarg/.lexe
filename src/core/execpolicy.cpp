@@ -38,36 +38,6 @@ const std::vector<ProviderSpec>& provider_specs() {
     return kSpecs;
 }
 
-/// Search PATH for `name` and return the absolute path, or "" when absent.
-/// Never executes anything (probing must be cheap and side-effect free).
-std::string which(const std::string& name) {
-    if (name.find('/') != std::string::npos) {
-        std::error_code ec;
-        return fs::is_regular_file(name, ec) ? name : std::string();
-    }
-    const std::optional<std::string> path_env = util::get_env("PATH");
-    if (!path_env.has_value()) return {};
-    std::size_t start = 0;
-    while (start <= path_env->size()) {
-        const std::size_t sep = path_env->find(':', start);
-        const std::string dir = path_env->substr(
-            start, sep == std::string::npos ? std::string::npos : sep - start);
-        if (!dir.empty()) {
-            const fs::path candidate = fs::path(dir) / name;
-            std::error_code ec;
-            if (fs::is_regular_file(candidate, ec)) {
-                const fs::perms p = fs::status(candidate, ec).permissions();
-                if (!ec && (p & fs::perms::owner_exec) != fs::perms::none) {
-                    return candidate.string();
-                }
-            }
-        }
-        if (sep == std::string::npos) break;
-        start = sep + 1;
-    }
-    return {};
-}
-
 /// The chain that runs the application directly — the boring fast path (§16).
 ExecutionChain native_chain() {
     ExecutionChain chain;
@@ -182,7 +152,7 @@ ProviderSet probe_providers() {
         provider.kind = spec.kind;
         provider.guest_isa = spec.guest_isa;
         for (const char* candidate : spec.candidates) {
-            const std::string resolved = which(candidate);
+            const std::string resolved = util::find_on_path(candidate);
             if (!resolved.empty()) {
                 provider.available = true;
                 provider.executable = resolved;
@@ -246,10 +216,15 @@ ChainResolution resolve_chain(const Manifest& manifest, const AppConfig& config,
     const bool host_isa_native =
         std::find(manifest.architectures.begin(), manifest.architectures.end(),
                   host.isa) != manifest.architectures.end();
-    // 0.1 packages are Linux-native by construction (applicationType "native"),
-    // but the check is written explicitly so a future foreign-OS payload type
-    // cannot silently slip through the strict resolver.
-    const bool linux_native = manifest.application_type == "native";
+    // What runs, once installed, is a Linux-native binary in both 0.1 cases: a
+    // "native" package carries one, and a "portable" package was COMPILED into
+    // one on this host at install time — which is exactly why portable satisfies
+    // even the strict resolver. The check is written as an explicit enumeration
+    // rather than "not foreign" so a future foreign-OS payload type cannot slip
+    // through §6 by default.
+    const bool linux_native =
+        manifest.application_kind == ApplicationType::Native ||
+        manifest.application_kind == ApplicationType::Portable;
 
     // ---------------------------------------------------------- §6 STRICT
     if (manifest.mission_critical) {

@@ -38,6 +38,7 @@ enum class FailureStage {
     ChainResolution,   // SELECT BEST ALLOWED EXECUTION CHAIN: none available
     RuntimeResolution, // RUNTIME RESOLUTION: dependencies/runtime unsatisfied
     Integration,       // desktop/MIME/launch-reference registration
+    Compile,           // HOST-ISA COMPILE: a portable package failed to build
     Install,           // extraction/promotion of the application store
     Isolation,         // SANDBOX / PREPARE could not be established
     Launch,            // exec itself failed (missing/unrunnable entrypoint)
@@ -118,6 +119,31 @@ public:
 private:
     Paths paths_;
 };
+
+/// A record with the fields every hard gate fills the same way (application,
+/// version, stage, summary, detail) plus the ones that describe THIS machine
+/// and runtime. Callers add only what is specific to their failure.
+ErrorRecord make_error_record(const std::string& id, const std::string& version,
+                              FailureStage stage, const std::string& summary,
+                              const std::string& detail);
+
+/// Record `record`, then throw `Ex` with `message` and the record's path
+/// appended. A hard gate always produces BOTH a typed failure and a
+/// `.lexe-error` record — §9's "any ? bool failed --> .lexe-error message" —
+/// and this is the one place that pairing is implemented.
+template <typename Ex>
+[[noreturn]] void fail_with_record(const Paths& paths, ErrorRecord record,
+                                   const std::string& message,
+                                   const std::string& captured_stdout = {},
+                                   const std::string& captured_stderr = {}) {
+    record = ErrorStore(paths).record(std::move(record), captured_stdout,
+                                      captured_stderr);
+    std::string full = message;
+    if (!record.record_path.empty()) {
+        full += "\n  diagnostic: " + record.record_path;
+    }
+    throw Ex(full);
+}
 
 /// A best-effort host-OS description for a record ("Linux 6.16.7 (Fedora 44)").
 std::string host_os_description();
