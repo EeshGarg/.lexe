@@ -5,6 +5,76 @@ Versioning follows [docs/ALPHA.md](docs/ALPHA.md): the **runtime** version is a
 distinct axis from the **package format** (`0.1`, FORMAT-0.1) and the **Tux32**
 baseline (`tux32-core-1`). Dates are UTC.
 
+## [Unreleased] — Definitive Architecture convergence
+
+Moves the runtime from the alpha prototype onto the canonical
+*.LEXE Definitive Architecture*. See
+[docs/DEFINITIVE-ARCHITECTURE.md](docs/DEFINITIVE-ARCHITECTURE.md) for the full
+description, including a plainly-stated list of what is still missing.
+
+### Added
+- **Package roles.** A `.lexe` is an installable `"application"` or a
+  `"launch"` reference, decided by the SIGNED manifest rather than the file
+  name. The two roles are structurally distinct: a launch reference may not
+  declare `applicationType`/`architectures`/`entrypoint`/`install` and carries
+  no payload; an application may not claim a launch target.
+- **`payload-role` verification stage.** A native package's declared entrypoint
+  must BE a runnable ELF for a declared architecture, checked before
+  installation. This is the direct fix for the alpha package that declared a
+  native application while its entrypoint was `helloworld.cpp`.
+- **Execution policy.** `execution.missionCritical` (an execution restriction,
+  not a safety certification) and `execution.allowedChains`. A strict resolver
+  for mission-critical software that stops rather than falling back, and a
+  normal resolver that prefers native and uses a compatibility chain only when
+  needed, permitted and available.
+- **Declared launch semantics.** `launch.mode` is `gui`, `console` or
+  `service`. A console application launched without a terminal is given one by
+  `.LEXE`; exit code 0 is success even when no window appears.
+- **Durable desktop integration.** `integration.json` records every
+  registration `.LEXE` owns with its content hash; `lexe doctor` names what is
+  missing or modified and `lexe doctor --repair` re-establishes it from
+  installed state, with no package file present. The default `.lexe`
+  association is written to `mimeapps.list`, which is what actually survives a
+  reboot.
+- **Launch references.** `run.lexe` — a real, fully signed, fully verifiable
+  `.lexe` with role `launch` and no payload, signed by a stable machine-local
+  key. The installed ELF stays private inside the application store.
+- **Structured diagnostics.** Typed `.lexe-error` records under
+  `~/.local/state/lexe/errors/<id>/` carrying the failure stage, execution
+  chain, host OS/ISA, runtime, exit code *or signal*, captured stream
+  references and a timestamp. Bounded per-stream and per-app, with truncation
+  disclosed.
+- **Per-application overrides** under `~/.config/lexe/apps/<id>.json` that can
+  narrow or reorder the publisher's permitted chains but never extend them, and
+  never modify or invalidate the signed package.
+- **Display access for a declared GUI launch mode**, reported truthfully in the
+  isolation control map rather than silently claimed.
+- **New commands:** `lexe open`, `lexe doctor`, `lexe errors`, `lexe compat`,
+  `lexe launch-ref`, `lexe trust classes`, `lexe integrate --verify/--remove`,
+  `lexe run --chain`.
+- `lexe-ui` — the consumer and power-user frontend, and the registered `.lexe`
+  handler, superseding `lexe-installer`.
+
+### Changed
+- The canonical MIME type is `application/vnd.usha.lexe`; the alpha's
+  `application/x-lexe` is kept as an alias so existing files and registrations
+  keep working.
+- Runtime/dependency resolution happens once at install and repair and is
+  recorded; a normal native launch only confirms the recorded state and execs.
+- `packaging/install.sh` no longer hand-rolls MIME/desktop registration in
+  shell; it installs the binaries and calls `lexe integrate`, so there is one
+  implementation of registration and therefore one thing to repair.
+
+### Fixed
+- A package whose native entrypoint is source text is now rejected before
+  installation instead of becoming a mysterious launch failure.
+- Desktop integration that does not survive a reboot is now a detected, named,
+  repairable condition rather than a silent failure.
+- A console application launched from the desktop no longer looks like
+  "nothing happened".
+- `present_isolation()` no longer claims GUI forwarding is unavailable now that
+  display access is implemented.
+
 ## [Unreleased] — 0.1.0-alpha (Alpha candidate)
 
 The first Alpha candidate. Everything below is implemented and green on Linux
