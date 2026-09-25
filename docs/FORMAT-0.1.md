@@ -256,6 +256,16 @@ launched without a terminal MUST be given one by the runtime, or have its output
 captured and surfaced — it must not silently appear to do nothing. Exit code 0
 MUST be recorded as success even when no window appears.
 
+A `"service"` MUST be started detached: the runtime returns once it is running
+rather than waiting for it, and the application MUST survive the process that
+started it. Because nothing waited for it, the runtime MUST NOT report an exit
+status for that launch. It MUST keep the launched version leased for as long as
+the application runs, so the files it is executing cannot be removed underneath
+it.
+
+Detaching is not supervision. A runtime that does not restart a service, start
+it at login, or track its status MUST NOT describe it as though it did.
+
 ### 5.7 Optional fields with defaults
 
 `entrypoint.arguments` (`[]`), `install.scope` (`"user"`),

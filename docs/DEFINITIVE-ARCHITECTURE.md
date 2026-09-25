@@ -271,11 +271,37 @@ and never inferred.
 |---|---|
 | `gui` | Opens directly. The sandbox is granted the session's display socket. **Exit code 0 is success even when no window appears.** |
 | `console` | If there is no terminal, `.LEXE` chooses one and re-enters through `lexe run --attached-terminal`. If no terminal emulator exists on the host, the output is captured and surfaced instead of vanishing. |
-| `service` | Background; no terminal, no window expected. |
+| `service` | Background; no terminal, no window expected. Detached — see below. |
 
 The default is `gui`. A console program **must** declare `console` — that
 declaration is what lets `.LEXE` apply a terminal policy instead of the user
 seeing nothing happen.
+
+### A service is background by declaration
+
+A `service` detaches because its **manifest** says what it is; no caller has to
+ask. `lexe run` returns as soon as it has started, and three things make that a
+real detachment rather than a fire-and-forget:
+
+* the sandbox is not tied to the process that started it (`--die-with-parent`
+  is omitted), or the application would end the instant `lexe run` returned;
+* a **supervisor** holds the version's launch lease for the application's
+  lifetime, so a concurrent `remove` or garbage collection cannot delete the
+  files it is running from. It holds its own descriptor on the lease, because
+  an inherited one is released by the starter;
+* **no outcome is invented.** Nothing waited for it, so there is no exit code
+  to report and no `.lexe-error` record is written. The execution report says
+  `detached`, which is not the same claim as "succeeded".
+
+What it is **not** is a session-manager service. Nothing restarts it, nothing
+starts it at login, and nothing reports its status. The runtime says so every
+time it starts one rather than leaving the word "service" to imply more than it
+delivers.
+
+`lexe run --wait` runs one in the foreground — for watching a service during
+development — and says that is what it is doing. `--detach` does the same for
+any other launch mode, which is what a desktop handler needs so that opening an
+application does not block on it.
 
 ### Display access is a declared, truthful reduction of isolation
 
@@ -784,9 +810,12 @@ than useless.
   explicit trust and blocking. The design reference's named tiers — Usha
   Verified, Organization Signed — have no distinct implementation beyond
   "Locally Trusted" and "Developer Signed"; there is no signing authority.
-* **`service` launch mode** is declared, parsed and carried through, but it does
-  not yet detach or integrate with the session manager; it currently behaves
-  like a non-GUI foreground launch.
+* **A `service` is not a session-manager service.** It detaches and stays
+  leased (§5 "A service is background by declaration"), but nothing supervises
+  it: `.LEXE` does not restart it, does not start it at login, and has no
+  status to report. Integration with a session manager — a systemd user unit —
+  is the durable form and is not implemented. The runtime says which of the two
+  this is, every time it starts one.
 * **Reboot verification** is scripted and locally verified against simulated
   damage. A genuine reboot-boundary pass requires the manual checklist.
 

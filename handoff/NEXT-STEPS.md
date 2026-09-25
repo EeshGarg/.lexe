@@ -119,13 +119,29 @@ hardware. Until it does, treat §8's cross-ISA claims as designed-but-unproven.
 
 ---
 
-## 4. `service` launch mode
+> **Item 4 is DONE** (2026-09-25): a service detaches, keeps its version
+> leased through a supervisor, and the runtime states plainly that nothing
+> supervises it further. What is left is 4b.
 
-Parsed, carried through the manifest and recorded in the execution report, but
-it does **not** detach or integrate with the session manager — it currently
-behaves like a non-GUI foreground launch. `RunRequest::detach` exists as the
-seam. Decide whether a service is a systemd user unit (durable, correct,
-more work) or a plain detached process (simpler, weaker).
+## ~~4. `service` launch mode~~ → 4b. Session-manager integration
+
+The decision §15 asked for was taken: a **plain detached process**, not a
+systemd user unit. See `docs/DEFINITIVE-ARCHITECTURE.md` §5 "A service is
+background by declaration" and `util::spawn_detached`.
+
+The durable form is still open, and it is a real difference: nothing restarts a
+crashed service, nothing starts one at login, and `lexe` has no status to
+report for one. A systemd **user unit** generated from the manifest at install
+(and removed at uninstall) is the natural shape, and it brings questions worth
+deciding deliberately rather than drifting into:
+
+* what happens on a host with no systemd — the runtime must not pretend;
+* whether the unit runs `lexe run <id>` (keeping one launch path, which is the
+  architecture's rule) or the sandbox directly;
+* who owns the lease when systemd, not `.LEXE`, starts the process.
+
+Note that **the current machine has no systemd user session** (WSL), so this
+cannot be tested here at all — see [MACHINE.md](MACHINE.md).
 
 ---
 
