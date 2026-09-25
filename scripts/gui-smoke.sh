@@ -46,12 +46,15 @@ command -v xvfb-run >/dev/null 2>&1 || die "xvfb-run is required (Fedora: sudo d
 # the invocation cannot fall back to the developer's screen.
 unset WAYLAND_DISPLAY DISPLAY
 export GDK_BACKEND=x11
-[ -x "$UI" ] || die "no lexe-ui in $BUILD_DIR (build the GTK GUI first)"
-command -v xvfb-run >/dev/null 2>&1 || die "xvfb-run is required (install the xvfb package)"
-command -v xwininfo >/dev/null 2>&1 || die "xwininfo is required (install the x11-utils package)"
-[ -x "$INSTALLER" ] || die "no lexe-installer in $BUILD_DIR (build the GTK GUI first)"
-[ -x "$BUILDER" ]   || die "no lexe-builder in $BUILD_DIR"
-[ -x "$LEXE" ]      || die "no lexe CLI in $BUILD_DIR"
+command -v xwininfo >/dev/null 2>&1 || die "xwininfo is required (Fedora: sudo dnf install xorg-x11-utils · Debian/Ubuntu: sudo apt install x11-utils)"
+# The GUIs this test smokes, and nothing else. There WAS a `[ -x "$INSTALLER" ]`
+# check here, left over from before lexe-ui superseded lexe-installer — and
+# because $INSTALLER was never assigned, `set -u` made it a fatal unbound
+# variable on line 52 of a script that therefore could not run at all. It went
+# unnoticed because no machine this was developed on had xvfb installed.
+[ -x "$UI" ]      || die "no lexe-ui in $BUILD_DIR (build the GTK GUI first)"
+[ -x "$BUILDER" ] || die "no lexe-builder in $BUILD_DIR"
+[ -x "$LEXE" ]    || die "no lexe CLI in $BUILD_DIR"
 
 # Force the X11 backend and hide any Wayland display BEFORE anything launches.
 # On a host with a Wayland compositor — every WSLg session, and most current
