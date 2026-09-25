@@ -637,6 +637,21 @@ struct ZipWriterGuard {
     ~ZipWriterGuard() { mz_zip_writer_end(zip); }
 };
 
+/// Owns the heap buffer `mz_zip_writer_finalize_heap_archive` hands back.
+///
+/// That call TRANSFERS ownership — it clears the archive's `m_pMem`, so the
+/// writer's own `mz_zip_writer_end` no longer has anything to free and the
+/// buffer is the caller's to release. Missing that leaked one whole archive
+/// per `pack`: invisible in a CLI that exits immediately afterwards, and a
+/// steady leak the size of every package built in `lexe-builder`, which does
+/// not. Found by AddressSanitizer, not by reading the code.
+struct ZipHeapBufferGuard {
+    void* buf = nullptr;
+    ~ZipHeapBufferGuard() {
+        if (buf != nullptr) MZ_FREE(buf);
+    }
+};
+
 } // namespace
 
 void PackageWriter::write(const Inputs& inputs, const crypto::KeyPair& key,
@@ -764,11 +779,12 @@ void PackageWriter::write(const Inputs& inputs, const crypto::KeyPair& key,
         throw Error("pack: cannot finalize archive");
     }
     // Copy out of miniz's heap buffer, then stamp the Unix modes into the
-    // central directory (FORMAT-0.1 §1/§D) before writing to disk.
+    // central directory (FORMAT-0.1 §1/§D) before writing to disk. The buffer
+    // belongs to us from here (see ZipHeapBufferGuard).
+    const ZipHeapBufferGuard heap_buffer{buf};
     std::vector<std::uint8_t> archive(
         static_cast<const std::uint8_t*>(buf),
         static_cast<const std::uint8_t*>(buf) + buf_size);
-    // guard's mz_zip_writer_end frees buf.
     patch_central_directory_modes(archive, entries);
     util::spit(out_lexe, archive);
 }

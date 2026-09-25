@@ -83,6 +83,9 @@ void write_raw_zip(const fs::path& zip_path,
     std::size_t size = 0;
     REQUIRE(mz_zip_writer_finalize_heap_archive(&zip, &buf, &size));
     lexe::util::spit(zip_path, static_cast<const std::uint8_t*>(buf), size);
+    // finalize_heap_archive TRANSFERS the buffer: it clears the archive's
+    // m_pMem, so mz_zip_writer_end does not free it and this must.
+    MZ_FREE(buf);
     mz_zip_writer_end(&zip);
 }
 

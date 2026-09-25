@@ -810,9 +810,13 @@ inline void tamper_entry(const fs::path& zip_path, const std::string& entry_name
     try {
         util::spit(zip_path, static_cast<const std::uint8_t*>(buf), size);
     } catch (...) {
+        MZ_FREE(buf);
         mz_zip_writer_end(&zout);
         throw;
     }
+    // finalize_heap_archive TRANSFERS the buffer — it clears the archive's
+    // m_pMem, so mz_zip_writer_end does not free it and this must.
+    MZ_FREE(buf);
     mz_zip_writer_end(&zout);
 }
 
