@@ -325,6 +325,7 @@ CompileResult compile_for_host(const Paths& paths, const CompileRequest& req) {
         isolation.args.assign(argv.begin() + 1, argv.end());
         isolation.data_root = req.scratch_dir / "home";
         isolation.cache_root = req.scratch_dir / "cache";
+        isolation.private_runtime_dir = sandbox_runtime_dir_for_current_user();
         isolation.build = true;
 
         result.commands_run.push_back(render_argv(argv));

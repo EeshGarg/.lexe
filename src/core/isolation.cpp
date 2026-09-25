@@ -12,6 +12,10 @@
 #include <system_error>
 #include <utility>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace lexe {
@@ -52,6 +56,14 @@ std::string to_string(CapabilityStatus s) {
         case CapabilityStatus::SetupFailed: return "setup-failed";
     }
     return "?";
+}
+
+std::string sandbox_runtime_dir_for_current_user() {
+#ifdef _WIN32
+    return {};
+#else
+    return "/run/user/" + std::to_string(static_cast<unsigned long>(::geteuid()));
+#endif
 }
 
 // -------------------------------------------------------------- pure policy
@@ -240,6 +252,12 @@ IsolationPlan build_plan(const IsolationRequest& req,
     plan.binds.push_back({req.data_root.generic_string(), kSandboxData, false});
     plan.binds.push_back({req.cache_root.generic_string(), kSandboxCache, false});
     plan.tmpfs = {kSandboxTemp};
+    // A private, empty `/run/user/<uid>`. Not the host's: this one contains
+    // nothing of the session and goes away with the sandbox. See
+    // sandbox_runtime_dir_for_current_user() for why it exists at all.
+    if (!req.private_runtime_dir.empty()) {
+        plan.tmpfs.push_back(req.private_runtime_dir);
+    }
     plan.controls[IsolationControl::PrivateData] = ControlState::Enforced;
     plan.controls[IsolationControl::PrivateCache] = ControlState::Enforced;
     plan.controls[IsolationControl::PrivateTemp] = ControlState::Enforced;

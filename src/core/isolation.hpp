@@ -131,6 +131,11 @@ struct IsolationRequest {
     /// and optional: a compatibility layer gets no more authority than the
     /// application it is running.
     std::vector<std::string> compatibility_paths;
+    /// Sandbox path of the private per-user runtime directory to establish,
+    /// normally `sandbox_runtime_dir_for_current_user()`. Empty means none —
+    /// which is what the pure tests use, so a plan stays independent of the
+    /// uid the suite happens to run as.
+    std::string private_runtime_dir;
     std::map<std::string, std::string> inherited_env; // caller env (to sanitize)
 };
 
@@ -176,6 +181,21 @@ inline constexpr const char* kSandboxTemp = "/tmp";
 /// application is granted display access. The host's real XDG_RUNTIME_DIR is
 /// never exposed — only the individual display socket is bound in here.
 inline constexpr const char* kSandboxRuntime = "/run/lexe/session";
+
+/// The conventional per-user runtime directory (`/run/user/<uid>`) as the
+/// sandbox should see it: a PRIVATE, empty tmpfs, never the host's.
+///
+/// Software that needs a runtime directory often computes this path from its
+/// own uid and ignores `XDG_RUNTIME_DIR` entirely — Wine is the case that
+/// forced this to exist: with no `/run/user/<uid>` it aborts during prefix
+/// setup, and pointing `XDG_RUNTIME_DIR` somewhere else does not help.
+///
+/// Providing an empty private one costs no isolation: it contains nothing of
+/// the user's session (no Wayland socket, no D-Bus, no keyring), it is
+/// discarded with the sandbox, and the application could already write to
+/// /tmp. What it buys is that "this program needs a runtime directory" stops
+/// being an unexplained abort. Returns "" on platforms without one.
+std::string sandbox_runtime_dir_for_current_user();
 
 /// Build the safe environment for `req`: clears everything and sets only HOME,
 /// PATH, TMPDIR and LEXE_APP_* to sandbox values. Dangerous variables

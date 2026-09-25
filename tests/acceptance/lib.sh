@@ -232,7 +232,8 @@ acc_desktop_entry() { printf '%s/applications/lexe-%s.desktop' "$LEXE_HOME" "$AC
 acc_launch_ref()    { printf '%s/launch/%s.lexe' "$LEXE_HOME" "$ACC_APP_ID"; }
 acc_integration()   { printf '%s/integration.json' "$LEXE_HOME"; }
 acc_mimeapps()      { printf '%s/config-home/mimeapps.list' "$LEXE_HOME"; }
-acc_installation()  { printf '%s/apps/%s/installation.json' "$LEXE_HOME" "$ACC_APP_ID"; }
+acc_installation_for() { printf '%s/apps/%s/installation.json' "$LEXE_HOME" "$1"; }
+acc_installation()  { acc_installation_for "$ACC_APP_ID"; }
 acc_error_dir()     { printf '%s/state/errors/%s' "$LEXE_HOME" "$ACC_APP_ID"; }
 acc_app_data()      { printf '%s/data/%s' "$LEXE_HOME" "$ACC_APP_ID"; }
 acc_version_dir()   { printf '%s/apps/%s/versions/%s' "$LEXE_HOME" "$ACC_APP_ID" "$ACC_APP_VERSION"; }

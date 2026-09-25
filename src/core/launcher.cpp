@@ -572,6 +572,7 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // chain that was just resolved cannot run. Empty for native, which is why
     // the native steady state has nothing extra bound into it either.
     req.compatibility_paths = resolution.chain.argv_prefix;
+    req.private_runtime_dir = sandbox_runtime_dir_for_current_user();
     req.inherited_env = caller_environment();
 
     const std::unique_ptr<IsolationBackend> backend =

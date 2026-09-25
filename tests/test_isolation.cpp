@@ -188,4 +188,93 @@ TEST_CASE("the fake backend records the plan and never executes on setup fail") 
     CHECK_THROWS_AS(broken.run(p), lexe::IsolationError);
 }
 
+// ---------------------------------------------------------------------------
+// What a COMPATIBILITY CHAIN needs from the sandbox.
+//
+// Both of these were found by trying to run a real Windows program: a chain
+// the sandbox cannot reach cannot run anything, and Wine aborts outright
+// without a `/run/user/<uid>`. Neither is visible from reading the code.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a compatibility layer outside /usr is bound into the sandbox") {
+    lexe::test::TempLexeHome home;
+    IsolationRequest r = sample_request(false);
+    // A Steam Proton tree and a hand-built FEX: neither is under /usr, so
+    // neither is reachable from the read-only system view the sandbox has.
+    r.compatibility_paths = {"/opt/fex/bin/FEXInterpreter",
+                             "/home/someone/.steam/proton/bin/proton"};
+
+    const IsolationPlan plan = build_plan(r, full_caps());
+
+    const auto bound = [&](const std::string& host) {
+        return std::any_of(plan.binds.begin(), plan.binds.end(),
+                           [&](const BindMount& b) {
+                               return b.host == host && b.read_only;
+                           });
+    };
+    // The installation PREFIX, not just the executable: a compatibility layer
+    // without its own libraries and data is an executable that fails instantly.
+    CHECK(bound("/opt/fex"));
+    CHECK(bound("/home/someone/.steam/proton"));
+}
+
+TEST_CASE("a compatibility layer already under /usr adds no bind") {
+    lexe::test::TempLexeHome home;
+    IsolationRequest r = sample_request(false);
+    r.compatibility_paths = {"/usr/bin/wine"};
+
+    const IsolationPlan with = build_plan(r, full_caps());
+    IsolationRequest without = sample_request(false);
+    const IsolationPlan native = build_plan(without, full_caps());
+
+    // /usr is already bound read-only, so the distribution case costs nothing —
+    // and the NATIVE chain, which has no layers at all, binds nothing extra.
+    CHECK(with.binds.size() == native.binds.size());
+}
+
+TEST_CASE("a compatibility path is never allowed to bind the host root") {
+    lexe::test::TempLexeHome home;
+    IsolationRequest r = sample_request(false);
+    // A provider resolved to a bare path, or to something at the root. Binding
+    // "/" read-only would hand the application the entire filesystem.
+    r.compatibility_paths = {"/wine", "", "relative/wine"};
+
+    const IsolationPlan plan = build_plan(r, full_caps());
+    for (const BindMount& b : plan.binds) {
+        CAPTURE(b.host);
+        CHECK(b.host != "/");
+    }
+}
+
+TEST_CASE("the sandbox gets a PRIVATE per-user runtime directory") {
+    lexe::test::TempLexeHome home;
+    IsolationRequest r = sample_request(false);
+    r.private_runtime_dir = "/run/user/1000";
+
+    const IsolationPlan plan = build_plan(r, full_caps());
+
+    // A tmpfs — empty, ephemeral, and nothing of the user's session. Wine
+    // computes this path from its own uid and ignores XDG_RUNTIME_DIR, so
+    // without it a foreign-OS launch aborts during prefix setup.
+    CHECK(std::find(plan.tmpfs.begin(), plan.tmpfs.end(), "/run/user/1000") !=
+          plan.tmpfs.end());
+    // The HOST's runtime directory is still never bound.
+    for (const BindMount& b : plan.binds) {
+        CAPTURE(b.host);
+        CHECK(b.host.rfind("/run/user/", 0) != 0);
+    }
+
+    const std::vector<std::string> argv = render_bwrap_argv(plan, "/usr/bin/bwrap");
+    CHECK(argv_has_pair(argv, "--tmpfs", "/run/user/1000"));
+}
+
+TEST_CASE("no private runtime directory is requested, none is created") {
+    lexe::test::TempLexeHome home;
+    const IsolationPlan plan = build_plan(sample_request(false), full_caps());
+    for (const std::string& t : plan.tmpfs) {
+        CAPTURE(t);
+        CHECK(t.rfind("/run/user/", 0) != 0);
+    }
+}
+
 } // TEST_SUITE("isolation")
