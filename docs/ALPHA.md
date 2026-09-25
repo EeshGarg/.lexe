@@ -68,6 +68,23 @@ Each item is backed by evidence in the [checklist](#evidence-linked-alpha-checkl
   (full package view), `lexe apps` (installed-application manager), `lexe config`
   (persisted preferences), grouped help with shell completion, and a first-run
   Builder welcome — all with typed, `--json`-consistent output.
+- **Three payload kinds**, each proven end to end by an acceptance suite
+  ([FORMAT-0.1 §5.3](FORMAT-0.1.md)):
+  - `native` — a compiled Linux ELF, run directly, with no compatibility
+    process anywhere in the steady state;
+  - `portable` — **source**, compiled by the machine that installs it. The
+    compilation is gated on explicit approval, runs unprivileged inside the
+    launcher's sandbox with the network denied, and its output is verified to
+    be a host-ISA executable before anything is promoted;
+  - `windows` — a Windows PE, run through Wine or Proton. The entrypoint is
+    verified to be a runnable PE for a declared architecture before install.
+- **Declared launch presentation** (`gui` / `console` / `service`), including a
+  detached `service` — a detached process with its version leased, explicitly
+  **not** a session-manager service.
+- **Display access for a declared GUI launch**: exactly the session's display
+  socket, font configuration and the GPU nodes, reported truthfully in the
+  control map as a reduction of isolation rather than silently claimed as
+  still enforced.
 
 ## What this Alpha does NOT claim
 
@@ -76,9 +93,21 @@ Stated plainly so the documentation never overreaches:
 - **Not** universal Linux compatibility — portability is the specific,
   verifiable `tux32-core-1` contract, not "runs on any Linux".
 - **Not** production-ready.
-- **No** ARM64, RISC-V, or multi-ISA support; **no** automatic ISA translation.
-- **No** GUI-application forwarding inside the sandbox (Core 1 is
-  headless/terminal).
+- **No proven multi-ISA support.** A manifest may declare `aarch64`, and the
+  resolver selects and argv-prefixes ISA-translation chains (FEX, Box64,
+  qemu-user) from providers it probes for — but every build and every launch of
+  this runtime has happened on x86-64. Cross-ISA execution is
+  designed-but-unproven, and so is the claim that one portable `.lexe` compiles
+  on a second architecture. RISC-V has no architecture id in 0.1 at all.
+- **No proven Proton chain, and no proven graphical foreign-OS application.**
+  Wine runs a Windows console program end to end; Proton is selected and
+  prefixed by the same code and has never been exercised, and neither has a
+  layered chain such as `proton+fex`.
+- **No 32-bit foreign payloads.** FORMAT-0.1 §5 names `x86_64` and `aarch64`
+  only, so a 32-bit Windows program — still common — cannot be declared. It is
+  refused by name rather than mis-reported.
+- **No supervision of a `service`.** It detaches; nothing restarts it, starts
+  it at login, or reports its status.
 - **No** language-runtime dependency harvesting (Python/Java/Node/…).
 - **No** externally verified publisher identity; a valid signature proves
   key-continuity, not a real-world identity.
@@ -105,6 +134,17 @@ Stated plainly so the documentation never overreaches:
   it does not download or assemble sysroots for you (`lexe sdk install` is future).
 - **Trust is local (Tier 1).** Repository endorsement (Tier 2) and root
   accreditation (Tier 3) are designed ([TRUST.md](TRUST.md)) but not implemented.
+- **A portable package is compiled once, at install.** Nothing recompiles it
+  when the host's toolchain or libraries move underneath it; the runtime
+  notices a *changed* entrypoint, not a stale one. `lexe repair <id>
+  --approve-compile` rebuilds it deliberately.
+- **A portable build recipe is a build driver or an argv.** `make`, `cmake`, or
+  an explicit `build.command`; there is no dependency fetching, no configure
+  scripting language, and no network during the build — by design, not by
+  omission.
+- **The Builder builds `make` and `cmake` recipes only.** A portable package
+  needing its own `build.command` argv is written by hand: splitting a command
+  line typed into a text field is the quoting bug an argv exists to avoid.
 
 ## Release artifacts
 
@@ -160,6 +200,13 @@ push (`.github/workflows/ci.yml`).
 | Builder Core Portable gate + report evidence | `tests/test_builder.cpp`, `tests/test_buildreport.cpp` |
 | Distinct version axes + `lexe version` | `tests/test_version.cpp` |
 | Consumer/developer experience (inspect, apps, config, help) | `tests/test_cli_inspect.cpp`, `tests/test_cli_apps.cpp`, `tests/test_settings.cpp`, `tests/test_cli_ux.cpp` |
+| Payload role: the bytes ARE what the manifest declares | `tests/test_payload_role.cpp`, `tests/test_pe.cpp` |
+| Portable code: approval, isolated build, verified output | `tests/test_hostbuild.cpp`, `tests/acceptance/05_portable_compile.sh` |
+| Foreign-OS payloads: declared, verified, run under Wine | `tests/test_pe.cpp`, `tests/acceptance/06_foreign_os.sh` |
+| Execution policy, chains, and a detached `service` | `tests/test_execution_architecture.cpp`, `tests/test_isolation_linux.cpp` |
+| Durable desktop integration across a reboot | `tests/acceptance/02_persistence.sh`, plus the manual `tests/acceptance/REBOOT.md` |
+| No compatibility process in the native steady state | `tests/acceptance/04_native_steady_state.sh` |
+| The GUIs render warning-clean, headlessly | `scripts/gui-smoke.sh` |
 | Warning-clean, markup-safe GUIs | `scripts/gui-smoke.sh` (CI `linux` job) |
 | Cross-distribution portability proof | `scripts/portability-demo.sh` (CI `portability` job) |
 

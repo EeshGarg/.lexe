@@ -192,7 +192,12 @@ availability flags the frontends already render.
   in WSL now, so nothing is skipped for want of a tool.
 * **Push the commits** — see the constraints section of `HANDOFF-PROMPT.txt`.
 * **`lexe-ui` Settings → theme** is persisted but not applied to the running UI.
-* **Update `docs/ALPHA.md`** — the alpha support contract predates all of this.
+* ~~**Update `docs/ALPHA.md`**~~ — done. Its claims, non-claims, limitations
+  and evidence table now cover the three payload kinds, the detached service
+  and display access. It also still carried the stale "no GUI forwarding"
+  non-claim, as did `docs/TRUST-MODEL.md`; both are corrected. Worth a habit:
+  when a capability lands, the two documents that state what the runtime does
+  NOT do are the ones that quietly go out of date.
 * **Wire the sanitizers into a routine run.** They found a real leak the first
   time they were used (see VERIFICATION §11) and nothing runs them habitually.
   The build line is in VERIFICATION §11; CI is the obvious home, with the

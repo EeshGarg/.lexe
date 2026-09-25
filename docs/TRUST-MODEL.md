@@ -129,8 +129,19 @@ display string. The full 64-hex value is available in every structured output.
 For the current **Linux** backend: baseline filesystem controls (read-only app
 image, private data/cache/temp), environment sanitization, and network denial
 (when `network` is not granted) are **enforced**; `network` is **enforced** via a
-network namespace; `user-files-selected` is **advisory**; GUI forwarding is
-**unavailable** (isolated apps are headless); seccomp is **not implemented**. On
+network namespace; `user-files-selected` is **advisory**; seccomp is **not
+implemented**.
+
+**Display access** is granted only for a declared `launch.mode: "gui"`, and
+only the session's display socket plus font configuration and the GPU nodes —
+never D-Bus, the home directory or the network. Because it IS a reduction of
+isolation, the control map reports `display-isolated` as `not-applicable` for
+such a launch rather than continuing to claim it is enforced; for every other
+launch mode no display is reachable and the control is enforced, truthfully.
+(This paragraph previously said GUI forwarding was unavailable and isolated
+applications were headless. That stopped being true when display access was
+implemented, which is exactly the kind of stale claim this document exists to
+prevent.) On
 **Windows** (development host) there is no equivalent runtime containment and no
 cross-process locking, and the UI never implies otherwise.
 
