@@ -47,8 +47,14 @@ struct RunRequest {
     /// console application; prevents an infinite terminal-spawning loop.
     bool attached_terminal = false;
     /// Whether .LEXE may open a terminal for a console application that was
-    /// launched without one. False for `lexe run` under automation/tests.
-    bool allow_terminal_spawn = true;
+    /// launched without one (Definitive Architecture §14.4).
+    ///
+    /// Defaults to FALSE deliberately: opening a window is a user-facing
+    /// frontend behaviour, not something a library call should do behind its
+    /// caller's back. `lexe run` and the graphical frontends opt IN; embedders,
+    /// automation and tests get the quiet behaviour (output captured and
+    /// returned) without having to remember to opt out.
+    bool allow_terminal_spawn = false;
     /// Detach and return immediately instead of waiting (service mode, and
     /// GUI launches from a desktop handler that must not block).
     bool detach = false;

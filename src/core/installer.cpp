@@ -457,6 +457,14 @@ InstallResult Installer::install(const fs::path& lexe_file,
 #endif
         util::spit(txn.staging_meta_dir() / "lexe.json", manifest_bytes);
         util::spit(txn.staging_meta_dir() / "hashes.json", hashes_bytes);
+        // Definitive Architecture §15.1 "Durable integration": per-application
+        // desktop artifacts must be regenerable FROM INSTALLED STATE, with no
+        // package file present. Icons are one of those artifacts, so they are
+        // RETAINED in the per-version meta store and promoted atomically with
+        // the version — not extracted to a scratch directory and thrown away.
+        // Without this, `lexe doctor --repair` has no icon source and could
+        // only ever drop icon registrations.
+        extract_icons(reader, txn.staging_meta_dir() / "icons");
         txn.mark_staged();
         fault::maybe("after-staged");
 
@@ -492,28 +500,22 @@ InstallResult Installer::install(const fs::path& lexe_file,
 
         std::vector<std::string> created_files = record.created_files;
         if (opts.desktop_integration) {
-            const fs::path icons_staging = app_dir / ".staging-icons";
-            util::remove_recursive(icons_staging);
-            try {
-                extract_icons(reader, icons_staging);
-                // Definitive Architecture §14.1/§15.1: integration is
-                // INSTALLED SYSTEM STATE, recorded and repairable — and it
-                // produces the first-class run.lexe launch artifact, so the
-                // raw payload never becomes the user-facing launch object.
-                DesktopIntegration integration(paths_);
-                (void)integration.install_runtime_handler();
-                const IntegrationReport app_integration =
-                    integration.install_app(manifest, icons_staging);
-                std::vector<std::string> integration_files;
-                for (const ArtifactCheck& check : app_integration.checks) {
-                    integration_files.push_back(check.artifact.path);
-                }
-                merge_created_files(created_files, integration_files);
-            } catch (...) {
-                util::remove_recursive(icons_staging);
-                throw;
+            // Definitive Architecture §14.1/§15.1: integration is INSTALLED
+            // SYSTEM STATE, recorded and repairable — and it produces the
+            // first-class run.lexe launch artifact, so the raw payload never
+            // becomes the user-facing launch object. The icon source is the
+            // RETAINED per-version copy, which is the same source `lexe doctor
+            // --repair` uses later.
+            DesktopIntegration integration(paths_);
+            (void)integration.install_runtime_handler();
+            const IntegrationReport app_integration = integration.install_app(
+                manifest,
+                registry.meta_dir(manifest.id, manifest.version) / "icons");
+            std::vector<std::string> integration_files;
+            for (const ArtifactCheck& check : app_integration.checks) {
+                integration_files.push_back(check.artifact.path);
             }
-            util::remove_recursive(icons_staging);
+            merge_created_files(created_files, integration_files);
         }
         new_record.created_files = std::move(created_files);
         // §16: resolve the runtime contract once, here, and record it.
@@ -644,7 +646,7 @@ void Installer::recover_locked(const std::string& id) {
     try {
         DesktopIntegration integration(paths_);
         const IntegrationReport app_integration = integration.install_app(
-            manifest, app_dir / ".txn-staging" / "no-icons");
+            manifest, registry.meta_dir(id, journal.target_version) / "icons");
         std::vector<std::string> integration_files;
         for (const ArtifactCheck& check : app_integration.checks) {
             integration_files.push_back(check.artifact.path);
@@ -944,7 +946,8 @@ RepairReport Installer::repair(const std::string& id,
             registry.write_record(refreshed);
             DesktopIntegration integration(paths_);
             (void)integration.install_runtime_handler();
-            (void)integration.install_app(manifest, version_dir / "icons");
+            (void)integration.install_app(
+                manifest, registry.meta_dir(id, current) / "icons");
         } catch (const std::exception&) {
             // Repair must still verify and restore payload files even when
             // the manifest copy or the desktop layer is unavailable.

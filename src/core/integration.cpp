@@ -414,6 +414,7 @@ DesktopIntegration::install_app(const Manifest& manifest,
                                  sha256_of_file(entry), manifest.id});
         }
 
+        bool wrote_any_icon = false;
         for (const IconMapping& mapping : kIconMappings) {
             const fs::path source = icons_source_dir / mapping.source_name;
             std::error_code ec;
@@ -424,6 +425,24 @@ DesktopIntegration::install_app(const Manifest& manifest,
             util::spit(destination, util::slurp(source));
             artifacts.push_back({ArtifactKind::AppIcon, destination.string(),
                                  sha256_of_file(destination), manifest.id});
+            wrote_any_icon = true;
+        }
+        if (!wrote_any_icon) {
+            // No icon SOURCE is available (an application installed by an
+            // earlier runtime that did not retain its icons). Carry forward
+            // whatever icon registrations already exist on disk instead of
+            // dropping them: replace_scope() below rewrites this application's
+            // whole scope, so anything omitted here would be silently
+            // DE-REGISTERED — its later loss would become undetectable, and
+            // uninstall would leave the files behind. Never forget an artifact
+            // merely because it cannot be regenerated right now.
+            for (const IntegrationArtifact& existing : state.scope(manifest.id)) {
+                if (existing.kind != ArtifactKind::AppIcon) continue;
+                std::error_code ec;
+                if (fs::is_regular_file(fs::path(existing.path), ec)) {
+                    artifacts.push_back(existing);
+                }
+            }
         }
 
         if (!manifest.file_associations.empty()) {
@@ -650,12 +669,14 @@ IntegrationReport DesktopIntegration::repair() {
     for (const std::string& id : installed) {
         try {
             const Manifest manifest = registry.read_manifest(id);
-            // Icons were copied into the hicolor theme at install time; the
-            // package is long gone, so re-copy from the version directory's
-            // icons/ when it exists and otherwise keep what is already there.
+            // The package is long gone by now, so icons come from the RETAINED
+            // per-version copy in the meta store (installer.cpp writes it
+            // there precisely so repair has a source). For an application
+            // installed by an earlier runtime that directory does not exist;
+            // install_app() then carries the existing registrations forward
+            // rather than dropping them.
             const std::string version = registry.current_version(id);
-            const fs::path icons =
-                registry.version_dir(id, version) / "icons";
+            const fs::path icons = registry.meta_dir(id, version) / "icons";
             const IntegrationReport app = install_app(manifest, icons);
             for (const ArtifactCheck& check : app.checks) {
                 after.repaired.push_back(check.artifact.path);

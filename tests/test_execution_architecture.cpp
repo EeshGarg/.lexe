@@ -19,6 +19,9 @@
 #include "helpers.hpp"
 
 #include "core/appconfig.hpp"
+#include "core/crypto.hpp"
+#include "core/installer.hpp"
+#include "core/integration.hpp"
 #include "core/diagnostics.hpp"
 #include "core/error.hpp"
 #include "core/execpolicy.hpp"
@@ -685,6 +688,168 @@ TEST_CASE("a layered chain applies the ISA layer innermost") {
     CHECK(chain->argv_prefix[1] == "/usr/bin/proton"); // then the OS layer
     // A nonsensical ordering is not a chain.
     CHECK_FALSE(make_chain("fex+proton", providers).has_value());
+}
+
+} // TEST_SUITE
+
+TEST_SUITE("integration-durability") {
+
+/// A package that also carries icons, so integration has something to register.
+fs::path make_package_with_icons(const fs::path& work,
+                                 const crypto::KeyPair& key,
+                                 const std::string& id) {
+    test::TestAppSpec spec;
+    spec.id = id;
+    spec.public_key = test::encode_public_key_str(key.public_key);
+    const test::TestAppTree tree =
+        test::make_test_app_tree(work / ("tree-" + id), spec);
+
+    const fs::path icons = work / ("icons-" + id);
+    util::spit(icons / "64.png", std::string_view("png-64-bytes"));
+    util::spit(icons / "128.png", std::string_view("png-128-bytes"));
+    util::spit(icons / "256.png", std::string_view("png-256-bytes"));
+    util::spit(icons / "scalable.svg", std::string_view("<svg/>"));
+
+    PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    inputs.icons_dir = icons;
+    const fs::path out = work / (id + ".lexe");
+    PackageWriter::write(inputs, key, out);
+    return out;
+}
+
+std::size_t registered_icons(const Paths& paths, const std::string& id) {
+    std::size_t n = 0;
+    for (const IntegrationArtifact& a : IntegrationState::load(paths).scope(id)) {
+        if (a.kind == ArtifactKind::AppIcon) ++n;
+    }
+    return n;
+}
+
+TEST_CASE("repair restores a lost icon instead of de-registering the rest") {
+    // REGRESSION. repair() used to look for icons in the VERSION directory,
+    // where they never were: install extracted them to a scratch dir and
+    // deleted it. install_app() therefore recorded zero icon artifacts, and
+    // because it replaces the application's whole scope, repairing an app with
+    // one missing icon silently DE-REGISTERED the other three — leaving them
+    // orphaned on disk, unrepairable, and not removed by uninstall.
+    //
+    // The architectural requirement this violated: per-application desktop
+    // artifacts must be regenerable FROM INSTALLED STATE, with no package
+    // file present. Icons are now retained in the per-version meta store.
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const std::string id = "com.example.icons";
+
+    const fs::path pkg = make_package_with_icons(work.dir, key, id);
+    Installer installer(paths);
+    InstallOptions options;
+    options.desktop_integration = true;
+    installer.install(pkg, options);
+
+    // All four icons are installed AND recorded.
+    CHECK(registered_icons(paths, id) == 4);
+    const fs::path icon64 =
+        paths.icons_dir() / "64x64" / "apps" / ("lexe-" + id + ".png");
+    REQUIRE(fs::is_regular_file(icon64));
+
+    // The icon SOURCE survives the install — this is what makes repair
+    // possible without the original package.
+    const Registry registry(paths);
+    const fs::path retained =
+        registry.meta_dir(id, registry.current_version(id)) / "icons";
+    CHECK(fs::is_regular_file(retained / "64.png"));
+    CHECK(fs::is_regular_file(retained / "scalable.svg"));
+
+    // Lose one icon the way a theme cleanup or a bad uninstall would.
+    fs::remove(icon64);
+    DesktopIntegration integration(paths);
+    const IntegrationReport broken = integration.verify();
+    CHECK_FALSE(broken.ok);
+
+    const IntegrationReport repaired = integration.repair();
+    CHECK(repaired.ok);
+    // The lost icon is BACK...
+    CHECK(fs::is_regular_file(icon64));
+    // ...with the right bytes, not an empty placeholder.
+    CHECK(util::slurp_text(icon64) == "png-64-bytes");
+    // ...and nothing was quietly de-registered.
+    CHECK(registered_icons(paths, id) == 4);
+    CHECK(integration.verify().ok);
+}
+
+TEST_CASE("integration never forgets an artifact it cannot regenerate") {
+    // The legacy case: an application installed by a runtime that did not
+    // retain icons. install_app() has no source, but the registrations that
+    // DO exist must be carried forward — dropping them would make their later
+    // loss undetectable and leave the files behind on uninstall.
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const std::string id = "com.example.legacy";
+
+    const fs::path pkg = make_package_with_icons(work.dir, key, id);
+    Installer installer(paths);
+    InstallOptions options;
+    options.desktop_integration = true;
+    installer.install(pkg, options);
+    REQUIRE(registered_icons(paths, id) == 4);
+
+    // Simulate the older layout: the retained icon source is gone, but the
+    // installed icon files are still there.
+    const Registry registry(paths);
+    util::remove_recursive(
+        registry.meta_dir(id, registry.current_version(id)) / "icons");
+
+    DesktopIntegration integration(paths);
+    const IntegrationReport report = integration.repair();
+    CHECK(report.ok);
+    // Still registered, still verifiable — not silently forgotten.
+    CHECK(registered_icons(paths, id) == 4);
+    CHECK(integration.verify().ok);
+
+    // And uninstall still removes them, because they were never forgotten.
+    installer.uninstall(id, Installer::UninstallMode::AppOnly);
+    CHECK_FALSE(fs::exists(paths.icons_dir() / "64x64" / "apps" /
+                           ("lexe-" + id + ".png")));
+    CHECK(registered_icons(paths, id) == 0);
+}
+
+TEST_CASE("a launch reference is created at install and repaired when lost") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const std::string id = "com.example.launchref";
+
+    const fs::path pkg = make_package_with_icons(work.dir, key, id);
+    Installer installer(paths);
+    InstallOptions options;
+    options.desktop_integration = true;
+    installer.install(pkg, options);
+
+    const fs::path run_lexe = launch_reference_path(paths, id);
+    REQUIRE(fs::is_regular_file(run_lexe));
+    CHECK(verify_package(run_lexe, false).ok());
+
+    // Lose it the way a cleaned-up home directory would.
+    fs::remove(run_lexe);
+    DesktopIntegration integration(paths);
+    CHECK_FALSE(integration.verify().ok);
+    CHECK(integration.repair().ok);
+    REQUIRE(fs::is_regular_file(run_lexe));
+
+    // The regenerated reference is a real, verifiable launch artifact for the
+    // right application — regenerated from installed state, no package needed.
+    CHECK(verify_package(run_lexe, false).ok());
+    const PackageReader reader(run_lexe);
+    const Manifest reference = Manifest::parse(reader.read_entry("lexe.json"));
+    CHECK(reference.role == PackageRole::Launch);
+    CHECK(reference.launch_application_id == id);
 }
 
 } // TEST_SUITE
