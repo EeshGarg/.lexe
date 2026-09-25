@@ -78,6 +78,23 @@ lexe::gui::ViewModel make_vm(const std::optional<Manifest>& manifest,
                                        "x86_64", eval, linux_caps(), delta);
 }
 
+/// make_vm with a toolchain probe, for the portable (§5A) cases.
+lexe::gui::ViewModel make_vm_with_toolchain(
+    const std::optional<Manifest>& manifest, const VerificationReport& report,
+    const fs::path& package, const Paths& paths,
+    const lexe::ToolchainReport& toolchain) {
+    std::optional<lexe::TrustEvaluation> eval;
+    if (manifest.has_value()) {
+        eval = lexe::TrustStore(paths).evaluate(
+            manifest->id, manifest->decoded_public_key(),
+            lexe::signature_state_from_report(report), std::nullopt);
+    }
+    return lexe::gui::build_view_model(manifest, report, package, paths,
+                                       "x86_64", eval, linux_caps(),
+                                       lexe::PermissionDelta{}, 0, "",
+                                       toolchain);
+}
+
 } // namespace
 
 TEST_SUITE("gui") {
@@ -902,6 +919,88 @@ TEST_CASE("the empty state offers both ways in, and promises no shortcut") {
     // And it must not imply that dropping is the easy way past the checks.
     CHECK(contains(text.assurance, "verification"));
     CHECK_FALSE(text.assurance.empty());
+}
+
+// ---------------------------------------------------------------------------
+// The compile approval, in the view model (Definitive Architecture §5A).
+//
+// Installing a portable package runs a build on the user's machine. A frontend
+// that cannot express that consent cannot install one at all — so the window
+// has to say what it will run, before the button, and get an answer. These
+// cases pin the wording and the gating without opening a window.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a portable package asks for compile approval, and says what for") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_portable_package(home.path(), key);
+    const VerificationReport report = lexe::verify_package(pkg);
+    REQUIRE(report.ok());
+
+    lexe::ToolchainReport toolchain;
+    toolchain.complete = true;
+    toolchain.entries = {{"cc", "/usr/bin/cc", true}};
+    toolchain.summary = "build tools found: cc (/usr/bin/cc)";
+
+    const lexe::gui::ViewModel vm = make_vm_with_toolchain(
+        try_read_manifest(pkg), report, pkg, paths, toolchain);
+
+    CHECK(vm.requires_compile_approval);
+    CHECK(vm.compile_possible);
+    CHECK(vm.can_install);
+    // What it will run, where, and under what conditions — the CLI's
+    // announcement with a face on it.
+    CHECK(contains(vm.compile_text, "carries SOURCE"));
+    CHECK(contains(vm.compile_text, "src"));
+    CHECK(contains(vm.compile_text, "x86_64"));
+    CHECK(contains(vm.compile_text, "network denied"));
+    CHECK(contains(vm.compile_text, "cc (/usr/bin/cc)"));
+    CHECK_FALSE(vm.compile_consent_label.empty());
+    // The Application Type line already says installing this compiles it.
+    CHECK(contains(vm.type_text, "compiled on this machine"));
+}
+
+TEST_CASE("a host missing the toolchain is told so, not offered a dead button") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_portable_package(home.path(), key);
+    const VerificationReport report = lexe::verify_package(pkg);
+    REQUIRE(report.ok());
+
+    lexe::ToolchainReport toolchain;
+    toolchain.complete = false;
+    toolchain.missing = {"cc"};
+    toolchain.summary =
+        "this host is missing the build tools this package needs: cc";
+
+    const lexe::gui::ViewModel vm = make_vm_with_toolchain(
+        try_read_manifest(pkg), report, pkg, paths, toolchain);
+
+    CHECK(vm.requires_compile_approval);
+    CHECK_FALSE(vm.compile_possible);
+    // The package is fine; this machine cannot build it. That is not a
+    // verification failure, and Install must not be offered.
+    CHECK(vm.verified);
+    CHECK_FALSE(vm.can_install);
+    CHECK(contains(vm.refusal_text, "cc"));
+}
+
+TEST_CASE("a native package asks for no compile approval at all") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_test_package(home.path(), key);
+    const VerificationReport report = lexe::verify_package(pkg);
+    REQUIRE(report.ok());
+
+    const lexe::gui::ViewModel vm =
+        make_vm(try_read_manifest(pkg), report, pkg, paths);
+
+    CHECK_FALSE(vm.requires_compile_approval);
+    CHECK(vm.compile_text.empty());
+    CHECK(vm.can_install);
 }
 
 } // TEST_SUITE("gui")

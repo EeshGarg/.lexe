@@ -31,6 +31,7 @@
 #endif
 #endif
 
+#include "core/hostbuild.hpp"
 #include "core/isolation.hpp"
 #include "core/manifest.hpp"
 #include "core/paths.hpp"
@@ -465,6 +466,20 @@ struct ViewModel {
     // payload and a bad signature, and never told the user which stage failed.
     std::string refusal_text;
     bool can_install = false;     // §6 passed AND trust allows AND manifest read
+    // ------------------------------------------------ host-ISA compilation
+    // Installing an `applicationType: "portable"` package COMPILES its source
+    // on this machine, which the owner of the installation authorizes
+    // explicitly (Definitive Architecture §5A). A frontend that cannot express
+    // that consent cannot install such a package at all, so these three carry
+    // it: what the install would do, whether this host can do it, and whether
+    // the user has said yes.
+    bool requires_compile_approval = false; // the package is portable
+    bool compile_possible = false;          // the declared toolchain is here
+    std::string compile_text;               // the "Compiles on this machine" block
+    /// The one-line label beside the consent control. Deliberately says what
+    /// approval does NOT grant, because that is the part a cautious user has
+    /// every reason to ask about.
+    std::string compile_consent_label;
     std::vector<std::string> channels;  // Advanced Options channel combo
     int active_channel = 0;             // preselected combo index
     /// Whether this package actually declares somewhere to check for updates.
@@ -496,7 +511,8 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                   const IsolationCapabilities& caps,
                                   const PermissionDelta& delta = {},
                                   std::uint64_t payload_bytes = 0,
-                                  const std::string& installed_version = "") {
+                                  const std::string& installed_version = "",
+                                  const ToolchainReport& toolchain = {}) {
     ViewModel vm;
     const std::string filename = package_path.filename().string();
     vm.verified = report.ok();
@@ -623,6 +639,33 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                 "\nThe 0.1 permission vocabulary is frozen. A package may only "
                 "request permissions this runtime knows how to enforce or "
                 "record, so there is nothing to consent to here.";
+        }
+    }
+
+    // Host-ISA compilation (§5A). This is the one install that runs a build on
+    // the user's machine, so the window has to say so BEFORE the button is
+    // pressed, name what it will run, and get an answer — the CLI's
+    // `--approve-compile` with a face on it.
+    if (manifest.has_value() &&
+        manifest->application_kind == ApplicationType::Portable) {
+        vm.requires_compile_approval = true;
+        vm.compile_possible = toolchain.complete;
+        vm.compile_text =
+            "This package carries SOURCE, not a program. Installing it "
+            "compiles \"" + manifest->build.source_dir + "\" for " + host_arch +
+            " with `" + to_string(manifest->build.system) +
+            "` on this machine.\nThe build runs unprivileged, in the same "
+            "sandbox applications run in, with the network denied. Its result "
+            "is checked to be a native executable for this machine before "
+            "anything is installed.\n" + toolchain.summary;
+        vm.compile_consent_label =
+            "Compile this application's source on this machine";
+        if (!toolchain.complete) {
+            // Not a verification failure: the package is fine, this host
+            // cannot build it. Say which, and do not offer a button that
+            // could only fail.
+            vm.can_install = false;
+            vm.refusal_text = toolchain.summary;
         }
     }
     return vm;
@@ -820,6 +863,12 @@ struct AppState {
     GtkWidget* channel_combo = nullptr;
     GtkWidget* accept_permissions_check = nullptr;
     bool accept_permissions = false; // read on the main thread, before the worker
+    /// ADMIN COMPILE APPROVAL for a portable package (§5A). A separate control
+    /// and a separate flag from the permission consent above, for the same
+    /// reason the CLI keeps `--approve-compile` separate from
+    /// `--accept-permissions`: each authorizes one specific thing.
+    GtkWidget* approve_compile_check = nullptr;
+    bool approve_compile = false;
     GtkWidget* spinner = nullptr;
     GtkWidget* progress_label = nullptr;
     GtkWidget* progress_stage_label = nullptr;
@@ -1018,6 +1067,9 @@ gpointer install_worker(gpointer user_data) {
         // A separate, explicit act — never implied by pressing Install, exactly
         // as the CLI never implies it from --yes.
         opts.allow_permission_expansion = st->accept_permissions;
+        // Likewise separate: consenting to an install is not consenting to run
+        // a compiler on this machine.
+        opts.approve_compile = st->approve_compile;
         lexe::Installer installer(st->paths);
         const lexe::InstallResult result =
             installer.install(st->package_path, opts);
@@ -1107,6 +1159,10 @@ void on_install_clicked(GtkButton*, gpointer user_data) {
         st->accept_permissions_check != nullptr &&
         gtk_toggle_button_get_active(
             GTK_TOGGLE_BUTTON(st->accept_permissions_check));
+    st->approve_compile =
+        st->approve_compile_check != nullptr &&
+        gtk_toggle_button_get_active(
+            GTK_TOGGLE_BUTTON(st->approve_compile_check));
     if (channel != nullptr) g_free(channel);
 
     gtk_widget_set_sensitive(st->install_button, FALSE);
@@ -1198,11 +1254,23 @@ void update_install_sensitivity(AppState* st) {
         (st->accept_permissions_check != nullptr &&
          gtk_toggle_button_get_active(
              GTK_TOGGLE_BUTTON(st->accept_permissions_check)));
-    gtk_widget_set_sensitive(st->install_button,
-                             (st->vm.can_install && consented) ? TRUE : FALSE);
+    // The same rule for compilation (§5A): pressing Install must not be the
+    // act that authorizes running a build on this machine.
+    const bool compile_approved =
+        !st->vm.requires_compile_approval ||
+        (st->approve_compile_check != nullptr &&
+         gtk_toggle_button_get_active(
+             GTK_TOGGLE_BUTTON(st->approve_compile_check)));
+    gtk_widget_set_sensitive(
+        st->install_button,
+        (st->vm.can_install && consented && compile_approved) ? TRUE : FALSE);
 }
 
 void on_accept_permissions_toggled(GtkToggleButton*, gpointer user_data) {
+    update_install_sensitivity(static_cast<AppState*>(user_data));
+}
+
+void on_approve_compile_toggled(GtkToggleButton*, gpointer user_data) {
     update_install_sensitivity(static_cast<AppState*>(user_data));
 }
 
@@ -1280,6 +1348,9 @@ GtkWidget* build_details_page(AppState* st) {
 
     add_section(box, "Source:", vm.source_text);
     add_section(box, "Application Type:", vm.type_text);
+    if (vm.requires_compile_approval) {
+        add_section(box, "Compiles on this machine:", vm.compile_text);
+    }
     add_section(box, "Permissions:", vm.permissions_text);
     if (!vm.permission_delta_text.empty()) {
         add_section(box, "Permission changes:", vm.permission_delta_text);
@@ -1350,6 +1421,23 @@ GtkWidget* build_action_bar(AppState* st) {
                          G_CALLBACK(on_accept_permissions_toggled), st);
         gtk_box_pack_start(GTK_BOX(bar), st->accept_permissions_check, TRUE,
                            TRUE, 0);
+    }
+
+    // The compile approval sits beside the button too, and for the same
+    // reason. It is only offered when this host can actually build the
+    // package — a tick box that can only lead to a failed install is worse
+    // than no tick box.
+    if (st->vm.requires_compile_approval && st->vm.compile_possible) {
+        st->approve_compile_check =
+            gtk_check_button_new_with_label(st->vm.compile_consent_label.c_str());
+        gtk_widget_set_halign(st->approve_compile_check, GTK_ALIGN_START);
+        gtk_label_set_line_wrap(
+            GTK_LABEL(gtk_bin_get_child(GTK_BIN(st->approve_compile_check))),
+            TRUE);
+        g_signal_connect(st->approve_compile_check, "toggled",
+                         G_CALLBACK(on_approve_compile_toggled), st);
+        gtk_box_pack_start(GTK_BOX(bar), st->approve_compile_check, TRUE, TRUE,
+                           0);
     }
 
     GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -1803,10 +1891,18 @@ void load_package(AppState* st, const std::filesystem::path& package) {
     } catch (const std::exception&) {
     }
 
+    // Effectful, like the trust evaluation and the isolation probe above: what
+    // this host can build is a fact about the host, so it is gathered here and
+    // the pure view-model builder only formats it.
+    lexe::ToolchainReport toolchain;
+    if (manifest.has_value() &&
+        manifest->application_kind == lexe::ApplicationType::Portable) {
+        toolchain = lexe::probe_toolchain(manifest->build);
+    }
     st->vm = lexe::gui::build_view_model(manifest, report, st->package_path,
                                          st->paths, lexe::host_architecture(),
                                          eval, caps, delta, payload_bytes,
-                                         installed_version);
+                                         installed_version, toolchain);
     st->has_package = true;
     if (!st->vm.channels.empty()) {
         st->selected_channel =

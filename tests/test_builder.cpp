@@ -628,4 +628,75 @@ TEST_CASE("an ambiguous or unusable drop is refused rather than guessed at") {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The wizard builds NATIVE packages, and says so before it signs one.
+//
+// It used to tell developers "a script or interpreted app is fine" while
+// choosing the entrypoint, and then hand them a package the `payload-role`
+// stage refuses on the way in — the same defect the stage exists to catch,
+// arrived at through the tool that is supposed to prevent it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a non-ELF entrypoint is refused before the package is built") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.entrypoint_kind = lexe::gui::PayloadKind::NotRunnable;
+
+    const lexe::gui::ValidationResult r = lexe::gui::validate_form(form);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("runnable ELF") != std::string::npos);
+    // …and it names both of the types that DO fit, rather than leaving the
+    // developer to discover them from a failed install.
+    CHECK(r.error.find("portable") != std::string::npos);
+}
+
+TEST_CASE("a Windows entrypoint is refused, and named as what it is") {
+    lexe::test::TempLexeHome home;
+    lexe::gui::BuilderForm form = valid_form();
+    form.entrypoint_kind = lexe::gui::PayloadKind::WindowsPe;
+
+    const lexe::gui::ValidationResult r = lexe::gui::validate_form(form);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("WINDOWS executable") != std::string::npos);
+    CHECK(r.error.find("\"windows\"") != std::string::npos);
+    // A Windows package also needs a chain that can run it; saying only
+    // "use applicationType windows" would send them to the next refusal.
+    CHECK(r.error.find("Proton") != std::string::npos);
+}
+
+TEST_CASE("classify_payload_file reads the bytes, not the name") {
+    lexe::test::TempLexeHome home;
+    const fs::path dir = home.path() / "payload";
+
+    // A real ELF executable, a real PE, and a shell script that is named like
+    // a program. The name is never the evidence.
+    lexe::test::write_elf_executable_for_arch(dir / "app", "x86_64");
+    lexe::test::write_pe(dir / "app.exe", lexe::test::PeSpec{});
+    lexe::util::spit(dir / "run", std::string_view("#!/bin/sh\nexit 0\n"));
+    lexe::util::spit(dir / "notes.txt.exe", std::string_view("not a program\n"));
+
+    CHECK(lexe::gui::classify_payload_file(dir / "app") ==
+          lexe::gui::PayloadKind::NativeElf);
+    CHECK(lexe::gui::classify_payload_file(dir / "app.exe") ==
+          lexe::gui::PayloadKind::WindowsPe);
+    CHECK(lexe::gui::classify_payload_file(dir / "run") ==
+          lexe::gui::PayloadKind::NotRunnable);
+    CHECK(lexe::gui::classify_payload_file(dir / "notes.txt.exe") ==
+          lexe::gui::PayloadKind::NotRunnable);
+    CHECK(lexe::gui::classify_payload_file(dir / "nothing-here") ==
+          lexe::gui::PayloadKind::NotRunnable);
+}
+
+TEST_CASE("the no-executable summary no longer invites an unbuildable package") {
+    lexe::test::TempLexeHome home;
+    const fs::path dir = home.path() / "scripts";
+    lexe::util::spit(dir / "run.sh", std::string_view("#!/bin/sh\nexit 0\n"));
+
+    const lexe::gui::SourceDetection d = lexe::gui::detect_source(dir);
+    CHECK_FALSE(d.ok);
+    CHECK(d.summary.find("must be a compiled ELF program") != std::string::npos);
+    CHECK(d.summary.find("script or interpreted app is fine") ==
+          std::string::npos);
+}
+
 } // TEST_SUITE("builder")

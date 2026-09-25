@@ -1090,6 +1090,11 @@ struct Ui {
     lexe::gui::ViewModel vm;
     std::string install_note;
     std::string selected_channel = "stable";
+    /// ADMIN COMPILE APPROVAL for a portable package (§5A). Its own flag and
+    /// its own control, kept separate from every other consent for the same
+    /// reason the CLI keeps `--approve-compile` separate from `--yes`.
+    bool approve_compile = false;
+    GtkWidget* approve_compile_check = nullptr;
     std::string installed_id;
     std::string installed_version;
 
@@ -1708,14 +1713,17 @@ void start_install(Ui* ui) {
     const lexe::Paths paths = ui->paths;
     const fs::path package = ui->package_path;
     const std::string channel = ui->selected_channel;
+    const bool approve_compile = ui->approve_compile;
     auto result = std::make_shared<lexe::InstallResult>();
     auto failure = std::make_shared<std::string>();
     run_task(
         ui,
-        [paths, package, channel, result, failure] {
+        [paths, package, channel, approve_compile, result, failure] {
             try {
                 lexe::InstallOptions options;
                 options.channel = channel;
+                // §5A: a separate, explicit act. Pressing Install is not it.
+                options.approve_compile = approve_compile;
                 *result = lexe::Installer(paths).install(package, options);
             } catch (const std::exception& e) {
                 *failure = e.what();
@@ -1753,6 +1761,9 @@ struct PackageView {
     std::optional<lexe::TrustEvaluation> eval;
     lexe::PermissionDelta delta;
     lexe::IsolationCapabilities caps;
+    /// What this host can build, when the package is portable (§5A). Probed
+    /// here with the other host facts so the pure view model only formats it.
+    lexe::ToolchainReport toolchain;
 };
 
 PackageView gather_package_view(const lexe::Paths& paths, const fs::path& file) {
@@ -1810,6 +1821,10 @@ PackageView gather_package_view(const lexe::Paths& paths, const fs::path& file) 
         view.caps = lexe::make_isolation_backend(paths)->capabilities();
     } catch (const std::exception&) {
     }
+    if (view.manifest.has_value() &&
+        view.manifest->application_kind == lexe::ApplicationType::Portable) {
+        view.toolchain = lexe::probe_toolchain(view.manifest->build);
+    }
     return view;
 }
 
@@ -1841,7 +1856,9 @@ void apply_package_view(Ui* ui, const PackageView& view) {
 
     ui->vm = lexe::gui::build_view_model(
         view.manifest, view.report, ui->package_path, ui->paths,
-        lexe::host_architecture(), view.eval, view.caps, view.delta);
+        lexe::host_architecture(), view.eval, view.caps, view.delta,
+        /*payload_bytes=*/0, /*installed_version=*/"", view.toolchain);
+    ui->approve_compile = false; // a fresh package, a fresh decision
     if (!ui->vm.channels.empty()) {
         ui->selected_channel =
             ui->vm.channels[static_cast<std::size_t>(ui->vm.active_channel)];
@@ -1933,6 +1950,15 @@ void on_channel_changed(GtkComboBox* combo, gpointer data) {
     gchar* text = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo));
     if (text != nullptr && *text != '\0') ui->selected_channel = text;
     if (text != nullptr) g_free(text);
+}
+
+void on_approve_compile_toggled(GtkToggleButton* toggle, gpointer data) {
+    Ui* ui = action_of(data)->ui;
+    if (ui->building) return;
+    ui->approve_compile = gtk_toggle_button_get_active(toggle) != FALSE;
+    // Rebuild so the Install button follows the decision immediately; a
+    // disabled button whose reason is a tick box above it is a dead end.
+    refresh(ui);
 }
 
 void on_install_reset_clicked(GtkButton*, gpointer data) {
@@ -2316,6 +2342,9 @@ void build_install_details(Ui* ui, GtkWidget* box) {
     }
     add_section(box, "Source:", vm.source_text);
     add_section(box, "Application Type:", vm.type_text);
+    if (vm.requires_compile_approval) {
+        add_section(box, "Compiles on this machine:", vm.compile_text);
+    }
     add_section(box, "Permissions:", vm.permissions_text);
     if (!vm.permission_delta_text.empty()) {
         add_section(box, "Permission changes:", vm.permission_delta_text);
@@ -2346,11 +2375,37 @@ void build_install_details(Ui* ui, GtkWidget* box) {
     gtk_container_add(GTK_CONTAINER(expander), advanced);
     gtk_box_pack_start(GTK_BOX(box), expander, FALSE, FALSE, 0);
 
+    // The compile consent sits with the button it gates, and is only offered
+    // when this host can actually build the package: a tick box that can only
+    // lead to a failed install is worse than no tick box.
+    ui->approve_compile_check = nullptr;
+    if (vm.requires_compile_approval && vm.compile_possible) {
+        ui->approve_compile_check =
+            gtk_check_button_new_with_label(vm.compile_consent_label.c_str());
+        gtk_toggle_button_set_active(
+            GTK_TOGGLE_BUTTON(ui->approve_compile_check),
+            ui->approve_compile ? TRUE : FALSE);
+        gtk_label_set_line_wrap(
+            GTK_LABEL(gtk_bin_get_child(GTK_BIN(ui->approve_compile_check))),
+            TRUE);
+        connect_action(ui->approve_compile_check, "toggled",
+                       G_CALLBACK(on_approve_compile_toggled), ui);
+        gtk_box_pack_start(GTK_BOX(box), ui->approve_compile_check, FALSE,
+                           FALSE, 0);
+    }
+
     GtkWidget* row = add_button_row(box);
     GtkWidget* install =
         add_button(row, "Install", G_CALLBACK(on_install_clicked), ui);
-    gtk_widget_set_sensitive(install, vm.can_install ? TRUE : FALSE);
-    if (vm.can_install) style_class(install, "suggested-action");
+    const bool compile_approved =
+        !vm.requires_compile_approval || ui->approve_compile;
+    const bool ready = vm.can_install && compile_approved;
+    gtk_widget_set_sensitive(install, ready ? TRUE : FALSE);
+    if (ready) style_class(install, "suggested-action");
+    if (vm.can_install && !compile_approved) {
+        add_body(box, "Install is waiting on your approval to compile this "
+                      "application's source on this machine.");
+    }
     add_button(row, "Choose a different file…",
                G_CALLBACK(on_choose_file_clicked), ui);
     if (!vm.can_install) {

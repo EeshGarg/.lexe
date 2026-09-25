@@ -38,6 +38,7 @@
 #include "core/depengine.hpp"
 #include "core/elf.hpp"
 #include "core/paths.hpp"
+#include "core/pe.hpp"
 #include "core/runtime_profile.hpp"
 #include "core/settings.hpp"
 #include "core/tux32.hpp"
@@ -67,6 +68,43 @@ namespace lexe::gui {
 // unit-testable on hosts without GTK (the Windows dev host).
 // ---------------------------------------------------------------------------
 
+/// What the chosen entrypoint's bytes actually ARE.
+///
+/// This wizard builds `applicationType: "native"` packages, and the
+/// `payload-role` verification stage requires a native package's entrypoint to
+/// be a runnable ELF. Detecting that here is the difference between refusing a
+/// build and shipping a package that fails verification on the way in — which
+/// is what happened while this window told developers "a script or interpreted
+/// app is fine".
+enum class PayloadKind {
+    NativeElf,   // a runnable ELF: what a "native" package needs
+    WindowsPe,   // a Windows executable: applicationType "windows"
+    NotRunnable, // a script, source text, data — not a program at all
+};
+
+/// Why this entrypoint cannot go into a native package, and what to do
+/// instead. Empty when it can.
+inline std::string entrypoint_refusal(PayloadKind kind) {
+    switch (kind) {
+    case PayloadKind::NativeElf:
+        return {};
+    case PayloadKind::WindowsPe:
+        return "That entrypoint is a WINDOWS executable, not a Linux one. It "
+               "belongs in a package declaring applicationType \"windows\", "
+               "which also has to permit a Wine or Proton execution chain. "
+               "This wizard builds native Linux packages; write the manifest "
+               "by hand and use `lexe build` for a Windows payload.";
+    case PayloadKind::NotRunnable:
+        break;
+    }
+    return "That entrypoint is not a compiled program — a native package's "
+           "entrypoint must be a runnable ELF executable, and verification "
+           "refuses anything else before it installs. Compile it first, or, "
+           "if you mean to ship SOURCE and have each machine compile it, "
+           "declare applicationType \"portable\" with a `build` block and use "
+           "`lexe build`.";
+}
+
 /// Every field the builder form collects, as plain values. `available_entrypoints`
 /// is the set of regular files found in the chosen folder (relative, '/'-joined);
 /// the chosen `entrypoint` must be one of them.
@@ -88,6 +126,10 @@ struct BuilderForm {
     RuntimeProfile profile = RuntimeProfile::CorePortable; // target profile
     std::uint64_t payload_size_bytes = 0;    // for install.estimatedSize
     bool bundle_icons = false;               // an icons/ folder is present to ship
+    /// What the chosen entrypoint's bytes are, read from the file when it was
+    /// chosen. Defaults to NativeElf so a caller that does not classify keeps
+    /// the old behaviour rather than being refused for a fact nobody checked.
+    PayloadKind entrypoint_kind = PayloadKind::NativeElf;
 };
 
 /// Result of validate_form(): a pass, or the first human-readable reason the
@@ -178,6 +220,15 @@ inline ValidationResult validate_form(const BuilderForm& form) {
                   form.entrypoint) == form.available_entrypoints.end()) {
         result.error = "The chosen entrypoint \"" + form.entrypoint +
                        "\" is not a file in the selected folder.";
+        return result;
+    }
+    if (const std::string refusal = entrypoint_refusal(form.entrypoint_kind);
+        !refusal.empty()) {
+        // Refuse HERE, not after signing: a package whose entrypoint is not
+        // what its manifest declares is rejected by `payload-role` on the way
+        // in, and a developer who learns that from a failed install has been
+        // told the wrong thing twice.
+        result.error = refusal;
         return result;
     }
     if (selected_architectures(form).empty()) {
@@ -419,10 +470,30 @@ inline SourceDetection detect_source(const std::filesystem::path& folder) {
     } else if (d.entrypoints.empty()) {
         d.summary = "This folder is empty or unreadable.";
     } else {
-        d.summary = "No native executable detected — choose the entrypoint "
-                    "manually (a script or interpreted app is fine).";
+        // This used to say "a script or interpreted app is fine". It is not:
+        // a native package's entrypoint must be a runnable ELF, and
+        // verification refuses anything else before it installs — so that
+        // sentence invited developers to build a package that could not be
+        // installed, and told them nothing about the two types that do fit.
+        d.summary =
+            "No native executable detected. A native package's entrypoint "
+            "must be a compiled ELF program; a script, a Windows .exe or "
+            "source code needs a different applicationType (\"portable\" or "
+            "\"windows\"), which this wizard does not build.";
     }
     return d;
+}
+
+/// What the bytes at `file` are. Effectful (it reads the file); the pure layer
+/// above decides what to do about the answer.
+inline PayloadKind classify_payload_file(const std::filesystem::path& file) {
+    const elf::ElfInfo elf_info = elf::read(file);
+    if (elf_info.is_elf && (elf_info.type == elf::Type::Executable ||
+                            elf_info.type == elf::Type::SharedObject)) {
+        return PayloadKind::NativeElf;
+    }
+    if (pe::read(file).is_pe) return PayloadKind::WindowsPe;
+    return PayloadKind::NotRunnable;
 }
 
 /// The Build gate for a chosen runtime profile, given the analyzed source.
@@ -1279,6 +1350,13 @@ lexe::gui::BuilderForm gather_form(BuilderState* st) {
     form.perm_user_files_selected =
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->perm_userfiles_check));
     form.available_entrypoints = st->detection.entrypoints;
+    // Read the chosen file's bytes, so the wizard refuses a payload the
+    // `payload-role` stage would refuse anyway — before it is signed.
+    form.entrypoint_kind =
+        form.entrypoint.empty()
+            ? lexe::gui::PayloadKind::NativeElf
+            : lexe::gui::classify_payload_file(fs::path(st->folder) /
+                                               fs::path(form.entrypoint));
     form.profile = selected_profile(st);
     form.payload_size_bytes = st->detection.payload_size;
     form.bundle_icons = !st->detection.icons.empty();
