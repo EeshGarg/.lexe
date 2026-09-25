@@ -85,6 +85,13 @@
 #include "core/trust.hpp"
 #include "core/verify.hpp"
 
+// The shared visual language. main.cpp guards its own include of this on
+// LEXE_GUI_VIEWMODEL_ONLY, and the include above always defines that symbol to
+// suppress the installer's GTK layer — so this file has to ask for it itself.
+#if !defined(LEXE_GUI_VIEWMODEL_ONLY)
+#include "gui/style.hpp"
+#endif
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -1029,6 +1036,13 @@ inline std::string format_handler_state(const IntegrationReport& report) {
 namespace {
 
 namespace fs = std::filesystem;
+namespace style = lexe::gui::style;
+
+struct Ui;
+/// Defined beside build_window, which takes the "what does the desktop want?"
+/// snapshot it depends on; declared here because the Settings handler above it
+/// is what makes a theme change take effect.
+void apply_theme(Ui* ui, const std::string& value);
 
 /// The single-instance identity. A second `lexe-ui` invocation with this id is
 /// forwarded to the running process as a command line instead of starting a
@@ -1095,6 +1109,9 @@ struct Ui {
     /// reason the CLI keeps `--approve-compile` separate from `--yes`.
     bool approve_compile = false;
     GtkWidget* approve_compile_check = nullptr;
+    /// What the DESKTOP wants, snapshotted before the first style::apply
+    /// overwrites the flag that answers it. See apply_theme().
+    gboolean desktop_prefers_dark = FALSE;
     std::string installed_id;
     std::string installed_version;
 
@@ -2189,6 +2206,9 @@ void on_setting_combo_changed(GtkComboBox* combo, gpointer data) {
         settings.set(action->a, value);
         settings.save(ui->paths);
         ui->settings = settings;
+        // Act on it, not just record it. The theme is the one key whose whole
+        // effect is on this window.
+        if (action->a == "theme") apply_theme(ui, value);
         set_status(ui, lexe::ui::setting_title(action->a) + " set to " + value +
                            ".");
     } catch (const std::exception& e) {
@@ -3232,7 +3252,38 @@ void navigate_app(Ui* ui, const std::string& id, const std::string& section) {
     ensure_section_data(ui);
 }
 
+/// Apply the Settings theme to the LIVE window (Settings → Theme).
+///
+/// This window used to ignore the setting entirely: the value was validated,
+/// saved and read back, and nothing ever called `style::apply`, so choosing
+/// Dark changed a file and nothing else. A setting that persists a preference
+/// it does not act on is worse than no setting.
+///
+/// The System case needs care, and the reason is subtle enough that the
+/// builder documents it too: `style::apply` WRITES the theme it resolved into
+/// GTK's `gtk-application-prefer-dark-theme`, and resolving System reads that
+/// same flag back to ask what the desktop wants. Once a window has been Dark
+/// the flag says "dark" from then on, so Dark → System would stay dark on a
+/// light desktop. The desktop's own answer is snapshotted before the first
+/// apply and put back here.
+void apply_theme(Ui* ui, const std::string& value) {
+    if (value == "system") {
+        if (GtkSettings* settings = gtk_settings_get_default()) {
+            g_object_set(settings, "gtk-application-prefer-dark-theme",
+                         ui->desktop_prefers_dark, nullptr);
+        }
+    }
+    style::apply(style::theme_from_string(value));
+}
+
 void build_window(Ui* ui) {
+    // Before the first style::apply, which overwrites the flag this reads.
+    if (GtkSettings* settings = gtk_settings_get_default()) {
+        g_object_get(settings, "gtk-application-prefer-dark-theme",
+                     &ui->desktop_prefers_dark, nullptr);
+    }
+    apply_theme(ui, ui->settings.get("theme"));
+
     ui->window = gtk_application_window_new(ui->app);
     gtk_window_set_default_size(GTK_WINDOW(ui->window), 1020, 740);
     connect_action(ui->window, "destroy", G_CALLBACK(on_window_destroy), ui);
