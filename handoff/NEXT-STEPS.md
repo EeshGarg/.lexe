@@ -180,13 +180,13 @@ availability flags the frontends already render.
 * ~~**Surface the compile approval in the GUIs**~~ — done. Both frontends now
   render it beside Install, gated like permission consent, and only when this
   host can actually build the package.
-* **`lexe-builder` cannot build a portable or Windows project.** It writes
-  `applicationType: "native"` unconditionally (`src/gui/builder.cpp`) and has no
-  UI for the `build` block or for `execution.allowedChains`. It no longer
-  *misleads* — it reads the chosen entrypoint's bytes and refuses with the type
-  that does fit — but a developer wanting either type still has to write the
-  manifest by hand and use `lexe build`. The wizard's form and
-  `build_manifest_json()` are where that would go.
+* ~~**`lexe-builder` cannot build a portable or Windows project**~~ — done. An
+  Application type selector drives all three, with only the fields each type
+  uses. It offers `make` and `cmake` but **not** `build.system: "command"`, on
+  purpose: an argv typed into a text box has to be split again, and splitting a
+  command line is the quoting bug an argv exists to avoid. A recipe needing one
+  is still written by hand. If that ever changes, the honest shape is a
+  repeating one-argument-per-row list, never a single text field.
 * ~~**Install the missing dev tooling**~~ — done, see [MACHINE.md](MACHINE.md).
   bubblewrap, GTK 3, valgrind, strace, xvfb, ccache and unzip are all present
   in WSL now, so nothing is skipped for want of a tool.

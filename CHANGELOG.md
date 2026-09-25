@@ -67,6 +67,14 @@ description, including a plainly-stated list of what is still missing.
 
   Proton has still never been exercised, and no GUI Windows application has
   been run.
+- **`lexe-builder` builds all three payload kinds.** An Application type
+  selector replaces the hard-coded `applicationType: "native"`, bringing only
+  the fields each type uses: the build system, source directory and toolchain
+  for `portable`, and the permitted Wine/Proton chains for `windows`. A
+  portable package's entrypoint is the file the build must produce, so the
+  wizard refuses one that already exists in the payload. It offers `make` and
+  `cmake` but deliberately not `build.system: "command"` — an argv typed into a
+  text field has to be split again, which is the quoting bug an argv avoids.
 - **`launch.mode: "service"` detaches.** It was declared, parsed and carried
   through while behaving exactly like a foreground launch. A service now starts
   and the call returns: the sandbox is not tied to the process that started it,
