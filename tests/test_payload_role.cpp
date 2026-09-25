@@ -338,4 +338,74 @@ TEST_CASE("payload-role sits between hashes and compatibility") {
     CHECK(compat == role + 1);
 }
 
+// ---------------------------------------------------------------------------
+// The inverse of the alpha bug: applicationType "portable" (FORMAT-0.1 §6.7).
+//
+// The alpha shipped SOURCE labelled as a native payload. A portable package
+// shipping a prebuilt binary is the same lie told the other way round: the
+// package claims the destination machine compiles it, while the entrypoint
+// that ends up installed is a binary this host never built. Stage 7 refuses
+// both, and for the same reason — the bytes must BE what the manifest says.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a portable package carrying source passes payload-role") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_portable_package(home.path(), key);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    REQUIRE(report.ok());
+    const std::string detail = stage_detail(report, kPayloadRole);
+    CHECK(contains(detail, "portable"));
+    // The stage says what it checked, including that the entrypoint is absent
+    // on purpose rather than missing by accident.
+    CHECK(contains(detail, "src"));
+    CHECK(contains(detail, "bin/app"));
+}
+
+TEST_CASE("a portable package that ships its entrypoint is refused") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::PortableAppSpec spec;
+    spec.id = "com.example.prebuilt";
+    spec.ship_prebuilt_entrypoint = true;
+    const fs::path pkg =
+        lexe::test::make_portable_package(home.path(), key, spec);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    const std::string detail = failure_detail(report);
+    CHECK(contains(detail, "bin/app"));
+    CHECK(contains(detail, "portable"));
+    // And it says WHY, in the terms a publisher can act on.
+    CHECK(contains(detail, "native payload wearing a portable label"));
+}
+
+TEST_CASE("a portable package with no source is refused") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::PortableAppSpec spec;
+    spec.id = "com.example.nosource";
+    spec.omit_source = true;
+    const fs::path pkg =
+        lexe::test::make_portable_package(home.path(), key, spec);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    CHECK(contains(failure_detail(report), "src"));
+    CHECK(contains(failure_detail(report),
+                   "must carry the source it is compiled from"));
+}
+
+TEST_CASE("a portable package's source is not judged as an ELF") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    // The exact shape of the original defect — C source in the payload — is
+    // correct here, and must not trip the native ELF check.
+    const fs::path pkg = lexe::test::make_portable_package(home.path(), key);
+    const VerificationReport report = lexe::verify_package(pkg);
+    REQUIRE(report.ok());
+    CHECK_FALSE(contains(stage_detail(report, kPayloadRole), "ELF"));
+}
+
 } // TEST_SUITE("payload_role")

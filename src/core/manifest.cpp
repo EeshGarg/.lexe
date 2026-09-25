@@ -163,11 +163,14 @@ void validate_id(const std::string& id) {
     }
 }
 
-/// FORMAT-0.1 §5: entrypoint.executable is a relative path inside payload/ —
-/// no leading '/', no ".." segment, no backslash (and, mirroring the §2 entry
-/// rules, no NUL byte and no Windows drive designator).
-void validate_entrypoint_path(const std::string& path) {
-    static const char* const kField = "\"entrypoint.executable\"";
+/// FORMAT-0.1 §5: a manifest field naming something inside `payload/` is a
+/// relative path — no leading '/', no ".." segment, no backslash (and,
+/// mirroring the §2 entry rules, no NUL byte and no Windows drive
+/// designator). `entrypoint.executable` and `build.sourceDir` are both such
+/// fields and are held to the same rules by the same code.
+void validate_relative_payload_path(const std::string& path,
+                                    const std::string& field) {
+    const std::string kField = "\"" + field + "\"";
     if (path.find('\0') != std::string::npos) {
         fail(std::string(kField) + " must not contain NUL bytes");
     }
@@ -290,6 +293,95 @@ void parse_execution(const json& root, Manifest& m) {
                      "but execution.allowedChains contains \"" + chain + "\"");
             }
         }
+    }
+}
+
+/// FORMAT-0.1 §5.8 — how a portable package is built on the destination
+/// machine. Present exactly when `applicationType` is `"portable"`: a native
+/// package declaring a build recipe is a contradiction (there is nothing to
+/// build), and a portable package without one cannot be installed anywhere.
+///
+/// Everything here is validated BEFORE any approval is asked for and long
+/// before anything is executed, so an unbuildable package is refused by the
+/// parser rather than halfway through a compile.
+void parse_build(const json& root, Manifest& m) {
+    const json* build = optional_object(root, "build", "build");
+
+    if (m.application_kind != ApplicationType::Portable) {
+        if (build != nullptr) {
+            fail("applicationType \"" + m.application_type +
+                 "\" must not declare \"build\" — there is nothing to build; "
+                 "a package whose payload is source declares "
+                 "applicationType \"portable\"");
+        }
+        return;
+    }
+    if (build == nullptr) {
+        fail("applicationType \"portable\" requires a \"build\" block "
+             "describing how to compile the payload for this host");
+    }
+
+    const std::string system =
+        require_nonempty_string(*build, "system", "build.system");
+    if (!build_system_from_string(system, m.build.system)) {
+        fail("unknown build.system \"" + system +
+             "\" (this runtime understands \"make\", \"cmake\" and "
+             "\"command\")");
+    }
+
+    m.build.source_dir =
+        require_nonempty_string(*build, "sourceDir", "build.sourceDir");
+    validate_relative_payload_path(m.build.source_dir, "build.sourceDir");
+
+    m.build.command =
+        optional_string_array(*build, "command", "build.command");
+    if (m.build.system == BuildSystem::Command) {
+        if (m.build.command.empty()) {
+            fail("build.system \"command\" requires a non-empty "
+                 "\"build.command\" argv");
+        }
+    } else if (!m.build.command.empty()) {
+        fail("build.command may only be given with build.system "
+             "\"command\"; \"" + system +
+             "\" names a build driver this runtime invokes itself");
+    }
+    for (const std::string& argument : m.build.command) {
+        if (argument.empty()) {
+            fail("\"build.command\" must not contain empty arguments");
+        }
+        if (argument.find('\0') != std::string::npos) {
+            fail("\"build.command\" must not contain NUL bytes");
+        }
+        if (argument.size() > limits::kMaxNameBytes) {
+            fail("\"build.command\" argument is too long");
+        }
+    }
+
+    // The tools the build needs, named so the host can be checked for them
+    // before the user is asked to approve anything. Bare executable names
+    // only: the build resolves them on the sandbox PATH, and an absolute host
+    // path in a signed manifest would be a claim about a machine the
+    // publisher has never seen.
+    m.build.toolchain =
+        optional_string_array(*build, "toolchain", "build.toolchain");
+    for (const std::string& tool : m.build.toolchain) {
+        if (tool.empty()) {
+            fail("\"build.toolchain\" must not contain empty strings");
+        }
+        if (tool.size() > limits::kMaxNameBytes) {
+            fail("\"build.toolchain\" entry is too long");
+        }
+        if (tool.find('/') != std::string::npos ||
+            tool.find('\\') != std::string::npos) {
+            fail("\"build.toolchain\" entry \"" + tool +
+                 "\" must be a bare executable name, not a path");
+        }
+    }
+    if (m.build.toolchain.empty()) {
+        fail("applicationType \"portable\" requires a non-empty "
+             "\"build.toolchain\": the host is checked for these executables "
+             "before the build is approved, and a package that names none "
+             "cannot report why it will not build here");
     }
 }
 
@@ -447,9 +539,11 @@ Manifest Manifest::parse(std::string_view json_text) {
     if (m.role == PackageRole::Application) {
         m.application_type =
             require_nonempty_string(root, "applicationType", "applicationType");
-        if (m.application_type != "native") {
+        if (!application_type_from_string(m.application_type,
+                                          m.application_kind)) {
             fail("applicationType \"" + m.application_type +
-                 "\" is unsupported in 0.1 (only \"native\" is supported)");
+                 "\" is unsupported in 0.1 (\"native\" is a compiled payload, "
+                 "\"portable\" is source compiled for this host at install)");
         }
 
         const json* architectures = find_member(root, "architectures");
@@ -475,18 +569,21 @@ Manifest Manifest::parse(std::string_view json_text) {
             require_object(root, "entrypoint", "entrypoint");
         m.entrypoint_executable = require_nonempty_string(
             entrypoint, "executable", "entrypoint.executable");
-        validate_entrypoint_path(m.entrypoint_executable);
+        validate_relative_payload_path(m.entrypoint_executable,
+                                       "entrypoint.executable");
         m.entrypoint_arguments =
             optional_string_array(entrypoint, "arguments",
                                   "entrypoint.arguments");
 
         parse_install(root, m);
+        parse_build(root, m);
     } else {
         // A launch reference carries NO payload and NO entrypoint: it names an
         // installed application. Rejecting these fields keeps the two roles
         // structurally distinct instead of merely differently labelled.
         for (const char* forbidden :
-             {"applicationType", "architectures", "entrypoint", "install"}) {
+             {"applicationType", "architectures", "entrypoint", "install",
+              "build"}) {
             if (find_member(root, forbidden) != nullptr) {
                 fail(std::string("a launch reference (role \"launch\") must "
                                  "not declare \"") +
@@ -537,6 +634,17 @@ std::string Manifest::to_json() const {
             install["estimatedSize"] = install_estimated_size;
         }
         j["install"] = std::move(install);
+
+        if (application_kind == ApplicationType::Portable) {
+            ordered_json build_block;
+            build_block["system"] = to_string(build.system);
+            build_block["sourceDir"] = build.source_dir;
+            if (!build.command.empty()) {
+                build_block["command"] = build.command;
+            }
+            build_block["toolchain"] = build.toolchain;
+            j["build"] = std::move(build_block);
+        }
     }
 
     ordered_json launch;
@@ -609,6 +717,37 @@ bool launch_mode_from_string(const std::string& text, LaunchMode& out) {
     if (text == "gui") { out = LaunchMode::Gui; return true; }
     if (text == "console") { out = LaunchMode::Console; return true; }
     if (text == "service") { out = LaunchMode::Service; return true; }
+    return false;
+}
+
+const char* to_string(ApplicationType t) {
+    switch (t) {
+    case ApplicationType::Native: return "native";
+    case ApplicationType::Portable: return "portable";
+    }
+    return "native";
+}
+
+bool application_type_from_string(const std::string& text,
+                                  ApplicationType& out) {
+    if (text == "native") { out = ApplicationType::Native; return true; }
+    if (text == "portable") { out = ApplicationType::Portable; return true; }
+    return false;
+}
+
+const char* to_string(BuildSystem s) {
+    switch (s) {
+    case BuildSystem::Make: return "make";
+    case BuildSystem::CMake: return "cmake";
+    case BuildSystem::Command: return "command";
+    }
+    return "make";
+}
+
+bool build_system_from_string(const std::string& text, BuildSystem& out) {
+    if (text == "make") { out = BuildSystem::Make; return true; }
+    if (text == "cmake") { out = BuildSystem::CMake; return true; }
+    if (text == "command") { out = BuildSystem::Command; return true; }
     return false;
 }
 

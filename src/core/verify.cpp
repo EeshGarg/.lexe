@@ -211,9 +211,42 @@ std::optional<std::string> payload_role_problem(const PackageReader& reader,
         return std::nullopt;
     }
 
-    // role == application, applicationType == native (the only 0.1 type):
-    // the declared entrypoint must be a real, executable ELF object for a
-    // declared architecture.
+    // role == application, applicationType == portable: the payload is SOURCE
+    // and the entrypoint is what the build will PRODUCE. The check is the
+    // mirror image of the native one — and it closes the inverse of the alpha
+    // bug. A native package shipping source was the observed failure; a
+    // portable package shipping a prebuilt entrypoint is the same lie told the
+    // other way round, and it would install a binary the host never compiled
+    // while the package claims to be compiled here.
+    if (manifest.application_kind == ApplicationType::Portable) {
+        const std::string source_prefix =
+            "payload/" + manifest.build.source_dir + "/";
+        std::size_t source_entries = 0;
+        for (const PackageEntry& entry : reader.entries()) {
+            if (entry.path.rfind(source_prefix, 0) == 0) ++source_entries;
+        }
+        if (source_entries == 0) {
+            return "applicationType \"portable\" declares its sources in \"" +
+                   manifest.build.source_dir +
+                   "\", but the package contains no entry under \"" +
+                   source_prefix + "\" (a portable package must carry the "
+                   "source it is compiled from)";
+        }
+        const std::string produced =
+            "payload/" + manifest.entrypoint_executable;
+        if (reader.has_entry(produced)) {
+            return "applicationType \"portable\" declares \"" +
+                   manifest.entrypoint_executable +
+                   "\" as the entrypoint the build PRODUCES, but the package "
+                   "already contains it — a prebuilt entrypoint is a native "
+                   "payload wearing a portable label, and nothing on this host "
+                   "would have compiled it";
+        }
+        return std::nullopt;
+    }
+
+    // role == application, applicationType == native: the declared entrypoint
+    // must be a real, executable ELF object for a declared architecture.
     const std::string entry_path = "payload/" + manifest.entrypoint_executable;
     if (!reader.has_entry(entry_path)) {
         return "the declared entrypoint \"" + manifest.entrypoint_executable +
@@ -263,6 +296,13 @@ std::string payload_role_detail(const Manifest& manifest) {
     if (manifest.role == PackageRole::Launch) {
         return "role \"launch\": a launch reference for " +
                manifest.launch_application_id + " (no payload, as required)";
+    }
+    if (manifest.application_kind == ApplicationType::Portable) {
+        return "role \"application\", applicationType \"portable\": the "
+               "package carries source under \"" + manifest.build.source_dir +
+               "\" and no prebuilt entrypoint — \"" +
+               manifest.entrypoint_executable +
+               "\" is compiled for this host at install";
     }
     return "role \"application\": the declared entrypoint \"" +
            manifest.entrypoint_executable +

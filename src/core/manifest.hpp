@@ -33,6 +33,50 @@ const char* to_string(LaunchMode m);
 /// Parse a `launch.mode` string; returns false for an unrecognised value.
 bool launch_mode_from_string(const std::string& text, LaunchMode& out);
 
+/// What kind of payload an application package carries (FORMAT-0.1 §5.3).
+///
+/// The difference is not cosmetic: it decides what the `payload-role`
+/// verification stage demands of the archive, and whether installing the
+/// package compiles anything on this machine.
+enum class ApplicationType {
+    Native,   // the payload IS the program: a compiled ELF for a declared ISA
+    Portable, // the payload is SOURCE, compiled to this host's ISA at install
+};
+const char* to_string(ApplicationType t);
+/// Parse an `applicationType` string; returns false for an unrecognised value.
+bool application_type_from_string(const std::string& text,
+                                  ApplicationType& out);
+
+/// How a portable package is built (FORMAT-0.1 §5.8 `build`).
+///
+/// `system` names a build driver the RUNTIME knows how to invoke, so the
+/// common cases do not require the publisher to hand over an argv at all.
+/// `Command` is the escape hatch for everything else and carries its argv
+/// explicitly — as argv, never a shell string, because a shell string is a
+/// second language with its own quoting bugs between the manifest and exec.
+enum class BuildSystem {
+    Make,    // `make` in the source directory
+    CMake,   // configure + build out of tree
+    Command, // the manifest's own argv
+};
+const char* to_string(BuildSystem s);
+bool build_system_from_string(const std::string& text, BuildSystem& out);
+
+/// The `build` block of a portable package (FORMAT-0.1 §5.8).
+struct BuildRecipe {
+    BuildSystem system = BuildSystem::Make;
+    /// `build.sourceDir` — directory inside `payload/` holding the sources.
+    /// The build sees THIS directory and nothing else of the package.
+    std::string source_dir;
+    /// `build.command` — required for `system: "command"`, forbidden
+    /// otherwise. argv[0] is resolved on the sandbox PATH.
+    std::vector<std::string> command;
+    /// `build.toolchain` — the host executables the build needs. Probed
+    /// BEFORE any approval is asked for, so a host that cannot build the
+    /// package says so instead of failing halfway through a build.
+    std::vector<std::string> toolchain;
+};
+
 /// One `integration.fileAssociations[]` element (FORMAT-0.1 §5 optional).
 struct FileAssociation {
     std::string extension; // e.g. ".example"
@@ -58,10 +102,23 @@ struct Manifest {
     std::string launch_application_id;
 
     // --- role == Application only (required there, absent for Launch) ---
-    std::string application_type;     // MUST be "native" in 0.1
+    /// `applicationType` as written, for display and for round-tripping.
+    /// `application_kind` is the parsed form; the two never disagree.
+    std::string application_type;     // "native" or "portable"
+    ApplicationType application_kind = ApplicationType::Native;
+    /// The ISAs this package can run on. For `native` that means the
+    /// entrypoint ELF targets one of them; for `portable` it means the build
+    /// recipe is declared to produce a working program for them. Either way,
+    /// the host's ISA must be in this list for the package to install.
     std::vector<std::string> architectures;   // non-empty; x86_64 / aarch64
+    /// For `native`, the payload entry that IS the program. For `portable`,
+    /// the path (relative to the payload root) the build must PRODUCE — it is
+    /// deliberately absent from the archive, and stage 7 rejects a portable
+    /// package that ships it.
     std::string entrypoint_executable;        // relative path inside payload/
     std::string install_mode;                 // MUST be "bundled" in 0.1
+    /// `build` — present exactly when `applicationType` is `"portable"`.
+    BuildRecipe build;
 
     // --- execution policy (Definitive Architecture §6, §8) ---
     /// `execution.missionCritical` — an execution RESTRICTION, not a safety

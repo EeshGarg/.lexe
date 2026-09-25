@@ -514,6 +514,110 @@ inline TestAppTree make_test_app_tree(const fs::path& root,
     return tree;
 }
 
+// ---------------------------------------------------------------------------
+// Portable packages (FORMAT-0.1 §5.3 `applicationType: "portable"`).
+//
+// The payload is SOURCE; the entrypoint is what the build produces and is
+// deliberately NOT in the archive. The default recipe compiles src/main.c with
+// the host's `cc` — a real compile, because the point of the type is that the
+// destination machine builds it. Tests that need the build to actually run
+// guard on have_native_compiler().
+// ---------------------------------------------------------------------------
+
+struct PortableAppSpec {
+    std::string id = "com.example.portable";
+    std::string version = "1.0.0";
+    std::string public_key =
+        "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    /// entrypoint.executable — the path the build must PRODUCE.
+    std::string entrypoint = "bin/app";
+    std::string source_dir = "src";
+    std::vector<std::string> architectures = {"x86_64", "aarch64"};
+    std::string build_system = "command";
+    std::vector<std::string> command = {"cc", "-O0", "-o", "bin/app",
+                                        "src/main.c"};
+    std::vector<std::string> toolchain = {"cc"};
+    /// What the compiled program prints, and what it exits with.
+    std::string stdout_text = "hello from portable";
+    int exit_code = 0;
+    /// Negative fixtures: ship the entrypoint anyway (a native payload wearing
+    /// a portable label), or ship no source at all.
+    bool ship_prebuilt_entrypoint = false;
+    bool omit_source = false;
+};
+
+inline TestAppTree make_portable_app_tree(const fs::path& root,
+                                          const PortableAppSpec& spec = {}) {
+    TestAppTree tree;
+    tree.root = root;
+    tree.payload_dir = root / "payload";
+    tree.manifest_file = root / "lexe.json";
+    tree.spec.id = spec.id;
+    tree.spec.version = spec.version;
+    tree.spec.public_key = spec.public_key;
+    tree.spec.entrypoint = spec.entrypoint;
+    tree.spec.architectures = spec.architectures;
+
+    // Always something in payload/, so `omit_source` means "carries a payload
+    // with nothing under sourceDir" rather than "carries no payload at all".
+    util::spit(tree.payload_dir / "NOTICE",
+               std::string_view("portable package for " + spec.id + "\n"));
+    if (!spec.omit_source) {
+        util::spit(tree.payload_dir / fs::path(spec.source_dir) / "main.c",
+                   std::string_view(native_exe_detail::make_source(
+                       spec.stdout_text, spec.exit_code)));
+        util::spit(tree.payload_dir / fs::path(spec.source_dir) / "README",
+                   std::string_view("source of " + spec.id + "\n"));
+    }
+    if (spec.ship_prebuilt_entrypoint) {
+        write_elf_executable_for_arch(
+            tree.payload_dir / fs::path(spec.entrypoint),
+            spec.architectures.empty() ? std::string("x86_64")
+                                       : spec.architectures.front());
+    }
+
+    nlohmann::json build = {{"system", spec.build_system},
+                            {"sourceDir", spec.source_dir},
+                            {"toolchain", spec.toolchain}};
+    if (spec.build_system == "command") build["command"] = spec.command;
+
+    nlohmann::json manifest = {
+        {"lexeVersion", "0.1"},
+        {"id", spec.id},
+        {"name", "Portable App"},
+        {"version", spec.version},
+        {"publisher",
+         {{"name", "Test Publisher"}, {"publicKey", spec.public_key}}},
+        {"applicationType", "portable"},
+        {"architectures", spec.architectures},
+        {"entrypoint",
+         {{"executable", spec.entrypoint},
+          {"arguments", nlohmann::json::array()}}},
+        {"install", {{"scope", "user"}, {"mode", "bundled"}}},
+        {"build", build},
+        {"launch", {{"mode", "console"}}},
+    };
+    util::spit(tree.manifest_file, std::string_view(manifest.dump(2) + "\n"));
+    return tree;
+}
+
+/// A fully signed portable `.lexe`. `spec.public_key` is overwritten with
+/// `key`'s encoding so the signatures verify.
+inline fs::path make_portable_package(const fs::path& work_dir,
+                                      const crypto::KeyPair& key,
+                                      PortableAppSpec spec = {}) {
+    spec.public_key = encode_public_key_str(key.public_key);
+    const TestAppTree tree = make_portable_app_tree(
+        work_dir / ("ptree-" + spec.id + "-" + spec.version), spec);
+    PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    const fs::path out =
+        work_dir / (spec.id + "-" + spec.version + "-portable.lexe");
+    PackageWriter::write(inputs, key, out);
+    return out;
+}
+
 /// Build a fully signed `.lexe` from a fresh test tree using PackageWriter
 /// (FORMAT-0.1 §1). spec.public_key is overwritten with `key`'s encoding so
 /// the signatures verify. Returns the package path.

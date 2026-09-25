@@ -747,4 +747,185 @@ TEST_CASE("runtimeProfile is optional, preserved, and round-trips") {
     CHECK(parse_json(future).runtime_profile == "profile-from-the-future");
 }
 
+// ---------------------------------------------------------------------------
+// applicationType "portable" — source compiled for the host at install
+// (FORMAT-0.1 §5.3 and §5.8, Definitive Architecture §5/§7).
+//
+// The declaration is what decides whether installing this package compiles
+// anything, so the parser is where a package that cannot possibly build is
+// refused: before verification finishes, before an approval is asked for, and
+// a long way before anything is executed.
+// ---------------------------------------------------------------------------
+
+/// base_manifest() turned into a valid portable package.
+json portable_manifest() {
+    json j = base_manifest();
+    j["applicationType"] = "portable";
+    j["entrypoint"] = {{"executable", "bin/example"},
+                       {"arguments", json::array()}};
+    j["build"] = {{"system", "command"},
+                  {"sourceDir", "src"},
+                  {"command", json::array({"cc", "-o", "bin/example",
+                                           "src/main.c"})},
+                  {"toolchain", json::array({"cc"})}};
+    return j;
+}
+
+TEST_CASE("a portable package parses, and its build recipe round-trips") {
+    lexe::test::TempLexeHome home;
+    const Manifest m = parse_json(portable_manifest());
+
+    CHECK(m.application_type == "portable");
+    CHECK(m.application_kind == lexe::ApplicationType::Portable);
+    CHECK(m.build.system == lexe::BuildSystem::Command);
+    CHECK(m.build.source_dir == "src");
+    CHECK(m.build.command ==
+          std::vector<std::string>{"cc", "-o", "bin/example", "src/main.c"});
+    CHECK(m.build.toolchain == std::vector<std::string>{"cc"});
+    // The entrypoint means something different here — it is the path the build
+    // must PRODUCE — but it is the same field, held to the same path rules.
+    CHECK(m.entrypoint_executable == "bin/example");
+
+    const Manifest again = Manifest::parse(m.to_json());
+    CHECK(again.application_kind == lexe::ApplicationType::Portable);
+    CHECK(again.build.system == m.build.system);
+    CHECK(again.build.source_dir == m.build.source_dir);
+    CHECK(again.build.command == m.build.command);
+    CHECK(again.build.toolchain == m.build.toolchain);
+}
+
+TEST_CASE("a native package is still native, and declares no build") {
+    lexe::test::TempLexeHome home;
+    const Manifest m = parse_json(base_manifest());
+    CHECK(m.application_kind == lexe::ApplicationType::Native);
+    CHECK(m.build.source_dir.empty());
+    CHECK(m.build.command.empty());
+    CHECK(m.build.toolchain.empty());
+    CHECK(Manifest::parse(m.to_json()).to_json().find("\"build\"") ==
+          std::string::npos);
+}
+
+TEST_CASE("the build driver kinds parse, and only those") {
+    lexe::test::TempLexeHome home;
+    for (const char* system : {"make", "cmake"}) {
+        CAPTURE(system);
+        json j = portable_manifest();
+        j["build"]["system"] = system;
+        j["build"].erase("command"); // a driver the runtime invokes itself
+        lexe::BuildSystem expected{};
+        REQUIRE(lexe::build_system_from_string(system, expected));
+        CHECK(parse_json(j).build.system == expected);
+    }
+}
+
+TEST_CASE("an unbuildable portable declaration is rejected by the parser") {
+    lexe::test::TempLexeHome home;
+    const std::vector<Row> rows = {
+        {"portable without a build block",
+         [](json& j) {
+             j = portable_manifest();
+             j.erase("build");
+         }},
+        {"unknown build system",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["system"] = "autotools-with-vibes";
+         }},
+        {"command build system with no command",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"].erase("command");
+         }},
+        {"command build system with an empty command",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["command"] = json::array();
+         }},
+        {"a command given to a driver that does not take one",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["system"] = "make";
+         }},
+        {"no sourceDir",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"].erase("sourceDir");
+         }},
+        {"a sourceDir that escapes the payload",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["sourceDir"] = "../../etc";
+         }},
+        {"an absolute sourceDir",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["sourceDir"] = "/usr/src";
+         }},
+        {"no toolchain to check the host against",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"].erase("toolchain");
+         }},
+        {"a toolchain entry that is a path, not an executable name",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["toolchain"] = json::array({"/usr/bin/cc"});
+         }},
+        {"an empty argument in the build command",
+         [](json& j) {
+             j = portable_manifest();
+             j["build"]["command"] = json::array({"cc", ""});
+         }},
+    };
+    check_rejects(rows);
+}
+
+TEST_CASE("a native package that declares a build is a contradiction") {
+    lexe::test::TempLexeHome home;
+    // There is nothing to build: the payload already IS the program. Silently
+    // ignoring the block would leave a publisher believing the destination
+    // machine compiles their package when it does not.
+    json j = base_manifest();
+    j["build"] = {{"system", "make"},
+                  {"sourceDir", "src"},
+                  {"toolchain", json::array({"make"})}};
+    CHECK_THROWS_AS(parse_json(j), VerificationError);
+}
+
+TEST_CASE("a launch reference may not declare a build either") {
+    lexe::test::TempLexeHome home;
+    json j = {
+        {"lexeVersion", "0.1"},
+        {"id", "org.lexe.launch"},
+        {"name", "Run"},
+        {"version", "1"},
+        {"publisher",
+         {{"name", "P"},
+          {"publicKey",
+           "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}},
+        {"role", "launch"},
+        {"launch", {{"applicationId", "com.example.application"}}},
+    };
+    CHECK_NOTHROW(parse_json(j));
+    j["build"] = {{"system", "make"},
+                  {"sourceDir", "src"},
+                  {"toolchain", json::array({"make"})}};
+    CHECK_THROWS_AS(parse_json(j), VerificationError);
+}
+
+TEST_CASE("an unknown applicationType is still refused, with both types named") {
+    lexe::test::TempLexeHome home;
+    json j = base_manifest();
+    j["applicationType"] = "wasm";
+    try {
+        parse_json(j);
+        FAIL("expected the manifest to be rejected");
+    } catch (const VerificationError& e) {
+        const std::string message = e.what();
+        CHECK(message.find("wasm") != std::string::npos);
+        CHECK(message.find("native") != std::string::npos);
+        CHECK(message.find("portable") != std::string::npos);
+    }
+}
+
 } // TEST_SUITE("manifest")

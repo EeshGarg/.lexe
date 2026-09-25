@@ -160,10 +160,24 @@ labelled.
 
 | Field | Constraint |
 |---|---|
-| `applicationType` | MUST be `"native"` in 0.1 |
+| `applicationType` | `"native"` or `"portable"` |
 | `architectures` | non-empty array; recognised values: `x86_64`, `aarch64` |
 | `entrypoint.executable` | relative path inside `payload/` (no leading `/`, no `..`, no backslash) |
 | `install.mode` | MUST be `"bundled"` in 0.1 (`network`/`launcher` → "unsupported in 0.1") |
+| `build` | REQUIRED for `"portable"`, FORBIDDEN otherwise (§5.8) |
+
+`applicationType` decides what the payload IS, and therefore what §6.7 demands
+of the archive:
+
+| Value | The payload is | `entrypoint.executable` names |
+|---|---|---|
+| `"native"` | the compiled program | an entry that MUST be present in the archive |
+| `"portable"` | source code | the file the build MUST PRODUCE, and which MUST NOT be present in the archive |
+
+For `"native"`, `architectures` means "the entrypoint ELF targets one of
+these". For `"portable"`, it means "the build recipe is declared to produce a
+working program for these". In both cases the host's ISA MUST be one of them
+for the package to install (§6.8).
 
 ### 5.4 Fields required for `role: "launch"`
 
@@ -228,6 +242,43 @@ substitute a default. Reading an absent or unknown declaration as
 `"core-portable"` makes a package deliberately built as `"native-capture"` —
 host-locked by definition — report as a portability failure.
 
+### 5.8 Build recipe — `build` (portable packages)
+
+Present exactly when `applicationType` is `"portable"`. A native package
+declaring `build` MUST be rejected (there is nothing to build); a portable
+package without one MUST be rejected (it can be installed nowhere).
+
+| Field | Default | Constraint |
+|---|---|---|
+| `build.system` | — | REQUIRED; one of `"make"`, `"cmake"`, `"command"` |
+| `build.sourceDir` | — | REQUIRED; relative path inside `payload/`, same path rules as `entrypoint.executable` |
+| `build.command` | — | REQUIRED for `"command"`, FORBIDDEN otherwise; non-empty argv of non-empty strings |
+| `build.toolchain` | — | REQUIRED, non-empty; bare executable names (no `/`), never absolute paths |
+
+```json
+"applicationType": "portable",
+"architectures": ["x86_64", "aarch64"],
+"entrypoint": { "executable": "bin/app" },
+"build": {
+  "system": "command",
+  "sourceDir": "src",
+  "command": ["cc", "-O2", "-o", "bin/app", "src/main.c"],
+  "toolchain": ["cc"]
+}
+```
+
+`build.command` is an **argv**, never a shell string: a shell string is a
+second language between the manifest and `exec`, with its own quoting rules and
+its own injection bugs. `argv[0]` is resolved on the build sandbox's `PATH`.
+
+`build.toolchain` names the host executables the build needs. It exists so the
+host can be checked BEFORE the user is asked to approve anything, and so a host
+that cannot build the package can say which tool is missing instead of failing
+part-way through a build. Entries are bare names because an absolute path in a
+signed manifest would be a claim about a machine the publisher has never seen.
+
+The build is performed at install time, under the rules in §6.9.
+
 ## 6. Verification Pipeline (normative order)
 
 `lexe verify`, `lexe install`, and update application MUST run, in order:
@@ -259,13 +310,24 @@ For `role: "application"` with `applicationType: "native"`, the entry named by
   executable) — a relocatable object or a core file is not runnable;
 * target a machine that maps to one of the manifest's `architectures`.
 
+For `role: "application"` with `applicationType: "portable"`, the archive MUST:
+
+* contain at least one entry under `payload/<build.sourceDir>/` — a portable
+  package must carry the source it is compiled from;
+* **NOT** contain the entry named by `entrypoint.executable`. That file is what
+  the build produces on the destination machine. A portable package that ships
+  it is a native payload wearing a portable label: the binary that would end up
+  installed is one this host never compiled.
+
 For `role: "launch"`, the archive MUST contain no `payload/` entries.
 
 This stage exists because of a real, observed failure: a package declared a
 native application while its entrypoint was a C++ SOURCE FILE. Every signature
 and hash was valid — the package was internally consistent and completely
 wrong. Source belongs in a portable-code package and must go through host-ISA
-compilation; it must never be installed as a native executable.
+compilation; it must never be installed as a native executable. The portable
+rule above is the same requirement in the other direction, so neither type can
+be used to smuggle the other's payload past verification.
 
 Note the ordering: stage 7 runs AFTER hashes, so a tampered entrypoint is
 reported as an integrity failure (stage 6), not as a role failure.
