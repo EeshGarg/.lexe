@@ -1,0 +1,51 @@
+{
+  "lexeVersion": "0.1",
+  "id": "com.usha.portablehello",
+  "name": "Lexe Portable Hello",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Usha",
+    "publicKey": "AUTO",
+    "website": "https://example.invalid/lexe"
+  },
+  "role": "application",
+  "applicationType": "portable",
+  "architectures": [
+    "x86_64",
+    "aarch64"
+  ],
+  "entrypoint": {
+    "executable": "bin/portable-hello",
+    "arguments": []
+  },
+  "build": {
+    "system": "make",
+    "sourceDir": "src",
+    "toolchain": [
+      "make",
+      "cc"
+    ]
+  },
+  "execution": {
+    "missionCritical": false,
+    "allowedChains": [
+      "native"
+    ]
+  },
+  "launch": {
+    "mode": "console",
+    "singleInstance": false
+  },
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "integration": {
+    "desktopEntry": true,
+    "categories": [
+      "Utility",
+      "Development"
+    ]
+  },
+  "permissions": []
+}
