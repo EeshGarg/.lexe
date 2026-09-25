@@ -66,7 +66,7 @@ VerificationReport green_report() {
     for (const char* stage : {"structure", "manifest", "key",
                               "manifest-signature", "payload-signature",
                               "hashes", "payload-role", "compatibility"}) {
-        report.stages.push_back(VerificationStage{stage, true, "ok"});
+        report.stages.push_back(VerificationStage{stage, true, "ok", ""});
     }
     return report;
 }
@@ -226,9 +226,9 @@ TEST_CASE("dispatch follows the signed role: launch -> that application") {
 TEST_CASE("a failed verification is never dispatched on, and names the stage") {
     TempLexeHome home;
     VerificationReport report;
-    report.stages.push_back(VerificationStage{"structure", true, "ok"});
+    report.stages.push_back(VerificationStage{"structure", true, "ok", ""});
     report.stages.push_back(
-        VerificationStage{"hashes", false, "payload/data.txt does not match"});
+        VerificationStage{"hashes", false, "payload/data.txt does not match", ""});
     const lexe::ui::OpenDispatch dispatch =
         lexe::ui::decide_open_dispatch(report, application_manifest());
     CHECK(dispatch.action == lexe::ui::OpenAction::Refuse);

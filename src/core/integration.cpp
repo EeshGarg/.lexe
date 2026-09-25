@@ -330,6 +330,14 @@ const char* DesktopIntegration::legacy_mime_type() { return kLegacyMime; }
 
 void refresh_desktop_databases(const Paths& paths) {
 #ifndef _WIN32
+    // A confined layout is read by no desktop, so there is no cache to keep
+    // current. Running the tools against `<LEXE_HOME>/mime` builds a cache
+    // nobody consults and makes update-mime-database print its "not in the
+    // search path set by XDG_DATA_HOME and XDG_DATA_DIRS" advice — onto the
+    // same terminal where `lexe integrate` is reporting what it wrote, and
+    // into the output of every test that registers anything.
+    if (paths.desktop_scope() != DesktopScope::xdg) return;
+
     // Best effort: these tools rebuild the desktop's caches. Their absence or
     // failure is not an integration failure — the files we wrote are the
     // durable state; the caches are derived.
