@@ -67,6 +67,15 @@ description, including a plainly-stated list of what is still missing.
 
   Proton has still never been exercised, and no GUI Windows application has
   been run.
+- **`launch.mode: "service"` detaches.** It was declared, parsed and carried
+  through while behaving exactly like a foreground launch. A service now starts
+  and the call returns: the sandbox is not tied to the process that started it,
+  a supervisor holds the version's launch lease for the application's lifetime
+  so its files cannot be removed underneath it, and no exit status is reported
+  for a launch nothing waited for. It is a detached process, **not** a
+  session-manager service — nothing restarts it, starts it at login or reports
+  its status, and the runtime says so every time it starts one. `lexe run
+  --wait` runs one in the foreground; `--detach` detaches any other mode.
 - **`build` manifest block** (FORMAT-0.1 §5.8): `system` (`make`/`cmake`/
   `command`), `sourceDir`, an argv `command` (never a shell string) and a
   required non-empty `toolchain` of bare executable names, probed against the
