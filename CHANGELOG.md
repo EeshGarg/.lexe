@@ -56,9 +56,17 @@ description, including a plainly-stated list of what is still missing.
     it lives outside `/usr`, because a layer the sandbox cannot reach cannot
     run the application it was chosen for.
 
-  No `.lexe` has yet started a Windows program: neither Wine nor Proton has
-  been installed on any machine this was developed on. The verification half is
-  tested against real Windows binaries; the running half is not.
+  A `.lexe` carrying a Windows program now runs it, end to end and headless —
+  `tests/acceptance/06_foreign_os.sh` and `examples/windows-hello/`. Two things
+  were needed that only trying it revealed: the compatibility layer has to be
+  reachable inside the sandbox, and Wine aborts without a `/run/user/<uid>`
+  (it computes that path from its own uid and ignores `XDG_RUNTIME_DIR`). The
+  sandbox provides a **private, empty** one rather than the host's, which
+  contains nothing of the user's session. Wine's prefix lands in the
+  application's private data root.
+
+  Proton has still never been exercised, and no GUI Windows application has
+  been run.
 - **`build` manifest block** (FORMAT-0.1 §5.8): `system` (`make`/`cmake`/
   `command`), `sourceDir`, an argv `command` (never a shell string) and a
   required non-empty `toolchain` of bare executable names, probed against the

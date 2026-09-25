@@ -3,9 +3,9 @@
 > **Read [MACHINE.md](MACHINE.md) first.** Sections 1–8 below were produced on
 > **Fedora 44 / KDE Plasma Wayland**, which is no longer the development
 > machine. Sections 1 and 2 reproduce on the current machine (with the build
-> commands from MACHINE.md, and with the counts updated in §9). Sections 3–8
+> commands from MACHINE.md, and with the counts updated in §10). Sections 3–8
 > involved a real desktop session and **cannot** be reproduced under WSL.
-> Section 9 is what was verified on the current machine.
+> Sections 9 and 10 are what was verified on the current machine.
 
 ---
 
@@ -47,7 +47,8 @@ bash tests/acceptance/run_all.sh
 | `02_persistence` | delete the handler / association / launch reference, assert `doctor` NAMES each, repair, assert restored and still launching |
 | `03_failure_diagnostics` | forced failure produces a structured record with the expected JSON fields; a tampered entrypoint is refused |
 | `04_native_steady_state` | the real process tree has no compatibility process |
-| `05_portable_compile` | *(added later — see §9)* a source-only package: refused without approval, compiled under the sandbox with approval, recorded, run, tampered with, refused, rebuilt |
+| `05_portable_compile` | *(added later — see §9)*
+| `06_foreign_os` | *(added later — see §10)* a Windows payload: verified as a runnable PE, the three ways it can be wrong refused, installed, resolved to Wine, and really run | a source-only package: refused without approval, compiled under the sandbox with approval, recorded, run, tampered with, refused, rebuilt |
 
 Everything runs against a throwaway `LEXE_HOME` under `mktemp -d`; the real
 `~/.local/share/lexe` is never touched.
@@ -233,15 +234,98 @@ Everything in the list at the end of this file still stands, plus:
   `desktop-file-validate` have nothing to talk to under WSL.
 ---
 
-## What could NOT be verified here
+---
 
-* **A real reboot.** `tests/acceptance/REBOOT.md` is the manual checklist. The
-  GUI example is installed on the real system so it can be run.
-* **A real double-click** in Dolphin — same checklist.
-* **Sanitizers / valgrind.** `libasan`, `libubsan` and `valgrind` are not
-  installed and `sudo` requires a password. `gdb` is available.
-* **Cross-ISA execution.** No ARM64 hardware; FEX/Box64 chain selection is
-  unit-tested with synthetic provider sets only.
+## 10. Foreign-OS payloads (2026-09-25, WSL2 Ubuntu 24.04)
+
+**Result:** `626 test cases, 626 passed, 0 failed` · `8493 assertions, 0 failed`.
+All **6** acceptance suites pass, including the new `06_foreign_os` (29 checks,
+0 skipped on a host with Wine and MinGW).
+
+```sh
+./lexe_tests -ts=pe                   # the PE reader, including hostile input
+./lexe_tests -ts=payload_role         # native, portable AND windows
+./lexe_tests -ts=isolation            # what a compatibility chain needs
+./lexe_tests -ts=execution-architecture
+```
+
+This machine has `wine64`, `gcc-mingw-w64-x86-64` and `mingw-w64-x86-64-dev`
+installed, so nothing here is skipped for want of a tool.
+
+### The PE reader, against real Windows binaries
+
+The synthetic images in `tests/pe_builder.hpp` prove the parser handles
+malformed input. These prove it reads the real thing, and they come from the
+Windows host this WSL instance runs on:
+
+| File | Read as |
+|---|---|
+| `C:\Windows\System32\notepad.exe` | PE32+, x86-64, GUI, executable, not a DLL → `x86_64` |
+| `C:\Windows\SysWOW64\notepad.exe` | PE32, i386, GUI, executable → **no `.lexe` architecture id**, correctly |
+| `C:\Windows\System32\kernel32.dll` | PE32+, x86-64, **DLL** → not runnable |
+| `/bin/ls` (an ELF) | not a PE |
+| a Markdown file | not a PE |
+
+### A Windows program really runs
+
+```sh
+x86_64-w64-mingw32-gcc -O2 -o payload/bin/app.exe src/main.c
+lexe pack … && lexe verify … && lexe install … --yes
+lexe run com.usha.windowshello -- --selftest one "two words"
+```
+
+| Step | Result |
+|---|---|
+| `verify` | `payload-role`: *"the declared entrypoint … is a runnable Windows executable for a declared architecture"* |
+| `info` | `Type: Windows application, run through a compatibility layer — x86_64` |
+| a package permitting only `["native"]` | refused at **pack** time, naming the missing policy |
+| a Linux binary named `.exe` | refused: *"not a Windows PE image"* |
+| a real `kernel32.dll` as the entrypoint | refused: *"is a Windows DLL … cannot be launched"* |
+| `compat` | `Execution chain: wine`, with *"Proton is not installed on this host"* listed as unavailable |
+| `run` | the PE executes; `LEXE_APP_ID` and `LEXE_APP_DATA` cross the Wine boundary; `arg: two words` stays one argument; `selftest: PASS` (it wrote into its private data root from inside a Windows process) |
+| `installation.json` | `lastExecution.chain = wine`, `runtime.source = foreign-os` |
+| Wine's prefix | `<LEXE_HOME>/data/com.usha.windowshello/.wine`, reused by a second launch |
+| the app's data root | no `wayland-*`, no `bus`, no `pulse` — nothing of the host session |
+
+### The two things that only running it revealed
+
+Both were bisected against bubblewrap rather than reasoned about:
+
+1. **A compatibility layer outside `/usr` is unreachable** in the sandbox. The
+   layer's installation prefix is now bound read-only.
+2. **Wine aborts without `/run/user/<uid>`** — it computes that path from its
+   own uid and ignores `XDG_RUNTIME_DIR`. Every namespace control was ruled out
+   one at a time; the filesystem view was the cause. Binding the HOST's runtime
+   directory worked and was rejected: it would expose the user's Wayland
+   socket, D-Bus and keyring. A **private, empty tmpfs** at that path works
+   just as well and exposes nothing.
+
+Reproduce the bisection with `bwrap` directly: with `--dev-bind / /` and every
+namespace unshared, Wine runs; with the launcher's view plus a bind of the
+host's `/run/user/<uid>`, it runs; with the launcher's view plus a `--tmpfs`
+at the same path, it runs; without it, it aborts with `free(): invalid pointer`.
+
+### What could NOT be verified here
+
+* **Proton, and layered chains** (`proton+fex`). Only Wine was installed.
+* **A GUI Windows application.** The proof is a console program.
+* **32-bit Windows payloads**, which FORMAT-0.1 §5 cannot name at all.
+
+## What could NOT be verified here (the standing list)
+
+Each §9 and §10 adds its own list above; these are the ones that outlive any
+one session. Where a line was true on Fedora and is not true now, it says so.
+
+* **A real reboot.** `tests/acceptance/REBOOT.md` is the manual checklist. On
+  the Fedora machine the GUI example was installed so it could be run; the
+  current machine has no Linux desktop session at all (see
+  [MACHINE.md](MACHINE.md)).
+* **A real double-click** in a file manager — same checklist, same obstacle.
+* ~~**Sanitizers / valgrind.**~~ Installed on the current machine; still not
+  wired into a routine run.
+* **Cross-ISA execution.** No ARM64 hardware. FEX/Box64 chain selection is
+  unit-tested with synthetic provider sets only, and no portable package has
+  been compiled on a second ISA.
 * **Every `lexe-ui` control clicked.** Rendering and the `--open`/`--app` entry
   points were verified against a real install, and the handlers for
   Compatibility→Apply, the three Uninstall modes and the Error History buttons

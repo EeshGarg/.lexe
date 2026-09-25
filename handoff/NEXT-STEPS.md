@@ -84,32 +84,30 @@ work identically for both package types).
 
 ---
 
-> **Item 2 is DONE** (2026-09-25), except for the half no code closes — see 2b.
+> **Item 2 is DONE** (2026-09-25) — declarable, verified, and a Windows console
+> program really runs under Wine, proven by `tests/acceptance/06_foreign_os.sh`.
+> What is left is narrower; see 2b.
 
-## 2b. Run something under Wine
+## 2b. The parts of the foreign-OS path still unproven
 
-`applicationType: "windows"` is declarable, verified and resolved:
-`src/core/pe.{hpp,cpp}` proves the entrypoint is a runnable PE for a declared
-architecture, the parser refuses a Windows payload that permits no foreign-OS
-chain, and the resolver selects `wine` / `proton` / `proton+fex` and binds the
-layer into the sandbox.
-
-**No `.lexe` has ever started a Windows program.** Neither Wine nor Proton has
-been installed on any machine this was developed on, so the running half is
-implemented and unproven. What it needs is `apt-get install wine` (trivial on
-the current machine — see [MACHINE.md](MACHINE.md)) and then:
-
-* a real end-to-end run of a small Windows console program;
-* an acceptance suite for it, modelled on `05_portable_compile.sh`;
-* attention to what a first Wine run does — it creates a WINEPREFIX under
-  `$HOME`, which in the sandbox is the application's private data root. That is
-  the right place for it, but it is worth *proving* rather than assuming, and
-  worth checking it survives a second launch.
-
-Also still open: **only 64-bit foreign payloads can be declared**, because
-FORMAT-0.1 §5 recognises only `x86_64` and `aarch64`. A 32-bit Windows program
-— still common — is refused by name. Adding an `i386` architecture id is a
-format change; decide deliberately.
+* **Proton, and layered chains.** Only Wine has been exercised. Proton is
+  selected, argv-prefixed and reported by the same code, which is an argument,
+  not evidence. `proton+fex` has never run at all. Installing Proton is
+  awkward (it ships inside Steam); a hand-placed Proton tree would at least
+  exercise the "layer outside /usr is bound into the sandbox" path, which is
+  currently only a unit test.
+* **A GUI Windows application.** The proof is a console program. A graphical
+  one needs the display socket to reach Wine's graphics driver — the same §5
+  display grant, untested through a compatibility layer. Note the headless
+  rule: any test of this brings its own synthetic display.
+* **32-bit payloads cannot be declared at all**, because FORMAT-0.1 §5
+  recognises only `x86_64` and `aarch64`. A 32-bit Windows program — still
+  common — is refused by name. Adding an `i386` architecture id is a format
+  change; decide deliberately rather than drifting into it.
+* **Wine's 32-bit half.** A 64-bit-only Wine prints a "wine32 is missing"
+  warning during prefix setup and continues. It is noise in the captured
+  output of every foreign-OS launch on such a host, and worth understanding
+  before someone reads it as a `.LEXE` failure.
 
 ---
 

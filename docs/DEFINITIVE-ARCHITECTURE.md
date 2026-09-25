@@ -227,14 +227,32 @@ The chain-id vocabulary lives beside the manifest (`ChainLayerKind`), because
 about it. `execpolicy` owns how to find and invoke each layer — not what the
 names mean. One enum, not two that can drift.
 
-### The compatibility layer has to be inside the sandbox
+### What a compatibility chain needs from the sandbox
 
-A chain that cannot be reached from inside the sandbox cannot run the
-application it was selected for. Distribution packages put Wine, Proton, FEX
-and Box64 under `/usr`, which is already bound read-only; anything installed
-elsewhere — a Steam Proton tree, a hand-built FEX in `/opt` — is bound in
-explicitly, read-only. A compatibility layer gets no more authority than the
-application it is running, and the native chain binds nothing extra at all.
+Two things, both found by running a real Windows program rather than by
+reading the code.
+
+**The layer has to be reachable.** A chain that cannot be reached from inside
+the sandbox cannot run the application it was selected for. Distribution
+packages put Wine, Proton, FEX and Box64 under `/usr`, which is already bound
+read-only; anything installed elsewhere — a Steam Proton tree, a hand-built FEX
+in `/opt` — is bound in explicitly, read-only. A compatibility layer gets no
+more authority than the application it is running, and the native chain binds
+nothing extra at all.
+
+**A private `/run/user/<uid>`.** Wine computes that path from its own uid and
+ignores `XDG_RUNTIME_DIR` entirely; without the directory it aborts during
+prefix setup with a message that says nothing about the cause. Binding the
+HOST's runtime directory would fix it and would also hand a sandboxed
+application the user's Wayland socket, D-Bus and keyring — so the sandbox
+provides its own: an empty tmpfs at that path, discarded with the sandbox,
+containing nothing of the session. It costs no isolation (the application could
+already write to `/tmp`) and it is what turns "needs a runtime directory" from
+an unexplained abort into a non-event.
+
+Wine's own state — its prefix — lands in the application's **private data
+root**, so it persists across launches like any other application data and is
+removed with the application.
 
 ---
 
@@ -745,18 +763,20 @@ than useless.
   repaired or reinstalled. A host whose toolchain or libraries move underneath
   it keeps running the binary that was built at install time; the runtime
   notices a *changed* entrypoint, not a stale one.
-* **No foreign-OS payload has been RUN.** `applicationType: "windows"` is
-  declarable, verified (the entrypoint must be a runnable PE for a declared
-  architecture) and resolved to a Wine/Proton chain, and the verification half
-  is tested against real Windows binaries. But neither Wine nor Proton has been
-  installed on any machine this was developed on, so no `.lexe` has ever
-  actually started a Windows program. The chain selection, the argv prefixing
-  and the sandbox binding of the compatibility layer are implemented and
-  unit-tested; they are unproven against a running Wine.
+* **Proton has never been exercised.** The Wine chain runs a real Windows
+  program end to end (`tests/acceptance/06_foreign_os.sh`), but Proton has not
+  been installed on any machine this was developed on, and neither has a
+  layered `proton+fex` combination. Proton is selected, prefixed and reported
+  by the same code the Wine chain uses; that is an argument, not evidence.
 * **Only 64-bit foreign payloads can be declared.** FORMAT-0.1 §5 recognises
   `x86_64` and `aarch64`, so a 32-bit Windows program — still common — has no
   architecture id to declare. It is refused by name rather than mis-reported,
-  but it is refused.
+  but it is refused. A 64-bit Wine also needs its 32-bit half installed for
+  some prefixes; without it Wine prints a warning and continues.
+* **No graphical Windows application has been run.** The foreign-OS path is
+  proven with a console program. A GUI one would additionally need the display
+  socket to reach Wine's graphics driver, which is implemented (the same
+  §5 display grant) and untested.
 * **Cross-ISA execution has not been exercised on real hardware.** The chain
   selection, argv prefixing and provider probing are unit-tested with synthetic
   provider sets; no FEX/Box64 run has been performed on an ARM64 host.
