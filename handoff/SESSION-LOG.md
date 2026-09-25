@@ -186,10 +186,10 @@ limit; 2 ran concurrently at peak):
 
 ---
 
-# Session 2 — 2026-09-25 — portable code, and one less engine
+# Session 2 — 2026-09-25 — portable code, foreign-OS payloads, service mode
 
 First session on the **new machine** (Windows 11 + WSL2 Ubuntu 24.04; see
-[MACHINE.md](MACHINE.md)). Four commits.
+[MACHINE.md](MACHINE.md)). Fourteen commits.
 
 ## Before any feature work: a green baseline
 
@@ -285,6 +285,74 @@ checks including third-party witnesses (`unzip`, `file`, `sha256sum`) and the
 fail-closed paths: no approval, no sandbox, tampered binary, missing build
 record.
 
+## After the portable work: foreign-OS, service mode, the frontends
+
+**`2ecac46` / `718a31b` — `applicationType: "windows"`.** The resolver already
+knew the Wine/Proton chain shapes; no package could declare a payload that
+needed them, so those code paths were unreachable from a manifest.
+`core/pe.{hpp,cpp}` is the foreign-OS counterpart of `core/elf` — it exists so
+`payload-role` can prove a package declaring a Windows application carries a
+runnable Windows executable, which is the alpha's defining bug one operating
+system over.
+
+Then it was made to actually run, and two things only the attempt revealed:
+
+* a compatibility layer outside `/usr` is unreachable inside the sandbox;
+* **Wine aborts without `/run/user/<uid>`** — it computes that path from its
+  own uid and ignores `XDG_RUNTIME_DIR`, dying with `free(): invalid pointer`,
+  which says nothing about the cause. Bisected against bubblewrap one control
+  at a time: every namespace was innocent, the filesystem view was the culprit.
+  Binding the HOST's runtime directory fixed it and was rejected — it would
+  hand a sandboxed application the user's Wayland socket, D-Bus and keyring.
+  A private, empty tmpfs at the same path works identically and exposes
+  nothing.
+
+**`78d8434` — `service` really detaches.** §15 asked for a decision between a
+systemd user unit and a plain detached process; this is the second, and the
+runtime states plainly which one it is every time it starts one. Three details
+decide whether a detached launch is real: the sandbox must not carry
+`--die-with-parent`, the version must stay leased by a SUPERVISOR that holds
+its own descriptor (an inherited one is released by the starter's `LOCK_UN`),
+and no exit code may be invented for something nothing waited for.
+
+The supervisor's `open` needed `O_CLOEXEC` — without it the sandboxed
+application inherited a descriptor to a runtime lock file. Caught by running
+`fuser` on the lease during the end-to-end check and seeing the payload's pid
+beside the supervisor's, not by reading the code.
+
+**`b59b23f` — the frontends caught up.** The portable work left a gap in the
+GUIs that I had opened: installing a portable package through `lexe-ui` or
+`lexe-installer` was refused with no way to consent. Both now render the
+approval beside Install, gated the same way permission expansion is. And
+`lexe-builder`, which predates all of this, was telling developers "a script or
+interpreted app is fine" when choosing an entrypoint — then signing a package
+that `payload-role` refuses. It reads the bytes now and says which type does
+fit.
+
+**`f80e70a` — a real leak, found by ASan.** This machine has `libasan`, which
+the Fedora one did not. The first sanitized run leaked 3.4 MB in 562
+allocations: `mz_zip_writer_finalize_heap_archive` transfers its buffer to the
+caller (it clears `m_pMem`), so `mz_zip_writer_end` frees nothing — and a
+comment in `PackageWriter::write` asserted the opposite. One leak per `pack`,
+harmless in a CLI that exits and a steady drain in `lexe-builder`, which does
+not. Three test helpers had the same mistake, which is why nobody noticed.
+
+The suite is now clean under ASan+UBSan: exit 0, zero leaks, zero first-party
+undefined behaviour, 636/636. The only UBSan reports left are signed
+left-shifts in the vendored ed25519, which is pinned and never modified.
+
+## What went wrong, again
+
+* `compile_for_host` was first written to throw for every failure, which made
+  the build's own output impossible to put in the error record — the only thing
+  that makes a failed compile diagnosable. It returns a `CompileOutcome` now
+  and the installer maps outcome to exception type, so "you did not approve
+  this" (exit 5) and "this host cannot build it" (exit 3) stay distinct.
+* Rewording the launcher's tamper message broke an acceptance assertion that
+  pinned the old phrase. The old phrase was better; it was restored.
+* The `windows-hello` example's Makefile used `CC ?=`, which cannot override
+  make's built-in — so it quietly built a LINUX binary named `.exe`. The
+  `payload-role` stage caught it, which is exactly what it is for.
 ## What went wrong along the way
 
 * The first `git` state on this machine was a **merge commit** whose two sides

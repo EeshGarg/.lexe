@@ -21,15 +21,22 @@ integration, first-class `run.lexe` launch artifacts, declared launch
 semantics, structured diagnostics, per-application overrides, and the `lexe-ui`
 consumer frontend — plus a GUI example and a scripted acceptance harness.
 
-A later session (2026-09-25, on the new machine) closed the largest gap that
-convergence left open: **portable code and host-ISA compilation**. A `.lexe`
-can now carry source and be compiled into a native program by the machine that
-installs it, behind an explicit approval, inside the launcher's sandbox with
-the network denied, with the output verified as a host-ISA executable before
-anything is promoted. It also removed a duplicated desktop-registration engine
-that had survived the convergence.
+A later session (2026-09-25, on the new machine) closed four of the gaps that
+convergence left open, so all three payload kinds now work end to end:
 
-**592 unit tests and 5 acceptance suites pass.**
+| Type | The payload is | Runs by |
+|---|---|---|
+| `native` | a compiled Linux ELF | running directly |
+| `portable` | source code | being compiled on the machine that installs it, behind an explicit approval, inside the launcher's sandbox with the network denied, with the output verified as a host-ISA executable before anything is promoted |
+| `windows` | a Windows PE | Wine or Proton — and a real Windows program really runs |
+
+`launch.mode: "service"` also detaches for real now, and both graphical
+frontends can approve a compile. Along the way it removed a duplicated
+desktop-registration engine that had survived the convergence, and fixed a leak
+in `lexe pack` that AddressSanitizer found the first time anyone ran it.
+
+**636 unit tests and 6 acceptance suites pass**, and the suite is clean under
+ASan + UBSan.
 
 Three things constrain work here and will bite you if you forget them:
 

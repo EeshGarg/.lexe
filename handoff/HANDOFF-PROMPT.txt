@@ -1,12 +1,16 @@
 ================================================================================
 .LEXE — HANDOFF PROMPT
 Paste this whole file as the opening message of a fresh session to continue the
-work. Written 2026-09-24. Repository: /home/bennyt7/Desktop/lexe dev
+work. Updated 2026-09-25.
 ================================================================================
 
 You are continuing work on the `.LEXE` repository — a Linux application format
 and runtime. Read this whole prompt before touching anything, then verify the
 state for yourself rather than trusting it.
+
+READ handoff/MACHINE.md FIRST. The development machine CHANGED: it is Windows 11
+with WSL2 Ubuntu 24.04, not the Fedora box older parts of handoff/ describe.
+Build commands, paths, and what this machine can and cannot prove are all there.
 
 
 --------------------------------------------------------------------------------
@@ -37,51 +41,47 @@ current, and its final section states plainly what is NOT done.
 
 
 --------------------------------------------------------------------------------
-2. WHAT THE PREVIOUS SESSION DID
+2. WHERE THE WORK STANDS
 --------------------------------------------------------------------------------
 
-Converged the alpha prototype onto the Definitive Architecture. 11 commits,
-78 files, ~13.5k insertions. Full detail in `handoff/SESSION-LOG.md`.
+All THREE payload kinds work end to end, each proven by an acceptance suite:
 
-Implemented:
+  native    a compiled Linux ELF, run directly — no layer in the steady state
+  portable  SOURCE, compiled by the machine that installs it (§5A): approval
+            gates the operation, the build runs unprivileged in the launcher's
+            sandbox with the network denied, and the output is verified to be a
+            host-ISA executable before anything is promoted
+  windows   a Windows PE, run through Wine or Proton — and a real Windows
+            program really runs, sandboxed and headless
 
-  * Package roles (§15.1) — a `.lexe` is an installable "application" or a
-    "launch" reference, decided by the SIGNED manifest, never the file name.
-  * `payload-role` verification stage (§14.2) — a native package's entrypoint
-    must BE a runnable ELF for a declared architecture, checked before install.
-    This is the direct fix for the alpha's helloworld.cpp-as-native bug.
-  * Execution policy (§6/§8) — mission-critical strict resolver that STOPS
-    rather than falling back; normal resolver preferring native. Three inputs
-    stay separate: signed package policy, per-user override, probed host.
-  * Declared launch semantics (§14.4) — launch.mode gui/console/service.
-  * Durable desktop integration (§14.1) — integration.json records every
-    registration with its hash; `lexe doctor [--repair]` names and rebuilds it.
-  * Launch references (§15.1) — run.lexe, a real signed verifiable .lexe.
-  * Structured diagnostics (§9), per-app overrides (§10), signer classes (§4).
-  * `lexe-ui` (3.4k lines GTK3) with the full page structure from §3.
-  * `examples/gui-hello` + `tests/acceptance/` (4 scripted suites + REBOOT.md).
+`launch.mode: "service"` detaches for real (a supervisor holds the version's
+launch lease; it is NOT a session-manager service, and the runtime says so).
+Both graphical frontends can approve a compile. `core/desktop` no longer holds
+a second implementation of desktop registration.
 
-Fixed four real bugs, including one of its own found by the acceptance harness
-(`doctor --repair` de-registered icons instead of restoring them).
+Full detail, commit by commit including the bugs found: handoff/SESSION-LOG.md.
 
 
 --------------------------------------------------------------------------------
 3. CURRENT STATE — VERIFY THIS YOURSELF FIRST
 --------------------------------------------------------------------------------
 
-    cd "/home/bennyt7/Desktop/lexe dev"
-    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLEXE_BUILD_GUI=ON
-    cmake --build build -j"$(nproc)"
-    ./build/lexe_tests                      # expect 517/517, 0 failures
-    bash tests/acceptance/run_all.sh        # expect all 4 suites ok
+    wsl -d Ubuntu-24.04 -e bash -lc '
+      cmake -S ~/lexe-src -B ~/lexe-build/cm -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLEXE_BUILD_GUI=ON &&
+      cmake --build ~/lexe-build/cm -j24 &&
+      cd ~/lexe-build/cm && env -u WAYLAND_DISPLAY -u DISPLAY ./lexe_tests'
 
-Expected at handoff time: 517 unit tests pass, all 4 acceptance suites pass,
-git tree clean, 11 commits ahead of origin/main (UNPUSHED — see constraints).
+    wsl -d Ubuntu-24.04 -e bash -lc '
+      cd ~/lexe-src && LEXE_BUILD_DIR=$HOME/lexe-build/cm \
+        bash tests/acceptance/run_all.sh'
 
-The runtime is ALSO installed on this real machine (~/.local/bin) with two
-applications registered: `com.usha.guihello` (the GUI example, deliberately
-left installed for the manual reboot test) and `com.usha.us` (an alpha-era app
-that was migrated). `lexe doctor` should report healthy.
+Expected: 636/636 unit tests, 0 failures; all 6 acceptance suites pass; no
+compiler warnings; git tree clean. The suite is also clean under ASan+UBSan
+(build line in handoff/VERIFICATION.md §11).
+
+`~/lexe-src` is a symlink to the repo on the Windows filesystem — use it; the
+real path contains a space, which breaks CMake, Make and most else.
 
 
 --------------------------------------------------------------------------------
@@ -89,26 +89,19 @@ that was migrated). `lexe doctor` should report healthy.
 --------------------------------------------------------------------------------
 
   * AUTOMATED TESTS MUST NEVER OPEN A WINDOW ON THE USER'S SCREEN. The user
-    works on this machine while tests run. `tests/acceptance/lib.sh` severs
-    WAYLAND_DISPLAY/DISPLAY for the whole harness; `scripts/gui-smoke.sh`
-    requires xvfb-run and unsets the real session. Anything that renders brings
-    its own synthetic display. Only `tests/acceptance/REBOOT.md` — an
-    explicitly manual checklist the USER runs — expects visible windows.
+    works on this machine while tests run. WSLg makes this EASIER to get wrong,
+    not harder: a GUI process started in WSL renders on the real Windows
+    desktop. `tests/acceptance/lib.sh` severs WAYLAND_DISPLAY/DISPLAY for the
+    whole harness; anything that renders brings its own synthetic display.
+    Only `tests/acceptance/REBOOT.md` — a checklist the USER runs — expects
+    visible windows, and it cannot be run on this machine at all.
 
-  * NO GIT PUSH CREDENTIALS on this machine (no credential.helper, no
-    ~/.git-credentials, no `gh`). `git push origin main` fails with
-    "Password authentication is not supported". Commit locally and TELL THE
-    USER the commits are ready. Do not try to configure auth for them.
+  * NO GIT PUSH CREDENTIALS. Commit locally and TELL THE USER the commits are
+    ready. Do not try to configure auth for them.
 
-  * SUDO REQUIRES A PASSWORD, so `dnf install` is unavailable. This is why
-    libasan/libubsan, valgrind, ccache, strace and xorg-x11-server-Xvfb could
-    not be installed. `gdb` IS available. Do not burn time retrying installs.
-
-  * The user has authorized aggressive use of the hardware (24 cores, 30GB
-    RAM): parallel builds (`-j24`), concurrent subagents (MAX 5 AT ONCE),
-    debuggers, tracing, profiling. Prefer evidence over reasoning: if strace
-    (unavailable), gdb, a sanitizer or a parallel test answers it in 30
-    seconds, do that instead of thinking about it for 30 minutes.
+  * `wsl -u root` gives a password-less root shell, so the older "sudo needs a
+    password, nothing can be installed" constraint does NOT apply here. See
+    MACHINE.md for what is already installed.
 
   * Commit often at coherent milestones with useful messages. Don't wait for
     one giant commit. Don't destroy history.
@@ -118,72 +111,40 @@ that was migrated). `lexe doctor` should report healthy.
 5. THE NEXT HIGHEST-PRIORITY WORK
 --------------------------------------------------------------------------------
 
-**PORTABLE CODE AND HOST-ISA COMPILATION (§5 + §7 of the PDF).** This is the
-largest remaining gap and the clear next piece.
+Read `handoff/NEXT-STEPS.md`. In short, the biggest remaining gaps are things
+no amount of code closes on THIS machine:
 
-Today `applicationType` accepts only `"native"`. The architecture requires:
+  * a SECOND ISA. Every build and every run has been x86_64. "The same .lexe
+    compiles on ARM64" and the FEX/Box64 chains are designed-but-unproven.
+  * the REBOOT CHECKLIST and a real double-click — they need a Linux desktop
+    session, which WSL does not have.
 
-        SAME App.lexe
-              |
-    +---------+---------+
-    |         |         |
-  x86-64    ARM64    RISC-V
-    |         |         |
-  compile  compile  compile      <- on the destination machine
-    |         |         |
-    +---------+---------+
-              |
-        Native Linux
-
-with `ADMIN COMPILE APPROVAL` gating the operation, the build itself running
-UNPRIVILEGED inside an isolated environment, and the result VERIFIED as a
-host-ISA native executable. The approval authorizes the operation; it does not
-give build code root.
-
-Entry points that already exist and were shaped to accommodate this:
-  * `src/core/manifest.cpp` — `applicationType` validation is one place.
-  * `src/core/isolation.hpp` — the bubblewrap sandbox can host an unprivileged
-    network-denied build; `build_plan()` is pure and testable.
-  * `src/core/execpolicy.cpp` — the resolver already has the shape for a
-    "portable source -> host ISA compile -> native" path.
-  * `src/core/verify.cpp` — the `payload-role` stage is where a portable
-    package's SOURCE payload would be validated instead of requiring an ELF.
-  * `docs/FORMAT-0.1.md` §5/§6 — the normative spec to extend.
-
-Read `handoff/NEXT-STEPS.md` for the full prioritized list, including the
-smaller items (foreign-OS payloads, real cross-ISA hardware validation, service
-mode detaching, signer tiers beyond local trust).
+What CAN be done here: Proton and layered chains, a GUI Windows application,
+`lexe-builder` learning to build portable and Windows projects, a systemd user
+unit for `service`, and wiring the sanitizers into a routine run.
 
 
 --------------------------------------------------------------------------------
-6. THE ONE THING THAT STILL NEEDS THE USER
---------------------------------------------------------------------------------
-
-The reboot boundary cannot be closed by an agent. `tests/acceptance/REBOOT.md`
-is a manual checklist covering the two double-click paths, a real reboot, a
-desktop-session switch, and the forced-failure error view. The GUI example is
-already installed so the user can run it. If the user reports a failure there,
-that is a REAL integration bug — diagnose the layer responsible (`.LEXE`,
-packaging, runtime resolution, Fedora integration, desktop integration, or the
-test app) and fix that layer, not a compensating hack elsewhere.
-
-
---------------------------------------------------------------------------------
-7. HOW TO WORK ON THIS CODEBASE
+6. HOW TO WORK ON THIS CODEBASE
 --------------------------------------------------------------------------------
 
   * Fix root causes, not symptoms. No KDE-specific hacks, no special-case
     scripts. If a shell script and the runtime both implement the same thing,
-    that is a bug — the runtime owns it (see packaging/install.sh calling
-    `lexe integrate` rather than hand-rolling MIME registration).
+    that is a bug — the runtime owns it.
   * Be truthful in user-facing text. The codebase deliberately never says
     "verified", "trusted" (unqualified), "safe" or "secure" on its own
     authority — route trust/permission/isolation wording through
     `src/core/presentation.hpp`. When a capability is unavailable, SAY SO with
-    a reason rather than omitting it (see `lexe trust classes`).
+    a reason rather than omitting it.
+  * Each consent authorizes ONE thing. `--yes`, `--accept-permissions`,
+    `--trust` and `--approve-compile` are deliberately separate. Do not collapse
+    them.
   * When you change a claim, change the test that pinned the old claim — and
     make the new test pin the new truth just as tightly.
   * Persistence is part of correctness. The alpha famously worked on the first
     attempt and then did not survive a reboot. Something working once is not
     done.
+  * TRY IT. Both of the things that made the foreign-OS path actually work, and
+    the one real memory leak, were found by running something — not by reading
+    code. Evidence over reasoning.
 ================================================================================

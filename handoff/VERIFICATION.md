@@ -5,7 +5,7 @@
 > machine. Sections 1 and 2 reproduce on the current machine (with the build
 > commands from MACHINE.md, and with the counts updated in §10). Sections 3–8
 > involved a real desktop session and **cannot** be reproduced under WSL.
-> Sections 9 and 10 are what was verified on the current machine.
+> Sections 9, 10 and 11 are what was verified on the current machine.
 
 ---
 
@@ -47,8 +47,8 @@ bash tests/acceptance/run_all.sh
 | `02_persistence` | delete the handler / association / launch reference, assert `doctor` NAMES each, repair, assert restored and still launching |
 | `03_failure_diagnostics` | forced failure produces a structured record with the expected JSON fields; a tampered entrypoint is refused |
 | `04_native_steady_state` | the real process tree has no compatibility process |
-| `05_portable_compile` | *(added later — see §9)*
-| `06_foreign_os` | *(added later — see §10)* a Windows payload: verified as a runnable PE, the three ways it can be wrong refused, installed, resolved to Wine, and really run | a source-only package: refused without approval, compiled under the sandbox with approval, recorded, run, tampered with, refused, rebuilt |
+| `05_portable_compile` | *(added later — see §9)* a source-only package: refused without approval, compiled under the sandbox with approval, recorded, run, tampered with, refused, rebuilt |
+| `06_foreign_os` | *(added later — see §10)* a Windows payload: verified as a runnable PE, the three ways it can be wrong refused, installed, resolved to Wine, and really run |
 
 Everything runs against a throwaway `LEXE_HOME` under `mktemp -d`; the real
 `~/.local/share/lexe` is never touched.
@@ -310,6 +310,66 @@ at the same path, it runs; without it, it aborts with `free(): invalid pointer`.
 * **Proton, and layered chains** (`proton+fex`). Only Wine was installed.
 * **A GUI Windows application.** The proof is a console program.
 * **32-bit Windows payloads**, which FORMAT-0.1 §5 cannot name at all.
+
+---
+
+## 11. Service mode, the frontends, and sanitizers (2026-09-25)
+
+**Result:** `636 test cases, 636 passed, 0 failed` · `8549 assertions, 0 failed`.
+All 6 acceptance suites pass. No compiler warnings.
+
+### `launch.mode: "service"` detaches for real
+
+```sh
+lexe run com.usha.svc --no-terminal     # returns immediately
+```
+
+| Check | Result |
+|---|---|
+| the call returns | 0 seconds, with "started in the background (service)" |
+| the payload keeps running | still ticking a heartbeat file 3s later, after `lexe run` had returned |
+| the sandbox survived its starter | `bwrap` + the payload still in the process tree |
+| the version stays leased | `fuser` on the lease shows **exactly one** holder: the supervisor |
+| nothing leaks into the sandbox | the payload does NOT hold the lease fd (it did until the supervisor's `open` gained `O_CLOEXEC` — caught by this check) |
+| no zombies | the launcher waits only for an intermediate that exits at once |
+| `--wait` | runs the same service in the foreground, and says it is doing so |
+| the record | `lastExecution.chain = native`, `launchMode = service`; no error record for a launch nothing waited for |
+
+### Sanitizers
+
+Possible here for the first time — the Fedora machine had no `libasan`.
+
+```sh
+cmake -S ~/lexe-src -B ~/lexe-build/asan -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLEXE_BUILD_GUI=OFF \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+  -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build ~/lexe-build/asan -j24
+cd ~/lexe-build/asan && ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+  env -u WAYLAND_DISPLAY -u DISPLAY ./lexe_tests
+```
+
+**Result:** exit 0. Zero leaks, zero first-party undefined behaviour, 636/636.
+
+It was not clean the first time: **3.4 MB leaked in 562 allocations**, from
+`mz_zip_writer_finalize_heap_archive`, whose buffer miniz hands to the caller
+(it clears `m_pMem`, so `mz_zip_writer_end` frees nothing). One production site
+(`PackageWriter::write` — a leak per `pack`, which matters in `lexe-builder`,
+which does not exit) and three test helpers. Fixed; see commit "package: free
+the archive buffer miniz hands over".
+
+The only UBSan reports remaining are signed left-shifts inside
+`third_party/ed25519`, which is pinned, vendored and never modified — a known
+property of that reference implementation, not a defect in this runtime.
+
+### What could NOT be verified here
+
+* **A systemd user unit.** WSL has no systemd user session, so the durable form
+  of `service` cannot be built or tested on this machine at all.
+* **The GUI compile-approval control being clicked.** Its view model is tested
+  headlessly (`-ts=gui`); the tick box itself needs the manual pass, because
+  the headless rule forbids test windows.
 
 ## What could NOT be verified here (the standing list)
 

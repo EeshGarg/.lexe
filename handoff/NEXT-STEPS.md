@@ -167,22 +167,27 @@ availability flags the frontends already render.
 * **Click through `lexe-ui`** once — Compatibility→Apply, the three Uninstall
   modes, the Error History buttons. Their wiring was reviewed and their view
   models are tested, but no human has pressed them.
-* **Surface the compile approval in the GUIs.** `lexe-ui` and `lexe-builder`
-  have no equivalent of `--approve-compile`: installing a portable package
-  through them will be refused with the CLI's message and no way to say yes.
-  The frontends already render permission consent; this is the same shape.
-  `InstallOptions::approve_compile` is the seam, `probe_toolchain()` gives the
-  dialog its "what this machine will run" line, and the refusal text in
-  `hostbuild.cpp` is the wording to reuse rather than reinvent.
-* **`lexe-builder` cannot build a portable project.** It writes
+* ~~**Surface the compile approval in the GUIs**~~ — done. Both frontends now
+  render it beside Install, gated like permission consent, and only when this
+  host can actually build the package.
+* **`lexe-builder` cannot build a portable or Windows project.** It writes
   `applicationType: "native"` unconditionally (`src/gui/builder.cpp`) and has no
-  UI for the `build` block.
+  UI for the `build` block or for `execution.allowedChains`. It no longer
+  *misleads* — it reads the chosen entrypoint's bytes and refuses with the type
+  that does fit — but a developer wanting either type still has to write the
+  manifest by hand and use `lexe build`. The wizard's form and
+  `build_manifest_json()` are where that would go.
 * ~~**Install the missing dev tooling**~~ — done, see [MACHINE.md](MACHINE.md).
   bubblewrap, GTK 3, valgrind, strace, xvfb, ccache and unzip are all present
   in WSL now, so nothing is skipped for want of a tool.
 * **Push the commits** — see the constraints section of `HANDOFF-PROMPT.txt`.
 * **`lexe-ui` Settings → theme** is persisted but not applied to the running UI.
 * **Update `docs/ALPHA.md`** — the alpha support contract predates all of this.
+* **Wire the sanitizers into a routine run.** They found a real leak the first
+  time they were used (see VERIFICATION §11) and nothing runs them habitually.
+  The build line is in VERIFICATION §11; CI is the obvious home, with the
+  vendored ed25519's signed left-shifts suppressed rather than tolerated in
+  the output.
 
 ---
 
