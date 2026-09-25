@@ -39,6 +39,26 @@ description, including a plainly-stated list of what is still missing.
   exec and refuses to launch without it, and `lexe repair <id>
   --approve-compile` rebuilds an entrypoint that cannot be copied back out of a
   package it was never in. Worked example: `examples/portable-hello/`.
+- **Foreign-OS payloads** (`applicationType: "windows"`). The resolver already
+  knew the Wine/Proton chain shapes and probed for the providers; no package
+  could *declare* a payload that needed them, so those chains were unreachable
+  from a manifest. Now:
+  - a new bounds-checked PE/COFF reader lets the `payload-role` stage prove the
+    entrypoint is a runnable Windows executable for a declared architecture —
+    not a DLL, not an ELF, not a 32-bit image the format has no id for. Without
+    it, a foreign-OS type would reintroduce the alpha's defining bug one
+    operating system over;
+  - the manifest parser rejects a Windows payload that permits no foreign-OS
+    chain, **including the default `["native"]`** — silence is not consent to
+    run under a compatibility layer — and rejects `missionCritical` on one
+    outright;
+  - the resolved compatibility layer is bound read-only into the sandbox when
+    it lives outside `/usr`, because a layer the sandbox cannot reach cannot
+    run the application it was chosen for.
+
+  No `.lexe` has yet started a Windows program: neither Wine nor Proton has
+  been installed on any machine this was developed on. The verification half is
+  tested against real Windows binaries; the running half is not.
 - **`build` manifest block** (FORMAT-0.1 §5.8): `system` (`make`/`cmake`/
   `command`), `sourceDir`, an argv `command` (never a shell string) and a
   required non-empty `toolchain` of bare executable names, probed against the

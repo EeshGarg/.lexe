@@ -84,25 +84,32 @@ work identically for both package types).
 
 ---
 
-## 2. Foreign-OS payloads — §8
+> **Item 2 is DONE** (2026-09-25), except for the half no code closes — see 2b.
 
-**Now the largest remaining gap**, and the natural next piece: the portable
-work above laid down the pattern it needs. `applicationType` is no longer a
-single-value field — `ApplicationType` is an enum, `parse_build()` shows how a
-type-conditional manifest block is validated and refused for the wrong type,
-and `resolve_chain`'s `linux_native` check is now an explicit enumeration of
-the types that are Linux-native, precisely so adding a foreign-OS type is a
-compile error at that line rather than a silent default.
+## 2b. Run something under Wine
 
-The resolver knows the Wine/Proton chain shapes, probes for the providers, and
-will select and argv-prefix them. But **no package can currently declare a
-foreign-OS payload**, so those chains are unreachable in practice on a 0.1
-manifest. They are real code paths with real provider probing — not stubs — but
-untested against an actual Windows binary.
+`applicationType: "windows"` is declarable, verified and resolved:
+`src/core/pe.{hpp,cpp}` proves the entrypoint is a runnable PE for a declared
+architecture, the parser refuses a Windows payload that permits no foreign-OS
+chain, and the resolver selects `wine` / `proton` / `proton+fex` and binds the
+layer into the sandbox.
 
-Start at `docs/FORMAT-0.1.md` §5.3 (`applicationType`), then
-`src/core/execpolicy.cpp` (`resolve_chain`'s `linux_native` check already exists
-precisely so a future foreign-OS type cannot slip through the strict resolver).
+**No `.lexe` has ever started a Windows program.** Neither Wine nor Proton has
+been installed on any machine this was developed on, so the running half is
+implemented and unproven. What it needs is `apt-get install wine` (trivial on
+the current machine — see [MACHINE.md](MACHINE.md)) and then:
+
+* a real end-to-end run of a small Windows console program;
+* an acceptance suite for it, modelled on `05_portable_compile.sh`;
+* attention to what a first Wine run does — it creates a WINEPREFIX under
+  `$HOME`, which in the sandbox is the application's private data root. That is
+  the right place for it, but it is worth *proving* rather than assuming, and
+  worth checking it survives a second launch.
+
+Also still open: **only 64-bit foreign payloads can be declared**, because
+FORMAT-0.1 §5 recognises only `x86_64` and `aarch64`. A 32-bit Windows program
+— still common — is refused by name. Adding an `i386` architecture id is a
+format change; decide deliberately.
 
 ---
 

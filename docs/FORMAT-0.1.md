@@ -160,7 +160,7 @@ labelled.
 
 | Field | Constraint |
 |---|---|
-| `applicationType` | `"native"` or `"portable"` |
+| `applicationType` | `"native"`, `"portable"` or `"windows"` |
 | `architectures` | non-empty array; recognised values: `x86_64`, `aarch64` |
 | `entrypoint.executable` | relative path inside `payload/` (no leading `/`, no `..`, no backslash) |
 | `install.mode` | MUST be `"bundled"` in 0.1 (`network`/`launcher` → "unsupported in 0.1") |
@@ -171,13 +171,29 @@ of the archive:
 
 | Value | The payload is | `entrypoint.executable` names |
 |---|---|---|
-| `"native"` | the compiled program | an entry that MUST be present in the archive |
+| `"native"` | the compiled program, for Linux | an ELF entry that MUST be present in the archive |
 | `"portable"` | source code | the file the build MUST PRODUCE, and which MUST NOT be present in the archive |
+| `"windows"` | the compiled program, for Windows | a PE entry that MUST be present in the archive |
 
-For `"native"`, `architectures` means "the entrypoint ELF targets one of
-these". For `"portable"`, it means "the build recipe is declared to produce a
-working program for these". In both cases the host's ISA MUST be one of them
-for the package to install (§6.8).
+`architectures` means something slightly different for each, and is a hard gate
+in all three: the host's ISA MUST be one of them for the package to install
+(§6.8).
+
+| Value | `architectures` means |
+|---|---|
+| `"native"` | the entrypoint ELF targets one of these |
+| `"portable"` | the build recipe is declared to produce a working program for these |
+| `"windows"` | the entrypoint PE targets one of these |
+
+A `"windows"` payload is not runnable on Linux by itself, so such a package
+MUST permit a foreign-OS execution chain in `execution.allowedChains` — one
+whose id contains `wine` or `proton`, including layered forms like
+`proton+fex` (§5.5). A `"windows"` package that permits none, **including one
+that relies on the default `["native"]`**, MUST be rejected: silence is not
+consent to run under a compatibility layer. It MUST also be rejected when
+`missionCritical` is true, which is the same contradiction stated directly —
+mission-critical execution requires a Linux-native, host-ISA-native
+realization, and a Windows payload has none by construction.
 
 ### 5.4 Fields required for `role: "launch"`
 
@@ -210,6 +226,22 @@ A manifest with `missionCritical: true` and any `allowedChains` entry other than
 
 `allowedChains` is the set a resolver may choose from and a frontend may offer.
 A user preference may narrow or reorder it; it MUST NOT extend it.
+
+**Chain ids.** A chain id is one layer, or several joined with `+`, outermost
+first. Each layer is one of:
+
+| Layer | Kind | Runs |
+|---|---|---|
+| `native` | — | the payload directly; contributes no argv prefix at all |
+| `fex`, `box64`, `qemu-user` | ISA translation | a foreign-ISA **Linux** binary |
+| `wine`, `proton` | foreign OS | a **Windows** binary on Linux |
+
+A layered id puts the foreign-OS layer outermost and the ISA-translation layer
+innermost — `proton+fex` is Proton over FEX, for a Windows x86-64 payload on an
+ARM64 host. The reverse (`fex+proton`) is not a chain.
+
+A chain "runs a foreign-OS payload" when any of its layers is a foreign-OS
+layer. That is the property §5.3 requires of a `"windows"` package.
 
 ### 5.6 Launch semantics — `launch`
 
@@ -318,6 +350,24 @@ For `role: "application"` with `applicationType: "portable"`, the archive MUST:
   the build produces on the destination machine. A portable package that ships
   it is a native payload wearing a portable label: the binary that would end up
   installed is one this host never compiled.
+
+For `role: "application"` with `applicationType: "windows"`, the entry named by
+`entrypoint.executable` MUST:
+
+* be present in the archive;
+* be a valid PE image (an `MZ` header whose `e_lfanew` points, in range, at a
+  `PE\0\0` signature);
+* have `IMAGE_FILE_EXECUTABLE_IMAGE` set and `IMAGE_FILE_DLL` clear — a DLL is
+  a library and cannot be launched, and it carries the executable-image bit
+  too, so both must be checked;
+* target a machine that maps to one of the manifest's `architectures`. A PE for
+  a machine this format version cannot name (i386, ARM32, IA-64) MUST be
+  refused as such, rather than reported as a mismatch against a list the
+  publisher could not have satisfied.
+
+A .NET/CLR image is NOT a verification failure: whether the host can run it is
+a host-capability question for the execution resolver, not a question about
+whether the bytes are what the manifest says.
 
 For `role: "launch"`, the archive MUST contain no `payload/` entries.
 

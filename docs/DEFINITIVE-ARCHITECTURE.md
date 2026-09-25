@@ -207,6 +207,35 @@ $ lexe compat com.example.app
     proton  — Proton is not installed on this host
 ```
 
+### A foreign-OS payload must permit a chain that can run it
+
+`applicationType: "windows"` (§3, FORMAT-0.1 §5.3) carries a Windows PE, which
+nothing on Linux runs natively. Such a package must therefore permit a
+foreign-OS chain — and the **manifest parser** enforces that, rather than the
+launcher discovering it. A Windows payload whose `allowedChains` is the default
+`["native"]` is rejected at parse time, because silence is not consent to run
+under a compatibility layer, and because the alternative is a package that
+installs happily and can never start.
+
+The same rejection covers `missionCritical: true` on a Windows payload, stated
+as the contradiction it actually is: mission-critical execution requires a
+Linux-native, host-ISA-native realization, and a Windows payload has none by
+construction.
+
+The chain-id vocabulary lives beside the manifest (`ChainLayerKind`), because
+`execution.allowedChains` is a manifest field and the parser has to reason
+about it. `execpolicy` owns how to find and invoke each layer — not what the
+names mean. One enum, not two that can drift.
+
+### The compatibility layer has to be inside the sandbox
+
+A chain that cannot be reached from inside the sandbox cannot run the
+application it was selected for. Distribution packages put Wine, Proton, FEX
+and Box64 under `/usr`, which is already bound read-only; anything installed
+elsewhere — a Steam Proton tree, a hand-built FEX in `/opt` — is bound in
+explicitly, read-only. A compatibility layer gets no more authority than the
+application it is running, and the native chain binds nothing extra at all.
+
 ---
 
 ## 5. Launch semantics — presentation is declared
@@ -716,11 +745,18 @@ than useless.
   repaired or reinstalled. A host whose toolchain or libraries move underneath
   it keeps running the binary that was built at install time; the runtime
   notices a *changed* entrypoint, not a stale one.
-* **Foreign-OS payloads.** The resolver knows the Wine/Proton chain shapes and
-  will select and prefix them, but no package can currently *declare* a
-  foreign-OS payload, so those chains are unreachable in practice on a 0.1
-  manifest. They are real code paths with real provider probing, not stubs —
-  but they are untested against an actual Windows binary.
+* **No foreign-OS payload has been RUN.** `applicationType: "windows"` is
+  declarable, verified (the entrypoint must be a runnable PE for a declared
+  architecture) and resolved to a Wine/Proton chain, and the verification half
+  is tested against real Windows binaries. But neither Wine nor Proton has been
+  installed on any machine this was developed on, so no `.lexe` has ever
+  actually started a Windows program. The chain selection, the argv prefixing
+  and the sandbox binding of the compatibility layer are implemented and
+  unit-tested; they are unproven against a running Wine.
+* **Only 64-bit foreign payloads can be declared.** FORMAT-0.1 §5 recognises
+  `x86_64` and `aarch64`, so a 32-bit Windows program — still common — has no
+  architecture id to declare. It is refused by name rather than mis-reported,
+  but it is refused.
 * **Cross-ISA execution has not been exercised on real hardware.** The chain
   selection, argv prefixing and provider probing are unit-tested with synthetic
   provider sets; no FEX/Box64 run has been performed on an ARM64 host.
