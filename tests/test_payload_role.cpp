@@ -408,4 +408,131 @@ TEST_CASE("a portable package's source is not judged as an ELF") {
     CHECK_FALSE(contains(stage_detail(report, kPayloadRole), "ELF"));
 }
 
+// ---------------------------------------------------------------------------
+// applicationType "windows" — the same question, one operating system over
+// (FORMAT-0.1 §6.7).
+//
+// Without this, a foreign-OS package would reintroduce the alpha's defining
+// bug exactly: a manifest describing bytes nothing had checked it against. The
+// failure would surface as an unexplained Wine error long after the package
+// was installed, which is the shape of defect this stage exists to end.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a windows package carrying a PE executable passes payload-role") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_windows_package(home.path(), key);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    REQUIRE(report.ok());
+    const std::string detail = stage_detail(report, kPayloadRole);
+    CHECK(contains(detail, "windows"));
+    CHECK(contains(detail, "bin/app.exe"));
+}
+
+TEST_CASE("a windows package whose entrypoint is a Linux binary is refused") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::WindowsAppSpec spec;
+    spec.id = "com.example.notwindows";
+    // A real, valid ELF executable — every signature and hash will be correct.
+    // It is simply not what the manifest says it is.
+    spec.raw_entrypoint = lexe::test::build_elf(lexe::test::ElfSpec{});
+    const fs::path pkg =
+        lexe::test::make_windows_package(home.path(), key, spec);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    const std::string detail = failure_detail(report);
+    CHECK(contains(detail, "not a Windows PE image"));
+    // And it says where those bytes DO belong.
+    CHECK(contains(detail, "\"native\" package"));
+}
+
+TEST_CASE("a windows package whose entrypoint is a DLL is refused") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::WindowsAppSpec spec;
+    spec.id = "com.example.dll";
+    spec.payload.dll = true;
+    const fs::path pkg =
+        lexe::test::make_windows_package(home.path(), key, spec);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    CHECK(contains(failure_detail(report), "DLL"));
+    CHECK(contains(failure_detail(report), "cannot be launched"));
+}
+
+TEST_CASE("a windows package for an undeclared architecture is refused") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::WindowsAppSpec spec;
+    spec.id = "com.example.wrongarch";
+    spec.architectures = {"aarch64"};
+    spec.payload.machine = 0x8664; // an amd64 image
+    const fs::path pkg =
+        lexe::test::make_windows_package(home.path(), key, spec);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    CHECK(contains(failure_detail(report), "x86_64"));
+    CHECK(contains(failure_detail(report), "aarch64"));
+}
+
+TEST_CASE("a 32-bit windows payload is refused, by name") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::WindowsAppSpec spec;
+    spec.id = "com.example.win32";
+    spec.payload.machine = 0x014C; // i386
+    spec.payload.pe32_plus = false;
+    const fs::path pkg =
+        lexe::test::make_windows_package(home.path(), key, spec);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    // FORMAT-0.1 §5 has no architecture id for i386, so the package cannot
+    // declare one. Saying that is better than reporting a mismatch against a
+    // list the publisher could never have satisfied.
+    CHECK(contains(failure_detail(report), "i386"));
+    CHECK(contains(failure_detail(report), "cannot name"));
+}
+
+TEST_CASE("a windows package with a missing entrypoint is refused") {
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    lexe::test::WindowsAppSpec spec;
+    spec.id = "com.example.noentry";
+    // Write the PE somewhere else, so the payload is non-empty but the
+    // declared entrypoint is simply not there.
+    spec.entrypoint = "bin/app.exe";
+    const fs::path tree_root = home.path() / "handmade";
+    lexe::test::TestAppTree tree =
+        lexe::test::make_windows_app_tree(tree_root, spec);
+    fs::remove(tree.payload_dir / "bin" / "app.exe");
+
+    // Re-sign the tree as it now stands.
+    lexe::PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    const fs::path pkg = home.path() / "noentry.lexe";
+    {
+        // The manifest embeds the fixture's placeholder key; rewrite it with
+        // the real one so every earlier stage still passes.
+        std::string text = lexe::util::slurp_text(tree.manifest_file);
+        const std::string placeholder = spec.public_key;
+        const std::string real = lexe::test::encode_public_key_str(key.public_key);
+        const std::size_t at = text.find(placeholder);
+        REQUIRE(at != std::string::npos);
+        text.replace(at, placeholder.size(), real);
+        lexe::util::spit(tree.manifest_file, std::string_view(text));
+    }
+    lexe::PackageWriter::write(inputs, key, pkg);
+
+    const VerificationReport report = lexe::verify_package(pkg);
+    expect_payload_role_failure(report);
+    CHECK(contains(failure_detail(report), "not present in the package"));
+}
+
 } // TEST_SUITE("payload_role")

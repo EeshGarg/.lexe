@@ -33,6 +33,28 @@ const char* to_string(LaunchMode m);
 /// Parse a `launch.mode` string; returns false for an unrecognised value.
 bool launch_mode_from_string(const std::string& text, LaunchMode& out);
 
+/// What one layer of an execution chain DOES (FORMAT-0.1 §5.5).
+///
+/// The vocabulary lives here, beside the manifest, because
+/// `execution.allowedChains` is a manifest field and the PARSER has to reason
+/// about it — a package whose payload needs a foreign-OS layer while its
+/// policy permits none is a contradiction, and contradictions are rejected at
+/// parse time rather than discovered at launch. `execpolicy` owns how to find
+/// and invoke each layer; it does not own what the names mean.
+enum class ChainLayerKind {
+    Unknown,        // not a layer this runtime knows
+    IsaTranslation, // runs a foreign-ISA Linux binary (FEX, Box64, qemu-user)
+    ForeignOs,      // runs a foreign-OS binary (Wine, Proton)
+};
+const char* to_string(ChainLayerKind k);
+
+/// The kind of a single layer id ("fex", "proton", …).
+ChainLayerKind chain_layer_kind(const std::string& layer_id);
+
+/// True when `chain_id` — possibly layered, e.g. "proton+fex" — contains a
+/// layer that can run a foreign-OS payload. "native" never can.
+bool chain_runs_foreign_os(const std::string& chain_id);
+
 /// What kind of payload an application package carries (FORMAT-0.1 §5.3).
 ///
 /// The difference is not cosmetic: it decides what the `payload-role`
@@ -41,6 +63,7 @@ bool launch_mode_from_string(const std::string& text, LaunchMode& out);
 enum class ApplicationType {
     Native,   // the payload IS the program: a compiled ELF for a declared ISA
     Portable, // the payload is SOURCE, compiled to this host's ISA at install
+    Windows,  // the payload is a Windows PE, run through a foreign-OS layer
 };
 const char* to_string(ApplicationType t);
 /// Parse an `applicationType` string; returns false for an unrecognised value.

@@ -119,6 +119,18 @@ struct IsolationRequest {
     /// the OPERATION; it never gives build code any authority the launcher
     /// would not have granted the application itself.
     bool build = false;
+    /// Absolute host paths of the compatibility-layer executables this launch
+    /// will exec through (the resolved chain's argv prefix — Wine, Proton,
+    /// FEX, Box64, …). Empty for the native chain, which is the whole point of
+    /// the native chain.
+    ///
+    /// They have to be reachable INSIDE the sandbox or the chain cannot run at
+    /// all. Distribution packages put them under /usr, which is already bound
+    /// read-only; anything installed elsewhere (/opt, a Steam Proton tree, a
+    /// user-local build) is not, so it is bound here. The binds are read-only
+    /// and optional: a compatibility layer gets no more authority than the
+    /// application it is running.
+    std::vector<std::string> compatibility_paths;
     std::map<std::string, std::string> inherited_env; // caller env (to sanitize)
 };
 

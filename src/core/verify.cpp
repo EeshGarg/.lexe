@@ -13,6 +13,7 @@
 #include "core/verify.hpp"
 
 #include "core/elf.hpp"
+#include "core/pe.hpp"
 
 #include "core/crypto.hpp"
 #include "core/error.hpp"
@@ -245,8 +246,9 @@ std::optional<std::string> payload_role_problem(const PackageReader& reader,
         return std::nullopt;
     }
 
-    // role == application, applicationType == native: the declared entrypoint
-    // must be a real, executable ELF object for a declared architecture.
+    // role == application with a payload that IS the program: the declared
+    // entrypoint must be present, and must be the right kind of executable
+    // object for a declared architecture.
     const std::string entry_path = "payload/" + manifest.entrypoint_executable;
     if (!reader.has_entry(entry_path)) {
         return "the declared entrypoint \"" + manifest.entrypoint_executable +
@@ -259,6 +261,49 @@ std::optional<std::string> payload_role_problem(const PackageReader& reader,
     } catch (const Error& e) {
         return std::string("the declared entrypoint cannot be read: ") +
                e.what();
+    }
+
+    // applicationType "windows": the same question, one operating system over.
+    // Without it a foreign-OS package would reintroduce the alpha's defining
+    // bug exactly — a manifest describing bytes nothing had checked it against
+    // — and the failure would surface as an unexplained Wine error long after
+    // the package was installed.
+    if (manifest.application_kind == ApplicationType::Windows) {
+        const pe::PeInfo info = pe::read_bytes(bytes.data(), bytes.size());
+        if (!info.is_pe) {
+            return "applicationType \"windows\" declares \"" +
+                   manifest.entrypoint_executable +
+                   "\" as the entrypoint, but those bytes are not a Windows "
+                   "PE image (a Windows package must contain a Windows "
+                   "executable; a Linux binary belongs in a \"native\" "
+                   "package)";
+        }
+        if (info.is_dll) {
+            return "the entrypoint \"" + manifest.entrypoint_executable +
+                   "\" is a Windows DLL, which is a library and cannot be "
+                   "launched (expected an .exe)";
+        }
+        if (!info.executable_image) {
+            return "the entrypoint \"" + manifest.entrypoint_executable +
+                   "\" is a PE object that is not marked as a runnable image";
+        }
+        const std::string entry_arch = info.arch();
+        if (entry_arch.empty()) {
+            return "the entrypoint \"" + manifest.entrypoint_executable +
+                   "\" is a Windows executable for " +
+                   pe::to_string(info.machine) +
+                   ", which this format version cannot name (0.1 recognises "
+                   "x86_64 and aarch64)";
+        }
+        if (std::find(manifest.architectures.begin(),
+                      manifest.architectures.end(),
+                      entry_arch) == manifest.architectures.end()) {
+            return "the entrypoint \"" + manifest.entrypoint_executable +
+                   "\" is a " + entry_arch +
+                   " Windows executable, which is not among the declared "
+                   "architectures (" + join(manifest.architectures, ", ") + ")";
+        }
+        return std::nullopt;
     }
 
     const elf::ElfInfo info = elf::read_bytes(bytes.data(), bytes.size());
@@ -303,6 +348,12 @@ std::string payload_role_detail(const Manifest& manifest) {
                "\" and no prebuilt entrypoint — \"" +
                manifest.entrypoint_executable +
                "\" is compiled for this host at install";
+    }
+    if (manifest.application_kind == ApplicationType::Windows) {
+        return "role \"application\", applicationType \"windows\": the "
+               "declared entrypoint \"" + manifest.entrypoint_executable +
+               "\" is a runnable Windows executable for a declared "
+               "architecture";
     }
     return "role \"application\": the declared entrypoint \"" +
            manifest.entrypoint_executable +

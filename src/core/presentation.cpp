@@ -330,6 +330,11 @@ std::string application_type_line(const std::string& application_type,
         // property of the file; the part that matters to the reader is that
         // their machine is going to compile it.
         type = "Portable source, compiled on this machine";
+    } else if (application_type == "windows") {
+        // Never just "Windows application". A reader deciding whether to
+        // install this needs to know it cannot run without a compatibility
+        // layer, which is a thing their machine may not have.
+        type = "Windows application, run through a compatibility layer";
     }
     // The host architecture alone when this package runs here; otherwise name
     // every architecture it does offer, so "why not here" is visible.

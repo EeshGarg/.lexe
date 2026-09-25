@@ -216,6 +216,26 @@ IsolationPlan build_plan(const IsolationRequest& req,
     plan.controls[IsolationControl::AppRootReadOnly] =
         req.build ? ControlState::NotApplicable : ControlState::Enforced;
 
+    // Compatibility layers the resolved chain will exec through. /usr is
+    // already bound, so this only adds what lives outside it — a Proton tree
+    // under ~/.steam, a hand-built FEX in /opt. The whole installation prefix
+    // is bound, not just the executable, because a compatibility layer without
+    // its own libraries and data is an executable that immediately fails.
+    for (const std::string& path : req.compatibility_paths) {
+        if (path.empty() || path.front() != '/') continue;
+        if (path.rfind("/usr/", 0) == 0) continue; // already bound read-only
+        const fs::path executable(path);
+        fs::path bind = executable.parent_path();
+        // `<prefix>/bin/<name>` is the conventional layout; bind `<prefix>`.
+        if (bind.filename() == "bin" && bind.has_parent_path()) {
+            bind = bind.parent_path();
+        }
+        const std::string host = bind.generic_string();
+        if (host.empty() || host == "/") continue; // never bind the host root
+        plan.binds.push_back({host, host, /*read_only=*/true,
+                              /*optional=*/true});
+    }
+
     // Private writable roots at fixed sandbox paths (host layout not exposed).
     plan.binds.push_back({req.data_root.generic_string(), kSandboxData, false});
     plan.binds.push_back({req.cache_root.generic_string(), kSandboxCache, false});

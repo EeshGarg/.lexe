@@ -479,6 +479,7 @@ and a `.lexe-error` message is a **typed record**, never an arbitrary string:
 
 Each record carries the application id and version, the **typed failure stage**
 (`verification`, `execution-policy`, `chain-resolution`, `runtime-resolution`,
+`compile`,
 `integration`, `install`, `isolation`, `launch`, `runtime`), a human summary and
 a full detail, the execution chain attempted, the declared launch mode, the host
 OS and ISA, the runtime version and resolved profile, the exit code **or the

@@ -11,6 +11,7 @@
 // make_test_package uses PackageWriter; tamper_entry uses miniz directly.
 
 #include "elf_builder.hpp"
+#include "pe_builder.hpp"
 
 #include "core/crypto.hpp"
 #include "core/elf.hpp"
@@ -614,6 +615,92 @@ inline fs::path make_portable_package(const fs::path& work_dir,
     inputs.manifest_file = tree.manifest_file;
     const fs::path out =
         work_dir / (spec.id + "-" + spec.version + "-portable.lexe");
+    PackageWriter::write(inputs, key, out);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Foreign-OS packages (FORMAT-0.1 §5.3 `applicationType: "windows"`).
+//
+// The payload is a Windows PE image, which no Linux host runs natively, so
+// such a package must permit a foreign-OS execution chain — the manifest
+// parser rejects one that does not. The PE is synthesized (pe_builder.hpp):
+// these fixtures are for verification and policy, and nothing here executes
+// the payload.
+// ---------------------------------------------------------------------------
+
+struct WindowsAppSpec {
+    std::string id = "com.example.windows";
+    std::string version = "1.0.0";
+    std::string public_key =
+        "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    std::string entrypoint = "bin/app.exe";
+    std::vector<std::string> architectures = {"x86_64"};
+    std::vector<std::string> allowed_chains = {"wine", "proton"};
+    bool mission_critical = false;
+    /// The PE written at `entrypoint`. Defaults to a runnable amd64 console
+    /// program; the negative fixtures make it a DLL, a foreign machine, or
+    /// not a PE at all.
+    PeSpec payload;
+    /// When set, `entrypoint` is written as these raw bytes instead of a PE
+    /// (e.g. an ELF, to pin that a Linux binary is refused here).
+    std::vector<std::uint8_t> raw_entrypoint;
+};
+
+inline TestAppTree make_windows_app_tree(const fs::path& root,
+                                         const WindowsAppSpec& spec = {}) {
+    TestAppTree tree;
+    tree.root = root;
+    tree.payload_dir = root / "payload";
+    tree.manifest_file = root / "lexe.json";
+    tree.spec.id = spec.id;
+    tree.spec.version = spec.version;
+    tree.spec.public_key = spec.public_key;
+    tree.spec.entrypoint = spec.entrypoint;
+    tree.spec.architectures = spec.architectures;
+
+    const fs::path entry = tree.payload_dir / fs::path(spec.entrypoint);
+    if (!spec.raw_entrypoint.empty()) {
+        util::spit(entry, spec.raw_entrypoint);
+    } else {
+        write_pe(entry, spec.payload);
+    }
+    util::spit(tree.payload_dir / "data.txt",
+               std::string_view("windows payload data for " + spec.id + "\n"));
+
+    nlohmann::json manifest = {
+        {"lexeVersion", "0.1"},
+        {"id", spec.id},
+        {"name", "Windows App"},
+        {"version", spec.version},
+        {"publisher",
+         {{"name", "Test Publisher"}, {"publicKey", spec.public_key}}},
+        {"applicationType", "windows"},
+        {"architectures", spec.architectures},
+        {"entrypoint",
+         {{"executable", spec.entrypoint},
+          {"arguments", nlohmann::json::array()}}},
+        {"install", {{"scope", "user"}, {"mode", "bundled"}}},
+        {"execution",
+         {{"missionCritical", spec.mission_critical},
+          {"allowedChains", spec.allowed_chains}}},
+    };
+    util::spit(tree.manifest_file, std::string_view(manifest.dump(2) + "\n"));
+    return tree;
+}
+
+/// A fully signed foreign-OS `.lexe`.
+inline fs::path make_windows_package(const fs::path& work_dir,
+                                     const crypto::KeyPair& key,
+                                     WindowsAppSpec spec = {}) {
+    spec.public_key = encode_public_key_str(key.public_key);
+    const TestAppTree tree = make_windows_app_tree(
+        work_dir / ("wtree-" + spec.id + "-" + spec.version), spec);
+    PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    const fs::path out =
+        work_dir / (spec.id + "-" + spec.version + "-windows.lexe");
     PackageWriter::write(inputs, key, out);
     return out;
 }

@@ -296,6 +296,17 @@ void resolve_runtime_contract(const fs::path& version_dir,
     std::error_code ec;
     if (!fs::is_regular_file(entry, ec)) return;
 
+    // The dependency engine reads ELF. A Windows payload has no Linux runtime
+    // contract to resolve — what it needs is a foreign-OS layer, which is the
+    // execution resolver's question, not this one. Running the ELF analysis
+    // over a PE image would produce an empty report that reads exactly like
+    // "statically linked, nothing missing", which is a claim about the payload
+    // that nothing checked.
+    if (manifest.application_kind == ApplicationType::Windows) {
+        record.runtime_source = "foreign-os";
+        return;
+    }
+
     DependencyOptions options;
     // The application's own bundled libraries are searched FIRST, then the
     // host — which is exactly the §7 "Host system / Tux32 / Bundled" ordering.

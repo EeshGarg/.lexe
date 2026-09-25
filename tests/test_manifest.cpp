@@ -928,4 +928,112 @@ TEST_CASE("an unknown applicationType is still refused, with both types named") 
     }
 }
 
+// ---------------------------------------------------------------------------
+// applicationType "windows" — a foreign-OS payload (FORMAT-0.1 §5.3, §5.5).
+//
+// Nothing runs a Windows executable natively on Linux. A package that declares
+// one while permitting no chain that could run it is a contradiction, and the
+// place to say so is the parser — not the launcher, where the user would meet
+// it as "no execution chain is available" long after installing something that
+// was never going to run.
+// ---------------------------------------------------------------------------
+
+json windows_manifest() {
+    json j = base_manifest();
+    j["applicationType"] = "windows";
+    j["entrypoint"] = {{"executable", "bin/app.exe"},
+                       {"arguments", json::array()}};
+    j["execution"] = {{"missionCritical", false},
+                      {"allowedChains", json::array({"wine", "proton"})}};
+    return j;
+}
+
+TEST_CASE("a windows package parses when a foreign-OS chain is permitted") {
+    lexe::test::TempLexeHome home;
+    const Manifest m = parse_json(windows_manifest());
+    CHECK(m.application_type == "windows");
+    CHECK(m.application_kind == lexe::ApplicationType::Windows);
+    CHECK(m.allowed_chains == std::vector<std::string>{"wine", "proton"});
+    CHECK(Manifest::parse(m.to_json()).application_kind ==
+          lexe::ApplicationType::Windows);
+}
+
+TEST_CASE("a layered chain counts as permitting a foreign-OS layer") {
+    lexe::test::TempLexeHome home;
+    // "proton+fex" is Proton over FEX: a foreign-OS layer outermost, an ISA
+    // translation layer innermost (§8). The foreign-OS half is what makes the
+    // package runnable at all, so it satisfies the requirement.
+    json j = windows_manifest();
+    j["execution"]["allowedChains"] = json::array({"proton+fex"});
+    CHECK_NOTHROW(parse_json(j));
+
+    CHECK(lexe::chain_runs_foreign_os("proton+fex"));
+    CHECK(lexe::chain_runs_foreign_os("wine"));
+    CHECK_FALSE(lexe::chain_runs_foreign_os("native"));
+    CHECK_FALSE(lexe::chain_runs_foreign_os("fex"));
+    CHECK_FALSE(lexe::chain_runs_foreign_os("box64+fex"));
+    CHECK(lexe::chain_layer_kind("fex") == lexe::ChainLayerKind::IsaTranslation);
+    CHECK(lexe::chain_layer_kind("proton") == lexe::ChainLayerKind::ForeignOs);
+    CHECK(lexe::chain_layer_kind("nonesuch") == lexe::ChainLayerKind::Unknown);
+}
+
+TEST_CASE("a windows package that permits no foreign-OS chain is refused") {
+    lexe::test::TempLexeHome home;
+    for (const json& chains :
+         {json::array({"native"}), json::array({"fex"}),
+          json::array({"native", "box64"})}) {
+        CAPTURE(chains.dump());
+        json j = windows_manifest();
+        j["execution"]["allowedChains"] = chains;
+        try {
+            parse_json(j);
+            FAIL("expected the manifest to be rejected");
+        } catch (const VerificationError& e) {
+            const std::string message = e.what();
+            CHECK(message.find("foreign-OS execution chain") !=
+                  std::string::npos);
+            // …and it names the way out rather than leaving the publisher to
+            // guess which ids exist.
+            CHECK(message.find("wine") != std::string::npos);
+            CHECK(message.find("proton") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("a windows package with the default chain policy is refused") {
+    lexe::test::TempLexeHome home;
+    // No `execution` block at all means the documented default, ["native"],
+    // which cannot run this payload. Silence is not consent to run under Wine.
+    json j = windows_manifest();
+    j.erase("execution");
+    CHECK_THROWS_AS(parse_json(j), VerificationError);
+}
+
+TEST_CASE("a windows package cannot be mission-critical") {
+    lexe::test::TempLexeHome home;
+    json j = windows_manifest();
+    j["execution"] = {{"missionCritical", true},
+                      {"allowedChains", json::array({"native"})}};
+    try {
+        parse_json(j);
+        FAIL("expected the manifest to be rejected");
+    } catch (const VerificationError& e) {
+        // The contradiction to report is the REAL one — a Windows payload has
+        // no Linux-native realization — not the incidental one about chains.
+        CHECK(std::string(e.what()).find("missionCritical") !=
+              std::string::npos);
+        CHECK(std::string(e.what()).find("Windows payload") !=
+              std::string::npos);
+    }
+}
+
+TEST_CASE("a windows package declares no build recipe") {
+    lexe::test::TempLexeHome home;
+    json j = windows_manifest();
+    j["build"] = {{"system", "make"},
+                  {"sourceDir", "src"},
+                  {"toolchain", json::array({"make"})}};
+    CHECK_THROWS_AS(parse_json(j), VerificationError);
+}
+
 } // TEST_SUITE("manifest")

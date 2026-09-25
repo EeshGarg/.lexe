@@ -690,6 +690,110 @@ TEST_CASE("a layered chain applies the ISA layer innermost") {
     CHECK_FALSE(make_chain("fex+proton", providers).has_value());
 }
 
+
+// ---------------------------------------------------------------------------
+// A foreign-OS payload resolves to a foreign-OS chain — and to nothing else.
+//
+// The chain machinery was real before any package could declare a Windows
+// payload; these cases connect the two halves, so the Wine/Proton paths are
+// reachable from a manifest instead of only from a unit test that builds a
+// resolution by hand.
+// ---------------------------------------------------------------------------
+
+Manifest windows_manifest(const std::vector<std::string>& chains = {"wine",
+                                                                    "proton"}) {
+    Manifest m;
+    m.lexe_version = "0.1";
+    m.id = "com.example.windows";
+    m.name = "Windows App";
+    m.version = "1.0.0";
+    m.publisher_name = "P";
+    m.publisher_public_key =
+        "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    m.application_type = "windows";
+    m.application_kind = ApplicationType::Windows;
+    m.architectures = {"x86_64"};
+    m.entrypoint_executable = "bin/app.exe";
+    m.install_mode = "bundled";
+    m.allowed_chains = chains;
+    return m;
+}
+
+TEST_CASE("a windows payload never resolves to the native chain") {
+    // The host is x86_64 and the package declares x86_64 — so the ISAs match
+    // exactly, and native would be chosen for any Linux payload. It is not
+    // chosen here, because matching ISAs do not make a PE a Linux program.
+    const ChainResolution resolution = resolve_chain(
+        windows_manifest(), AppConfig{}, host_x86(), fake_providers({"wine"}));
+    REQUIRE(resolution.ok);
+    CHECK(resolution.chain.id == "wine");
+    CHECK_FALSE(resolution.chain.native);
+    CHECK_FALSE(resolution.chain.argv_prefix.empty());
+    CHECK_FALSE(has_chain(resolution.alternatives, "native"));
+}
+
+TEST_CASE("a windows payload with no foreign-OS layer on the host stops") {
+    // Wine and Proton are permitted by the package and absent from the host.
+    const ChainResolution resolution =
+        resolve_chain(windows_manifest(), AppConfig{}, host_x86(),
+                      fake_providers({"fex", "box64"}));
+    CHECK_FALSE(resolution.ok);
+    // Everything permitted but unavailable is reported WITH A REASON, never
+    // silently hidden — that is how a user finds out what to install.
+    CHECK_FALSE(resolution.rejected.empty());
+    bool wine_explained = false;
+    for (const RejectedChain& rejected : resolution.rejected) {
+        if (rejected.id == "wine") {
+            wine_explained = !rejected.reason.empty();
+        }
+    }
+    CHECK(wine_explained);
+}
+
+TEST_CASE("the strict resolver refuses a windows payload outright") {
+    Manifest m = windows_manifest();
+    m.mission_critical = true; // the parser rejects this; the resolver must too
+    const ChainResolution resolution = resolve_chain(
+        m, AppConfig{}, host_x86(), fake_providers({"wine", "proton"}));
+    CHECK(resolution.strict_resolver);
+    CHECK_FALSE(resolution.ok);
+    CHECK(resolution.reason.find("Linux-native") != std::string::npos);
+    CHECK(resolution.chain.id.empty());
+}
+
+TEST_CASE("a user preference still cannot extend what the publisher permitted") {
+    AppConfig config;
+    config.compatibility_mode = CompatibilityMode::Manual;
+    config.preferred_chain = {"proton"}; // not in the package list
+    const ChainResolution resolution =
+        resolve_chain(windows_manifest({"wine"}), AppConfig{}, host_x86(),
+                      fake_providers({"wine", "proton"}));
+    REQUIRE(resolution.ok);
+    CHECK(resolution.chain.id == "wine");
+
+    const ChainResolution narrowed =
+        resolve_chain(windows_manifest({"wine"}), config, host_x86(),
+                      fake_providers({"wine", "proton"}));
+    // The preference names a chain the signed policy does not permit, so it
+    // cannot take effect — the publisher's list is a ceiling, not a hint.
+    CHECK_FALSE(narrowed.chain.id == "proton");
+}
+
+TEST_CASE("a Windows-on-ARM host layers ISA translation under the OS layer") {
+    // §8's worked example: a Windows x86-64 payload on ARM64 Linux.
+    HostFacts arm;
+    arm.isa = "aarch64";
+    arm.os = "linux";
+    const ChainResolution resolution =
+        resolve_chain(windows_manifest({"proton+fex", "wine"}), AppConfig{},
+                      arm, fake_providers({"proton", "fex"}));
+    REQUIRE(resolution.ok);
+    CHECK(resolution.chain.id == "proton+fex");
+    REQUIRE(resolution.chain.argv_prefix.size() == 2);
+    CHECK(resolution.chain.argv_prefix[0] == "/usr/bin/fex");
+    CHECK(resolution.chain.argv_prefix[1] == "/usr/bin/proton");
+}
+
 } // TEST_SUITE
 
 TEST_SUITE("integration-durability") {

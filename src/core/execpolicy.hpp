@@ -34,13 +34,14 @@
 
 namespace lexe {
 
-/// What a compatibility provider DOES. Named because the architecture treats
-/// these categories differently under mission-critical policy (§6 FORBID).
-enum class ProviderKind {
-    IsaTranslation, // runs a foreign-ISA Linux binary (FEX, Box64, qemu-user)
-    ForeignOs,      // runs a foreign-OS binary (Wine, Proton)
-};
-const char* to_string(ProviderKind k);
+/// What a compatibility provider DOES — the architecture treats these
+/// categories differently under mission-critical policy (§6 FORBID).
+///
+/// This is the manifest's vocabulary (`ChainLayerKind`), not a second copy of
+/// it: `execution.allowedChains` names these layers, so what the names MEAN
+/// belongs beside the manifest, and what this module adds is how to find and
+/// invoke them. Two enums for one idea is two things that can drift.
+using ProviderKind = ChainLayerKind;
 
 /// One compatibility provider as found (or not found) on THIS host.
 struct Provider {

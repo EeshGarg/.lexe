@@ -568,6 +568,10 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // §14.4: the DECLARED launch mode decides display access — never a guess
     // about whether a window might appear.
     req.gui = manifest.launch_mode == LaunchMode::Gui;
+    // A compatibility layer has to be reachable inside the sandbox or the
+    // chain that was just resolved cannot run. Empty for native, which is why
+    // the native steady state has nothing extra bound into it either.
+    req.compatibility_paths = resolution.chain.argv_prefix;
     req.inherited_env = caller_environment();
 
     const std::unique_ptr<IsolationBackend> backend =

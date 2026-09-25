@@ -17,23 +17,25 @@ namespace {
 
 /// The providers this runtime knows how to look for. `candidates` are the
 /// executable names/paths tried in order; the first that exists wins.
+///
+/// What each id MEANS is `chain_layer_kind()` in the manifest layer, because
+/// these ids are manifest vocabulary (`execution.allowedChains`). This table
+/// only says where to find them.
 struct ProviderSpec {
     const char* id;
     const char* name;
-    ProviderKind kind;
     const char* guest_isa; // "" for foreign-OS providers
     std::vector<const char*> candidates;
 };
 
 const std::vector<ProviderSpec>& provider_specs() {
     static const std::vector<ProviderSpec> kSpecs = {
-        {"fex", "FEX-Emu", ProviderKind::IsaTranslation, "x86_64",
-         {"FEXInterpreter", "FEXLoader"}},
-        {"box64", "Box64", ProviderKind::IsaTranslation, "x86_64", {"box64"}},
-        {"qemu-user", "QEMU user-mode", ProviderKind::IsaTranslation, "x86_64",
+        {"fex", "FEX-Emu", "x86_64", {"FEXInterpreter", "FEXLoader"}},
+        {"box64", "Box64", "x86_64", {"box64"}},
+        {"qemu-user", "QEMU user-mode", "x86_64",
          {"qemu-x86_64", "qemu-x86_64-static"}},
-        {"wine", "Wine", ProviderKind::ForeignOs, "", {"wine", "wine64"}},
-        {"proton", "Proton", ProviderKind::ForeignOs, "", {"proton"}},
+        {"wine", "Wine", "", {"wine", "wine64"}},
+        {"proton", "Proton", "", {"proton"}},
     };
     return kSpecs;
 }
@@ -115,13 +117,6 @@ bool chain_available(const ExecutionChain& chain, const ProviderSet& providers,
 
 } // namespace
 
-const char* to_string(ProviderKind k) {
-    switch (k) {
-    case ProviderKind::IsaTranslation: return "isa-translation";
-    case ProviderKind::ForeignOs: return "foreign-os";
-    }
-    return "isa-translation";
-}
 
 const Provider* ProviderSet::find(const std::string& id) const {
     for (const Provider& p : providers) {
@@ -149,7 +144,7 @@ ProviderSet probe_providers() {
         Provider provider;
         provider.id = spec.id;
         provider.name = spec.name;
-        provider.kind = spec.kind;
+        provider.kind = chain_layer_kind(spec.id);
         provider.guest_isa = spec.guest_isa;
         for (const char* candidate : spec.candidates) {
             const std::string resolved = util::find_on_path(candidate);

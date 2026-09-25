@@ -542,8 +542,10 @@ Manifest Manifest::parse(std::string_view json_text) {
         if (!application_type_from_string(m.application_type,
                                           m.application_kind)) {
             fail("applicationType \"" + m.application_type +
-                 "\" is unsupported in 0.1 (\"native\" is a compiled payload, "
-                 "\"portable\" is source compiled for this host at install)");
+                 "\" is unsupported in 0.1 (\"native\" is a compiled Linux "
+                 "payload, \"portable\" is source compiled for this host at "
+                 "install, \"windows\" is a Windows executable run through a "
+                 "compatibility layer)");
         }
 
         const json* architectures = find_member(root, "architectures");
@@ -600,6 +602,30 @@ Manifest Manifest::parse(std::string_view json_text) {
     parse_execution(root, m);
     parse_launch(root, m);
     parse_runtime_profile(root, m);
+
+    // A payload and a policy that cannot run it is a contradiction, and the
+    // place to say so is here — not at launch, where the user would meet it as
+    // "no execution chain is available" long after installing something that
+    // was never going to run (FORMAT-0.1 §5.5).
+    if (m.role == PackageRole::Application &&
+        m.application_kind == ApplicationType::Windows) {
+        if (m.mission_critical) {
+            fail("applicationType \"windows\" cannot be missionCritical: "
+                 "mission-critical execution requires a Linux-native, "
+                 "host-ISA-native realization, and a Windows payload has none "
+                 "by construction");
+        }
+        bool foreign_os_permitted = false;
+        for (const std::string& chain : m.effective_allowed_chains()) {
+            if (chain_runs_foreign_os(chain)) foreign_os_permitted = true;
+        }
+        if (!foreign_os_permitted) {
+            fail("applicationType \"windows\" needs a foreign-OS execution "
+                 "chain, but execution.allowedChains permits none (add "
+                 "\"wine\" or \"proton\", or a layered form such as "
+                 "\"proton+fex\"). Nothing can run a Windows payload natively.");
+        }
+    }
 
     return m;
 }
@@ -724,6 +750,7 @@ const char* to_string(ApplicationType t) {
     switch (t) {
     case ApplicationType::Native: return "native";
     case ApplicationType::Portable: return "portable";
+    case ApplicationType::Windows: return "windows";
     }
     return "native";
 }
@@ -732,6 +759,39 @@ bool application_type_from_string(const std::string& text,
                                   ApplicationType& out) {
     if (text == "native") { out = ApplicationType::Native; return true; }
     if (text == "portable") { out = ApplicationType::Portable; return true; }
+    if (text == "windows") { out = ApplicationType::Windows; return true; }
+    return false;
+}
+
+const char* to_string(ChainLayerKind k) {
+    switch (k) {
+    case ChainLayerKind::IsaTranslation: return "isa-translation";
+    case ChainLayerKind::ForeignOs: return "foreign-os";
+    case ChainLayerKind::Unknown: break;
+    }
+    return "unknown";
+}
+
+ChainLayerKind chain_layer_kind(const std::string& layer_id) {
+    if (layer_id == "fex" || layer_id == "box64" || layer_id == "qemu-user") {
+        return ChainLayerKind::IsaTranslation;
+    }
+    if (layer_id == "wine" || layer_id == "proton") {
+        return ChainLayerKind::ForeignOs;
+    }
+    return ChainLayerKind::Unknown;
+}
+
+bool chain_runs_foreign_os(const std::string& chain_id) {
+    std::size_t start = 0;
+    while (start <= chain_id.size()) {
+        const std::size_t plus = chain_id.find('+', start);
+        const std::string layer = chain_id.substr(
+            start, plus == std::string::npos ? std::string::npos : plus - start);
+        if (chain_layer_kind(layer) == ChainLayerKind::ForeignOs) return true;
+        if (plus == std::string::npos) break;
+        start = plus + 1;
+    }
     return false;
 }
 
