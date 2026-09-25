@@ -159,6 +159,15 @@ struct IsolationPlan {
     /// record (Definitive Architecture §9) — e.g. a console application
     /// launched from the desktop with no terminal available.
     bool capture_output = false;
+    /// Start and return, instead of waiting for the application to exit
+    /// (`launch.mode: "service"`, §5). The sandbox must then NOT die with the
+    /// process that started it, so the rendered argv omits `--die-with-parent`
+    /// — a detached launch whose sandbox is torn down the moment `lexe run`
+    /// returns is not a detached launch.
+    bool detach = false;
+    /// A lock file the detached supervisor holds for the application's
+    /// lifetime (the launch lease). Meaningless without `detach`.
+    std::string supervisor_lock_file;
 };
 
 /// The outcome of running a plan.
@@ -168,6 +177,10 @@ struct IsolationResult {
     std::string stdout_text; // only when the plan requested capture
     std::string stderr_text;
     std::optional<int> signal; // set when the child was killed by a signal
+    /// The application was STARTED and deliberately not waited for. There is
+    /// no exit code to report and none is invented: `exit_code` stays 0
+    /// meaning "started", which is not the same claim as "succeeded".
+    bool detached = false;
 };
 
 // ------------------------------------------------------------- pure policy

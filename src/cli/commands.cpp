@@ -74,8 +74,8 @@ constexpr const char* kInstallUsage =
     "usage: lexe install <file.lexe> [--yes] [--trust] [--accept-permissions] "
     "[--approve-compile] [--channel <c>]";
 constexpr const char* kRunUsage =
-    "usage: lexe run <id> [--chain <id>] [--attached-terminal] "
-    "[-- <args...>]";
+    "usage: lexe run <id> [--chain <id>] [--detach | --wait] "
+    "[--attached-terminal] [-- <args...>]";
 constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
 constexpr const char* kRemoveUsage =
@@ -665,8 +665,8 @@ int cmd_install(const std::vector<std::string>& args) {
 
 int cmd_run(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(
-        args, {"--attached-terminal", "--no-terminal"}, {"--chain"}, true,
-        kRunUsage);
+        args, {"--attached-terminal", "--no-terminal", "--detach", "--wait"},
+        {"--chain"}, true, kRunUsage);
     require_positionals(parsed, 1, kRunUsage);
 
     RunRequest request;
@@ -676,12 +676,46 @@ int cmd_run(const std::vector<std::string>& args) {
     // console application (Definitive Architecture §14.4); prevents a loop.
     request.attached_terminal = parsed.flags.count("--attached-terminal") != 0;
     request.allow_terminal_spawn = parsed.flags.count("--no-terminal") == 0;
+    request.detach = parsed.flags.count("--detach") != 0;
+    request.wait_for_exit = parsed.flags.count("--wait") != 0;
+    if (request.detach && request.wait_for_exit) {
+        throw UsageError("--detach and --wait contradict each other");
+    }
     if (const auto chain = parsed.options.find("--chain");
         chain != parsed.options.end()) {
         request.chain_override = chain->second;
     }
 
-    const ExecutionReport report = run_application(Paths::detect(), request);
+    // §5: a `service` detaches by declaration. `--wait` is how a developer
+    // watches one run in the foreground without editing its manifest, and it
+    // is deliberately the exception rather than the default — the manifest
+    // says what the application IS.
+    const Paths paths = Paths::detect();
+    if (request.wait_for_exit) {
+        try {
+            const Manifest manifest = Registry(paths).read_manifest(request.id);
+            if (manifest.launch_mode == LaunchMode::Service) {
+                std::cout << "Running a service in the foreground because "
+                             "--wait was given; it normally detaches.\n";
+            }
+        } catch (const Error&) {
+            // Not installed, or an unreadable manifest: run_application below
+            // reports that properly. Saying nothing here is not a failure.
+        }
+    }
+    const ExecutionReport report = run_application(paths, request);
+
+    if (report.detached) {
+        // There is no exit code to propagate: nothing waited for it. Say that
+        // rather than returning a 0 that looks like "it finished successfully".
+        std::cout << report.id << " started in the background";
+        if (report.launch_mode == "service") std::cout << " (service)";
+        std::cout << ".\n"
+                  << "Nothing supervises it: .LEXE does not restart it, does "
+                     "not start it at login, and\nhas no status to report. "
+                     "Stop it the way you would any process.\n";
+        return 0;
+    }
     // The child's exit code is propagated verbatim (SPEC "Installed
     // Application Representation").
     return report.exit_code;

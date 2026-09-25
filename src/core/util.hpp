@@ -74,6 +74,38 @@ struct RunOptions {
 ProcessResult run_process(const std::vector<std::string>& argv,
                           const RunOptions& opts = {});
 
+/// Options for spawn_detached().
+struct DetachOptions {
+    std::optional<std::filesystem::path> cwd;
+    /// A lock file the SUPERVISOR should hold (shared) for as long as the
+    /// detached process runs, or empty for none.
+    ///
+    /// A detached launch outlives the process that started it, so a lease held
+    /// by the starter is released the moment it returns — and the files the
+    /// detached application is running from could then be removed underneath
+    /// it. The supervisor opens its OWN descriptor on this file, so the
+    /// starter releasing its lease does not release the supervisor's: flock
+    /// locks belong to the open file description, and a descriptor merely
+    /// inherited across fork shares the starter's.
+    std::filesystem::path supervisor_lock_file;
+};
+
+/// Start `argv` so that it outlives this process.
+///
+/// Double-forks: this process waits only for an intermediate that exits at
+/// once, so no zombie is left behind, and the surviving SUPERVISOR is
+/// reparented to init. The supervisor takes `supervisor_lock_file`, starts the
+/// real process in its own session, waits for it, and exits — which is the
+/// whole of what "service mode" means here. It is not a session-manager
+/// service: nothing restarts it, nothing starts it at boot, and nothing will
+/// report its status but `.LEXE`.
+///
+/// Throws Error when the process cannot be started. POSIX only; on Windows it
+/// throws, because a platform without the isolation backend has no detached
+/// launch to offer either.
+void spawn_detached(const std::vector<std::string>& argv,
+                    const DetachOptions& opts = {});
+
 // --- time ---
 /// Current UTC time as RFC 3339, e.g. "2026-07-13T12:34:56Z".
 std::string now_utc_string();

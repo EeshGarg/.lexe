@@ -20,7 +20,9 @@
 #endif
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <spawn.h>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <poll.h>
 #include <unistd.h>
@@ -584,6 +586,100 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     result.stdout_text = std::move(output);
     result.stderr_text = std::move(errors);
     return result;
+}
+
+#endif
+
+
+// ------------------------------------------------------- detached launch
+
+#ifdef _WIN32
+
+void spawn_detached(const std::vector<std::string>&, const DetachOptions&) {
+    throw Error("run_process: detached launch is not supported on this "
+                "platform");
+}
+
+#else
+
+void spawn_detached(const std::vector<std::string>& argv,
+                    const DetachOptions& opts) {
+    if (argv.empty()) throw Error("spawn_detached: empty argv");
+
+    // Everything the supervisor will need is prepared BEFORE the fork: after
+    // it, the child does syscalls and nothing else. Allocating or locking in a
+    // forked child of a multi-threaded process (lexe-ui has worker threads) is
+    // how a launch turns into a silent hang.
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (const auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    cargv.push_back(nullptr);
+
+    const std::string cwd_str =
+        opts.cwd.has_value() ? opts.cwd->string() : std::string();
+    const std::string lock_str = opts.supervisor_lock_file.string();
+
+    const pid_t intermediate = ::fork();
+    if (intermediate < 0) {
+        throw Error("spawn_detached: fork failed: " +
+                    std::string(std::strerror(errno)));
+    }
+
+    if (intermediate == 0) {
+        // --- intermediate: fork once more and leave, so the supervisor is
+        // orphaned immediately and reparented to init. The caller waits only
+        // for this, which returns at once and leaves no zombie behind.
+        const pid_t supervisor = ::fork();
+        if (supervisor < 0) _exit(127);
+        if (supervisor > 0) _exit(0);
+
+        // --- supervisor ---------------------------------------------------
+        // Its own session: the detached application must not be killed by a
+        // signal sent to the terminal that happened to start it.
+        ::setsid();
+
+        // Its own descriptor on the lease file, NOT the one inherited from the
+        // caller: flock belongs to the open file description, so releasing the
+        // caller's lease would otherwise release this one too.
+        if (!lock_str.empty()) {
+            // O_CLOEXEC: the SUPERVISOR holds this, and the sandboxed
+            // application must never inherit or observe a runtime lock
+            // descriptor. The supervisor itself never execs, so the flag costs
+            // it nothing and closes the fd in everything it starts.
+            const int fd =
+                ::open(lock_str.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+            if (fd >= 0) {
+                while (::flock(fd, LOCK_SH) != 0 && errno == EINTR) {
+                }
+                // Deliberately never closed: the kernel drops it when this
+                // process dies, which is exactly when the lease should end.
+            }
+        }
+
+        posix_spawn_file_actions_t fa;
+        ::posix_spawn_file_actions_init(&fa);
+        if (!cwd_str.empty()) {
+            ::posix_spawn_file_actions_addchdir_np(&fa, cwd_str.c_str());
+        }
+        pid_t child = -1;
+        const int err = ::posix_spawnp(&child, cargv[0], &fa, nullptr,
+                                       cargv.data(), environ);
+        ::posix_spawn_file_actions_destroy(&fa);
+        if (err != 0) _exit(127);
+
+        int status = 0;
+        while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
+        _exit(0);
+    }
+
+    // --- caller: reap the intermediate, which has already exited.
+    int status = 0;
+    while (::waitpid(intermediate, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+        throw Error("spawn_detached: cannot start " + argv[0] + " detached");
+    }
 }
 
 #endif

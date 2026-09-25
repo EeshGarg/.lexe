@@ -579,13 +579,23 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
         make_isolation_backend(paths);
     const IsolationCapabilities caps = backend->capabilities();
 
+    // §5: a `service` is background by declaration — it is detached whether or
+    // not the caller asked, because that is what the manifest says the
+    // application IS. Any launch mode may also be detached on request (a
+    // desktop handler must not block on the application it opened).
+    const bool detach =
+        request.detach ||
+        (manifest.launch_mode == LaunchMode::Service && !request.wait_for_exit);
+
     // A console application with nowhere to print gets its output captured so
     // it can be shown afterwards; everything else owns our streams directly.
-    const bool capture_output =
+    // A detached launch has nobody left to show it to, so it captures nothing.
+    const bool capture_output = !detach &&
         manifest.launch_mode == LaunchMode::Console && !stdout_is_terminal();
 
     int exit_code = 0;
     std::optional<int> signal;
+    bool detached = false;
     std::string captured_stdout;
     std::string captured_stderr;
     std::map<IsolationControl, ControlState> enforced;
@@ -627,12 +637,19 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
                 plan.app_argv = std::move(argv);
             }
             plan.capture_output = capture_output;
+            plan.detach = detach;
+            // The lease the SUPERVISOR takes, so the version's files cannot be
+            // removed under a detached application after this process — and
+            // its own lease — are gone.
+            plan.supervisor_lock_file =
+                registry.version_lease_file(id, version).string();
             const IsolationResult result = backend->run(plan);
             exit_code = result.exit_code;
             signal = result.signal;
             captured_stdout = result.stdout_text;
             captured_stderr = result.stderr_text;
             enforced = result.enforced;
+            detached = result.detached;
         }
     } catch (const IsolationError& e) {
         ErrorRecord failure =
@@ -647,6 +664,7 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     report.started = true;
     report.exit_code = exit_code;
     report.signal = signal;
+    report.detached = detached;
     report.isolation_summary = summarize_controls(enforced);
 
     // ------------------------------------------------ record execution report
@@ -658,7 +676,14 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
 
     // §14.4: exit code 0 is SUCCESS even when no window appeared. Only a
     // non-zero exit or a signal produces a .lexe-error record.
-    if (exit_code != 0 || signal.has_value()) {
+    //
+    // A DETACHED launch has neither: it was started and never waited for, so
+    // there is no outcome to judge. Reporting one would be an invention, and
+    // whatever the application does from here is its own business until the
+    // next time something looks. (Nothing supervises it; see §5.)
+    if (detached) {
+        // nothing to record beyond "it started", which report.detached says
+    } else if (exit_code != 0 || signal.has_value()) {
         ErrorRecord failure = base_record(
             id, version, FailureStage::Runtime,
             signal.has_value()

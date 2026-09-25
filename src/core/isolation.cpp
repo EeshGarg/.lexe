@@ -337,7 +337,10 @@ std::vector<std::string> render_bwrap_argv(const IsolationPlan& plan,
     a.push_back("--unshare-pid");
     if (!plan.network_shared) a.push_back("--unshare-net");
     a.push_back("--new-session");
-    a.push_back("--die-with-parent");
+    // A detached launch must survive the process that started it; tying the
+    // sandbox to that process would end the application the moment `lexe run`
+    // returned, which is the opposite of what was asked for.
+    if (!plan.detach) a.push_back("--die-with-parent");
 
     // Clear the environment, then set only the allowlist.
     a.push_back("--clearenv");
@@ -514,6 +517,22 @@ public:
                 "isolation: bubblewrap backend disappeared before launch");
         }
         const std::vector<std::string> argv = render_bwrap_argv(plan, bwrap);
+        if (plan.detach) {
+            util::DetachOptions detach_opts;
+            detach_opts.supervisor_lock_file = plan.supervisor_lock_file;
+            try {
+                util::spawn_detached(argv, detach_opts);
+            } catch (const Error& e) {
+                throw IsolationError(
+                    std::string("isolation: detached launch failed: ") +
+                    e.what());
+            }
+            IsolationResult detached;
+            detached.exit_code = 0; // started; there is no exit code to report
+            detached.detached = true;
+            detached.enforced = plan.controls;
+            return detached;
+        }
         util::RunOptions o;
         // On a normal launch the application owns our stdout/stderr; capture
         // is requested only when .LEXE has to record the output itself.

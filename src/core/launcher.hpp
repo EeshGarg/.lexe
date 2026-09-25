@@ -58,6 +58,11 @@ struct RunRequest {
     /// Detach and return immediately instead of waiting (service mode, and
     /// GUI launches from a desktop handler that must not block).
     bool detach = false;
+    /// Wait for the application to exit even when its manifest declares
+    /// `launch.mode: "service"`, which is otherwise detached by declaration.
+    /// This is for watching a service run — a developer's `--wait`, not a
+    /// behaviour any handler should pick. It never overrides `detach`.
+    bool wait_for_exit = false;
 };
 
 /// What actually happened. This is the "record execution report" box of §7.

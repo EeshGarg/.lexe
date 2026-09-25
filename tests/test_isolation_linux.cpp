@@ -10,6 +10,7 @@
 
 #include "core/error.hpp"
 #include "core/installer.hpp"
+#include "core/lock.hpp"
 #include "core/isolation.hpp"
 #include "core/launcher.hpp"
 #include "core/package.hpp"
@@ -19,7 +20,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <memory>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -292,6 +297,199 @@ TEST_CASE("FAIL CLOSED: a hidden/broken backend never runs the app directly") {
 
     // The application must NOT have executed — no report was written.
     CHECK(read_report(paths, "com.example.fc").empty());
+}
+
+// ---------------------------------------------------------------------------
+// `launch.mode: "service"` really detaches (Definitive Architecture §5).
+//
+// It was declared, parsed and carried through for a long time while behaving
+// exactly like a foreground launch — so these cases are about the difference
+// being real: the call returns while the application is still running, the
+// sandbox is NOT torn down with the process that started it, and the version's
+// files stay leased for as long as the application lives.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a detached plan does not tie the sandbox to its starter") {
+    test::TempLexeHome home;
+    IsolationRequest req;
+    req.app_id = "com.example.svc";
+    req.app_root = "/lexehome/apps/com.example.svc/versions/1.0.0";
+    req.entrypoint = req.app_root / "bin/svc";
+    req.data_root = "/lexehome/data/com.example.svc";
+    req.cache_root = "/lexehome/cache/apps/com.example.svc";
+
+    IsolationCapabilities caps;
+    caps.status = CapabilityStatus::Available;
+    caps.backend_present = true;
+    caps.user_namespaces = true;
+    caps.network_namespaces = true;
+    caps.bind_mounts = true;
+
+    IsolationPlan foreground = build_plan(req, caps);
+    IsolationPlan background = build_plan(req, caps);
+    background.detach = true;
+
+    const auto has = [](const std::vector<std::string>& argv,
+                        const std::string& flag) {
+        return std::find(argv.begin(), argv.end(), flag) != argv.end();
+    };
+    // --die-with-parent is right for a foreground launch and fatal for a
+    // detached one: the sandbox would be torn down the moment `lexe run`
+    // returned, which is the opposite of what a service is.
+    CHECK(has(render_bwrap_argv(foreground, "/usr/bin/bwrap"),
+              "--die-with-parent"));
+    CHECK_FALSE(has(render_bwrap_argv(background, "/usr/bin/bwrap"),
+                    "--die-with-parent"));
+    // Everything else about the two plans is the same sandbox.
+    CHECK(background.binds.size() == foreground.binds.size());
+    CHECK(background.controls == foreground.controls);
+}
+
+TEST_CASE("a service outlives the call that started it, and keeps its lease") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    if (!isolation_available(paths)) {
+        MESSAGE("SKIP: bubblewrap isolation unavailable on this host");
+        return;
+    }
+    if (!test::have_native_compiler()) {
+        MESSAGE("SKIP: no host C compiler to build the service payload");
+        return;
+    }
+
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+
+    // A payload that keeps running: it writes a file, then sleeps long enough
+    // that "did the call return before it finished?" is unambiguous.
+    test::TestAppSpec spec;
+    spec.id = "com.example.service";
+    spec.public_key = test::encode_public_key_str(key.public_key);
+    spec.architectures = {host_architecture()};
+    const test::TestAppTree tree = test::make_test_app_tree(work / "tree", spec);
+    REQUIRE(test::compile_native_executable(
+        tree.payload_dir / fs::path(spec.entrypoint),
+        "#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n"
+        "int main(void){\n"
+        "  const char* d = getenv(\"LEXE_APP_DATA\");\n"
+        "  char p[4096];\n"
+        "  snprintf(p, sizeof(p), \"%s/started\", d ? d : \"/tmp\");\n"
+        "  FILE* f = fopen(p, \"w\");\n"
+        "  if (f) { fprintf(f, \"running\\n\"); fclose(f); }\n"
+        "  sleep(30);\n"
+        "  return 0;\n"
+        "}\n"));
+
+    // Declare it a service. That declaration is the whole input: nothing about
+    // the launch call says "detach".
+    {
+        nlohmann::json manifest = nlohmann::json::parse(
+            util::slurp_text(tree.manifest_file));
+        manifest["launch"] = {{"mode", "service"}};
+        util::spit(tree.manifest_file,
+                   std::string_view(manifest.dump(2) + "\n"));
+    }
+    PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    const fs::path pkg = work / "service.lexe";
+    PackageWriter::write(inputs, key, pkg);
+
+    Installer(paths).install(pkg, InstallOptions{});
+
+    RunRequest request;
+    request.id = spec.id;
+    const auto began = std::chrono::steady_clock::now();
+    const ExecutionReport report = run_application(paths, request);
+    const auto elapsed = std::chrono::steady_clock::now() - began;
+
+    // It returned, and it returned because it detached — not because a
+    // 30-second payload finished in under a second.
+    CHECK(report.started);
+    CHECK(report.detached);
+    CHECK(report.launch_mode == "service");
+    CHECK(elapsed < std::chrono::seconds(20));
+    // No exit code is invented for something nothing waited for.
+    CHECK(report.exit_code == 0);
+    CHECK_FALSE(report.signal.has_value());
+    // And "started" is not reported as a failure, so no error record appears.
+    CHECK_FALSE(report.error.has_value());
+
+    // The application really is running: it wrote into its private data root
+    // after the call had already returned.
+    const fs::path marker = paths.data_dir() / spec.id / "started";
+    bool appeared = false;
+    for (int i = 0; i < 100 && !appeared; ++i) {
+        std::error_code ec;
+        appeared = fs::is_regular_file(marker, ec);
+        if (!appeared) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(appeared);
+
+    // The version stays leased while it runs, so a concurrent GC cannot delete
+    // the files underneath it — the lease the STARTER held is long gone.
+    const std::unique_ptr<OperationLockManager> locks = make_lock_manager(paths);
+    const std::string version = Registry(paths).current_version(spec.id);
+    CHECK_FALSE(locks->try_lock_version_for_gc(spec.id, version).has_value());
+
+    // Stop it, then the lease must become available again.
+    const int stopped = std::system(
+        ("pkill -f '" + (Registry(paths).version_dir(spec.id, version) /
+                         fs::path(spec.entrypoint)).string() + "' 2>/dev/null")
+            .c_str());
+    (void)stopped; // nothing to assert: the lease below is the evidence
+    bool released = false;
+    for (int i = 0; i < 100 && !released; ++i) {
+        released = locks->try_lock_version_for_gc(spec.id, version).has_value();
+        if (!released) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(released);
+}
+
+TEST_CASE("--wait runs a service in the foreground instead") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    if (!isolation_available(paths) || !test::have_native_compiler()) {
+        MESSAGE("SKIP: this host cannot run the sandboxed payload");
+        return;
+    }
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+
+    test::TestAppSpec spec;
+    spec.id = "com.example.waitsvc";
+    spec.public_key = test::encode_public_key_str(key.public_key);
+    spec.architectures = {host_architecture()};
+    const test::TestAppTree tree = test::make_test_app_tree(work / "tree", spec);
+    REQUIRE(test::compile_native_executable(
+        tree.payload_dir / fs::path(spec.entrypoint),
+        "int main(void){ return 7; }\n"));
+    {
+        nlohmann::json manifest =
+            nlohmann::json::parse(util::slurp_text(tree.manifest_file));
+        manifest["launch"] = {{"mode", "service"}};
+        util::spit(tree.manifest_file,
+                   std::string_view(manifest.dump(2) + "\n"));
+    }
+    PackageWriter::Inputs inputs;
+    inputs.payload_dir = tree.payload_dir;
+    inputs.manifest_file = tree.manifest_file;
+    const fs::path pkg = work / "waitsvc.lexe";
+    PackageWriter::write(inputs, key, pkg);
+    Installer(paths).install(pkg, InstallOptions{});
+
+    RunRequest request;
+    request.id = spec.id;
+    request.wait_for_exit = true;
+    const ExecutionReport report = run_application(paths, request);
+
+    // Waited for, so there IS an outcome — and it is the real one.
+    CHECK(report.started);
+    CHECK_FALSE(report.detached);
+    CHECK(report.exit_code == 7);
+    CHECK(report.error.has_value()); // a nonzero exit is still a failure record
 }
 
 } // TEST_SUITE("isolation_linux")
