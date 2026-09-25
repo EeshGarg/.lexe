@@ -53,8 +53,10 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -205,25 +207,12 @@ std::string join(const std::vector<std::string>& parts,
     return out;
 }
 
-/// Human size in decimal units, matching the SPEC primary screen
-/// (125829120 bytes -> "126 MB").
-std::string format_size(std::uint64_t bytes) {
-    if (bytes < 1000) return std::to_string(bytes) + " B";
-    static const char* const kUnits[] = {"KB", "MB", "GB", "TB"};
-    double value = static_cast<double>(bytes) / 1000.0;
-    std::size_t unit = 0;
-    while (value >= 1000.0 && unit + 1 < 4) {
-        value /= 1000.0;
-        ++unit;
-    }
-    char buf[32];
-    if (value < 10.0) {
-        std::snprintf(buf, sizeof(buf), "%.1f %s", value, kUnits[unit]);
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.0f %s", value, kUnits[unit]);
-    }
-    return buf;
-}
+// Size, scope and update wording come from core/presentation, the one place
+// both this CLI and the GTK Installer render them. They each used to carry a
+// private copy, and the copies drifted — the Installer wrote "All users
+// (system-wide)" where this wrote "System-wide", and an em dash in the type
+// line where this wrote a hyphen.
+using lexe::presentation::format_size;
 
 /// Sum of the package's payload/ entry sizes (shown when the manifest gives
 /// no install.estimatedSize).
@@ -237,6 +226,11 @@ std::uint64_t payload_size(const PackageReader& reader) {
     return total;
 }
 
+/// Total size (bytes) of a directory tree; defined with `lexe apps`, which is
+/// where it is also used. Declared here so `lexe info` can report the SAME disk
+/// figure for an installed application instead of the manifest's estimate.
+std::uint64_t dir_size(const fs::path& dir);
+
 /// The size shown for a package: manifest estimate when given, else the
 /// uncompressed payload size.
 std::uint64_t display_size(const Manifest& manifest,
@@ -247,17 +241,13 @@ std::uint64_t display_size(const Manifest& manifest,
 }
 
 std::string install_scope_text(const Manifest& manifest) {
-    if (manifest.install_scope == "user") return "Current user only";
-    if (manifest.install_scope == "system") return "System-wide";
-    return manifest.install_scope;
+    return presentation::install_scope_line(manifest.install_scope);
 }
 
 std::string update_policy_text(const Manifest& manifest) {
-    if (manifest.updates_enabled && !manifest.updates_manifest_url.empty()) {
-        return "Automatically check " + manifest.updates_manifest_url +
-               " (channel: " + manifest.updates_channel + ")";
-    }
-    return "No automatic updates";
+    return presentation::updates_line(manifest.updates_enabled,
+                                      manifest.updates_manifest_url,
+                                      manifest.updates_channel);
 }
 
 /// Ask on stdin. Only "y"/"yes" (any case) confirms; EOF declines.
@@ -304,12 +294,119 @@ std::optional<std::string> retained_data_owner(const Registry& registry,
     return prior;
 }
 
+/// Whether `lexe install` would refuse an already-verified package for a purely
+/// LOCAL reason, plus the shared wording for saying so.
+///
+/// `lexe verify` and `lexe inspect` report the FORMAT-0.1 §6 pipeline, which is
+/// deliberately about the PACKAGE — structure, signatures, hashes — and never
+/// about this machine. That must not change: making `verify` FAIL for a local
+/// reason would collapse two different concepts into one, and its exit codes
+/// (0/3) are a documented compatibility promise scripts already depend on. But
+/// a package can pass §6 in full and still be refused outright by `lexe install`
+/// (exit 7) because its App ID is already bound HERE to a different signing key.
+/// A user who was told "verification: OK", then could not install, was misled by
+/// an omission rather than by the verdict. So the verdict and the exit code stay
+/// exactly as they are, and a clearly separated note is printed beside them.
+struct LocalInstallConflict {
+    std::string app_id;
+    std::string key_state;  // to_string(PublisherKeyState)
+    std::string detail;     // the core's typed reason (trust.cpp)
+    bool refuses = false;   // install would refuse for this LOCAL reason
+    presentation::AuthenticityView view; // shared wording — never re-typed here
+};
+
+/// Evaluate a package that PASSED §6 against this machine's trust state.
+/// Returns nullopt when that state cannot be read at all: this is an advisory
+/// note attached to a verdict that must not depend on local state, so an absent
+/// or unreadable LEXE_HOME must never change what `lexe verify` prints about the
+/// package, nor the code it exits with.
+std::optional<LocalInstallConflict>
+local_install_conflict(const Manifest& manifest) {
+    try {
+        const Paths paths = Paths::detect();
+        const Registry registry(paths);
+        // Only reached for a package whose signature already verified, so
+        // evaluate() weighs the LOCAL key relationship alone — the same
+        // evaluation, from the same store, that install will perform.
+        const TrustEvaluation eval = TrustStore(paths).evaluate(
+            manifest.id, manifest.decoded_public_key(), SignatureState::Valid,
+            retained_data_owner(registry, manifest.id));
+        LocalInstallConflict c;
+        c.app_id = manifest.id;
+        c.key_state = to_string(eval.key_state);
+        c.detail = eval.detail;
+        c.refuses = !eval.allowed();
+        c.view =
+            presentation::present_authenticity(eval, manifest.publisher_name);
+        return c;
+    } catch (const std::exception&) {
+        return std::nullopt; // local state never perturbs the §6 verdict
+    }
+}
+
+/// Print the note beside a PASSING verification verdict. Nothing is printed when
+/// install would not refuse: this block exists to warn, and a "local trust is
+/// fine" line on every `lexe verify` would blur the very boundary its heading is
+/// drawing. `--json` states it either way, so a script never has to read an
+/// absent field as consent.
+void print_local_install_conflict(
+    const std::optional<LocalInstallConflict>& conflict) {
+    if (!conflict.has_value() || !conflict->refuses) return;
+    const presentation::AuthenticityView& view = conflict->view;
+    std::cout << "\nLocal trust on this machine (NOT part of the verification "
+                 "result above):\n"
+              << "  `lexe install` will refuse this package (exit 7).\n"
+              << "  " << view.key_text << "\n";
+    // Both fingerprints, under the labels the install screen already uses: one
+    // fingerprint on a "the key is different" note gives nothing to compare it
+    // against, and a second set of labels for the same two values would be a
+    // third wording of one fact.
+    if (!view.expected_fingerprint_grouped.empty()) {
+        std::cout << "  Expected (already installed): "
+                  << view.expected_fingerprint_grouped << "\n"
+                  << "  Presented (this package):     "
+                  << view.fingerprint_grouped << "\n";
+    }
+    // presentation::remedy verbatim — the SAME way out the Installer renders in
+    // this same situation and the install refusal names. A pointer alone will
+    // not do: no command prints this procedure, so `lexe trust show` would send
+    // the reader somewhere that does not answer them. Re-typing it here is how
+    // the copies drift apart, so it is rendered from the one shared source.
+    if (!view.remedy.empty()) {
+        std::istringstream remedy(view.remedy);
+        std::string line;
+        while (std::getline(remedy, line)) std::cout << "  " << line << "\n";
+    }
+    std::cout << "  See `lexe trust show " << conflict->app_id
+              << "` for this App ID's local trust record.\n";
+}
+
+/// The same fact for `--json`. Emitted for every package that verified, refused
+/// or not, so a script branches on a field instead of on an absence.
+ordered_json local_install_conflict_json(const LocalInstallConflict& conflict) {
+    ordered_json j;
+    j["appId"] = conflict.app_id;
+    j["keyState"] = conflict.key_state;
+    // The one field to branch on. `ok` and the exit code stay about the PACKAGE;
+    // this stays about this machine.
+    j["installWouldRefuse"] = conflict.refuses;
+    j["detail"] = conflict.detail;
+    if (!conflict.view.expected_fingerprint_grouped.empty()) {
+        j["expectedFingerprint"] = conflict.view.expected_fingerprint_grouped;
+    }
+    return j;
+}
+
 /// The install confirmation screen — a TRUTHFUL two-dimensional authenticity +
 /// local-trust view (never a single "verified" line), truthful per-permission
 /// enforcement, and the real isolation state for this platform. The signature
 /// has already been validated by the caller, so it is presented as Valid.
-void print_primary_screen(const Manifest& manifest, const fs::path& package,
-                          std::uint64_t size_bytes, const Paths& paths) {
+/// Renders the screen and returns the trust evaluation behind it, so the caller
+/// can refuse instead of asking a question whose answer cannot matter.
+TrustEvaluation print_primary_screen(const Manifest& manifest,
+                                     const fs::path& package,
+                                     std::uint64_t size_bytes,
+                                     const Paths& paths) {
     const Registry registry(paths);
     const TrustEvaluation eval = TrustStore(paths).evaluate(
         manifest.id, manifest.decoded_public_key(), SignatureState::Valid,
@@ -330,12 +427,33 @@ void print_primary_screen(const Manifest& manifest, const fs::path& package,
               << "Authenticity & local trust:\n"
               << "  " << auth.headline << "\n"
               << "  " << auth.signature_text << "\n"
-              << "  " << auth.key_text << "\n"
-              << "  Signing key fingerprint: " << auth.fingerprint_grouped << "\n"
-              << "  " << auth.identity_caveat << "\n\n"
-              << "Source:\n  " << package.string() << "\n\n"
-              << "Application Type:\n  Native Linux - "
-              << join(manifest.architectures, ", ") << "\n\n"
+              << "  " << auth.key_text << "\n";
+    // When the key CHANGED, both fingerprints, labelled — one fingerprint on a
+    // "the signing key has changed" screen gives nothing to compare against.
+    if (auth.expected_fingerprint_grouped.empty()) {
+        std::cout << "  Signing key fingerprint: " << auth.fingerprint_grouped
+                  << "\n";
+    } else {
+        std::cout << "  Expected (already installed): "
+                  << auth.expected_fingerprint_grouped << "\n"
+                  << "  Presented (this package):    "
+                  << auth.fingerprint_grouped << "\n";
+    }
+    // "Package file:", not "Source:". The Installer's "Source:" block states the
+    // packaging MODE — "Bundled package — all application files are contained in
+    // <file>" (presentation::source_line, from SPEC "Opening a .lexe File") —
+    // while this line is a filesystem PATH. One label on two unrelated facts
+    // left a reader who had seen both screens unable to tell which one "Source"
+    // meant, and SPEC fixes the GUI's meaning, so the CLI's label is the one
+    // that moves. It also matches the "Package: <path>" header `lexe info` and
+    // `lexe inspect` already print for the same value.
+    std::cout << "  " << auth.identity_caveat << "\n\n"
+              << "Package file:\n  " << package.string() << "\n\n"
+              << "Application Type:\n  "
+              << presentation::application_type_line(
+                     manifest.application_type, manifest.architectures,
+                     host_architecture())
+              << "\n\n"
               << "Permissions:\n";
     if (perms.ids.empty()) {
         std::cout << "  (none requested)\n";
@@ -369,6 +487,12 @@ void print_primary_screen(const Manifest& manifest, const fs::path& package,
         std::cout << "    " << c.first << ": " << c.second << "\n";
     }
     std::cout << "  " << iso.platform_caveat << "\n";
+    // The remedy is deliberately NOT printed here. When this screen refuses,
+    // the caller throws immediately and the typed error carries the same
+    // procedure — and that error is also the only thing a `--yes` run sees, so
+    // it has to stand alone anyway. Printing both put it on screen twice.
+    // The Installer, which has no exception to show, renders auth.remedy.
+    return eval;
 }
 
 constexpr int kLabelWidth = 15;
@@ -379,7 +503,13 @@ void print_kv(const std::string& label, const std::string& value) {
 }
 
 /// Shared manifest block of `lexe info` (package and installed modes).
-void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes) {
+/// `updates_override` replaces the manifest's update-policy line. An INSTALLED
+/// application's effective policy lives in its registry record, not in the
+/// manifest: `lexe source set` can add an update URL the manifest never had, and
+/// without this the same screen printed "No automatic updates" four lines above
+/// the configured "Update source:".
+void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes,
+                         const std::string& updates_override = "") {
     print_kv("Name:", manifest.name);
     print_kv("Id:", manifest.id);
     print_kv("Version:", manifest.version);
@@ -387,16 +517,35 @@ void print_manifest_info(const Manifest& manifest, std::uint64_t size_bytes) {
     if (!manifest.publisher_website.empty()) {
         print_kv("Website:", manifest.publisher_website);
     }
-    print_kv("Type:", manifest.application_type + " (" +
-                          join(manifest.architectures, ", ") + ")");
+    // The same "Native Linux — x86_64" the install screen and the Installer
+    // show; this line used to invent a third format ("native (x86_64)") for the
+    // one fact all three describe.
+    print_kv("Type:", presentation::application_type_line(
+                          manifest.application_type, manifest.architectures,
+                          host_architecture()));
     print_kv("Entrypoint:", manifest.entrypoint_executable);
     print_kv("Install:",
              manifest.install_mode + ", " + manifest.install_scope + " scope");
-    print_kv("Size:", format_size(size_bytes));
-    print_kv("Permissions:", manifest.permissions.empty()
+    // "Install size", not "Size": the header line above already prints the
+    // .lexe FILE size, and two unlabelled figures that disagree (11 KB
+    // compressed, 27 KB installed) invite the reader to assume one of them is
+    // wrong.
+    print_kv("Install size:", format_size(size_bytes));
+    // Human titles, as `lexe inspect` and the install screen show them — this
+    // line used to print raw ids ("user-files-selected"), so the one command a
+    // user runs to decide whether to trust a package named its permissions
+    // differently from every other surface. Raw ids remain in `--json`.
+    std::vector<std::string> permission_titles;
+    permission_titles.reserve(manifest.permissions.size());
+    for (const std::string& id : manifest.permissions) {
+        permission_titles.push_back(presentation::describe_permission(id));
+    }
+    print_kv("Permissions:", permission_titles.empty()
                                  ? "(none)"
-                                 : join(manifest.permissions, ", "));
-    print_kv("Updates:", update_policy_text(manifest));
+                                 : join(permission_titles, ", "));
+    print_kv("Updates:", updates_override.empty()
+                            ? update_policy_text(manifest)
+                            : updates_override);
 }
 
 /// manifest.to_json() re-parsed so it can be embedded in --json documents.
@@ -419,13 +568,47 @@ int cmd_install(const std::vector<std::string>& args) {
     const Manifest manifest =
         verify_package_or_throw(package, /*check_architecture=*/true);
 
+    // Say plainly that this REPLACES something, and whether it moves backwards.
+    // `lexe update` refuses a downgrade outright (FORMAT-0.1 §7 check 7);
+    // install allows one, because deliberately reinstalling an older build is a
+    // reasonable thing to do — but it must not happen silently. `lexe rollback`
+    // only ever moves to an OLDER retained version, so a downgrade nobody
+    // noticed leaves the newer build retained on disk with no way to reach it.
+    // Printed before the prompt AND under --yes, so it is in the transcript
+    // either way.
+    {
+        const Registry registry(paths);
+        if (registry.is_installed(manifest.id)) {
+            const std::string installed = registry.current_version(manifest.id);
+            if (installed == manifest.version) {
+                std::cout << "Reinstalling " << manifest.name << " " << installed
+                          << " over the same version.\n";
+            } else if (version_less(manifest.version, installed)) {
+                std::cout << "Downgrade: this replaces the installed version "
+                          << installed << " with the older " << manifest.version
+                          << ".\n"
+                          << "  `lexe rollback` moves to an older version, so it "
+                             "cannot bring "
+                          << installed << " back afterwards.\n";
+            } else {
+                std::cout << "This replaces the installed version " << installed
+                          << " with " << manifest.version << ".\n";
+            }
+        }
+    }
+
     if (parsed.flags.count("--yes") == 0) {
         std::uint64_t size = manifest.install_estimated_size;
         if (size == 0) {
             const PackageReader reader(package);
             size = payload_size(reader);
         }
-        print_primary_screen(manifest, package, size, paths);
+        const TrustEvaluation eval =
+            print_primary_screen(manifest, package, size, paths);
+        // Do not ask a question whose answer cannot matter. The trust decision
+        // is already made at this point; installing would throw the same typed
+        // error after the user had read the whole screen and typed "y".
+        eval.throw_if_rejected();
         std::cout << "\n";
         if (!confirm("Install " + manifest.name + " " + manifest.version +
                      "?")) {
@@ -707,13 +890,18 @@ ResolvedTarget resolve_binary_target(const fs::path& target, const char* noun) {
             out.root = find_main_executable(payload);
         }
         if (out.root.empty()) {
-            throw NotFoundError("no ELF executable found under " +
-                                payload.string() + " (point `lexe " + noun +
-                                "` at a binary, a project folder, or a payload "
-                                "directory)");
+            throw NotFoundError(
+                "no ELF executable found under " + payload.string(),
+                "`lexe " + std::string(noun) +
+                    "` takes a binary, a project folder, or a payload "
+                    "directory. If this is a project folder, build its payload "
+                    "first.");
         }
     } else {
-        throw NotFoundError("no such file or directory: " + target.string());
+        throw NotFoundError(
+            "no such file or directory: " + target.string(),
+            "Pass an executable, a project folder, or a payload folder to "
+            "analyze.");
     }
     return out;
 }
@@ -912,12 +1100,13 @@ int cmd_version(const std::vector<std::string>& args) {
     return 0;
 }
 
-constexpr const char* kCompletionUsage = "usage: lexe completion [bash]";
+constexpr const char* kCompletionUsage =
+    "usage: lexe completion [bash | zsh]";
 
-// Shell-completion groundwork (DX6): emit a minimal, dependency-free bash
-// completion for the top-level commands. `source <(lexe completion bash)`.
+// Shell completion (DX6): emit a minimal, dependency-free completion script
+// for bash or zsh. `source <(lexe completion bash)`.
 // The full top-level command surface — the single source of truth for the shell
-// completion word list and the "did you mean" suggester.
+// completion word lists, the "did you mean" suggester, and per-command help.
 const std::vector<std::string>& known_commands() {
     static const std::vector<std::string> k = {
         "install",  "open",    "run",     "list",     "apps",     "info",
@@ -956,37 +1145,91 @@ std::string suggest_command(const std::string& input) {
     return best;
 }
 
-int cmd_completion(const std::vector<std::string>& args) {
-    const Parsed parsed =
-        parse_arguments(args, {}, {}, false, kCompletionUsage);
-    const std::string shell =
-        parsed.positionals.empty() ? "bash" : parsed.positionals[0];
-    if (shell != "bash") {
-        throw UsageError("unsupported shell \"" + shell +
-                         "\" (supported: bash)\n" + kCompletionUsage);
-    }
+/// The subcommand word list for each grouped command — the single source of
+/// truth shared by every shell's completion script, so they cannot drift apart.
+const std::vector<std::pair<std::string, std::string>>& subcommand_groups() {
+    static const std::vector<std::pair<std::string, std::string>> k = {
+        {"sdk", "verify"},
+        {"trust", "show block unblock forget"},
+        {"config", "list get set reset path"},
+        {"source", "set"},
+        {"completion", "bash zsh"},
+    };
+    return k;
+}
+
+/// The top-level command words, space-separated.
+std::string command_words() {
     std::string cmds;
     for (const std::string& c : known_commands()) {
         cmds += (cmds.empty() ? "" : " ") + c;
     }
-    std::cout <<
+    return cmds;
+}
+
+std::string bash_completion_script() {
+    std::string out =
         "# lexe bash completion. Load it with:\n"
         "#   source <(lexe completion bash)\n"
         "_lexe() {\n"
         "  local cur\n"
         "  cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
         "  if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
-        "    COMPREPLY=( $(compgen -W \"" + cmds + "\" -- \"$cur\") ); return\n"
+        "    COMPREPLY=( $(compgen -W \"" +
+        command_words() +
+        "\" -- \"$cur\") ); return\n"
         "  fi\n"
-        "  case \"${COMP_WORDS[1]}\" in\n"
-        "    sdk)    COMPREPLY=( $(compgen -W \"verify\" -- \"$cur\") );;\n"
-        "    trust)  COMPREPLY=( $(compgen -W \"show block unblock forget\" -- \"$cur\") );;\n"
-        "    config) COMPREPLY=( $(compgen -W \"list get set reset path\" -- \"$cur\") );;\n"
-        "    source) COMPREPLY=( $(compgen -W \"set\" -- \"$cur\") );;\n"
+        "  case \"${COMP_WORDS[1]}\" in\n";
+    for (const auto& [group, subs] : subcommand_groups()) {
+        out += "    " + group + ") COMPREPLY=( $(compgen -W \"" + subs +
+               "\" -- \"$cur\") );;\n";
+    }
+    out +=
         "  esac\n"
         "}\n"
         "complete -F _lexe lexe\n";
-    return 0;
+    return out;
+}
+
+std::string zsh_completion_script() {
+    std::string out =
+        "#compdef lexe\n"
+        "# lexe zsh completion. Load it with:\n"
+        "#   source <(lexe completion zsh)\n"
+        "# (or save it as _lexe in a directory on your $fpath)\n"
+        "_lexe() {\n"
+        "  if (( CURRENT == 2 )); then\n"
+        "    compadd " +
+        command_words() +
+        "\n"
+        "    return\n"
+        "  fi\n"
+        "  case \"${words[2]}\" in\n";
+    for (const auto& [group, subs] : subcommand_groups()) {
+        out += "    " + group + ") compadd " + subs + " ;;\n";
+    }
+    out +=
+        "  esac\n"
+        "}\n"
+        "compdef _lexe lexe\n";
+    return out;
+}
+
+int cmd_completion(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {}, {}, false, kCompletionUsage);
+    const std::string shell =
+        parsed.positionals.empty() ? "bash" : parsed.positionals[0];
+    if (shell == "bash") {
+        std::cout << bash_completion_script();
+        return 0;
+    }
+    if (shell == "zsh") {
+        std::cout << zsh_completion_script();
+        return 0;
+    }
+    throw UsageError("unsupported shell \"" + shell +
+                     "\" (supported: bash, zsh)\n" + kCompletionUsage);
 }
 
 constexpr const char* kConfigUsage =
@@ -1139,6 +1382,12 @@ int cmd_info(const std::vector<std::string>& args) {
             {"installedAt", record.installed_at},
             {"lastRunAt", record.last_run_at},
             {"lastExitCode", record.last_exit_code},
+            // Same field name and same sum as `lexe apps --json`. The human
+            // view reports a disk figure and this carried none at all, so a
+            // script could not read what the terminal was showing it.
+            {"diskBytes", dir_size(registry.app_dir(record.id)) +
+                              dir_size(registry.app_data_dir(record.id)) +
+                              dir_size(registry.app_cache_dir(record.id))},
         };
         j["signingKey"] = record.publisher_key;
         j["fingerprint"] = {
@@ -1153,22 +1402,29 @@ int cmd_info(const std::vector<std::string>& args) {
         std::cout << j.dump(2) << "\n";
     } else {
         std::cout << "Installed application: " << record.id << "\n";
-        print_manifest_info(manifest, manifest.install_estimated_size);
+        // The size on disk, the same figure `lexe apps` reports — not the
+        // manifest's estimate, which is 0 whenever a manifest omits it and
+        // printed "Size: 0 B" for an application occupying real space.
+        print_manifest_info(
+            manifest,
+            dir_size(registry.app_dir(record.id)) +
+                dir_size(registry.app_data_dir(record.id)) +
+                dir_size(registry.app_cache_dir(record.id)),
+            presentation::updates_line(!record.update_url.empty(),
+                                       record.update_url, record.channel));
         print_kv("Current:", current);
         print_kv("Versions:", join(versions, ", "));
         print_kv("Signing key:", fp.grouped);
-        print_kv("Local trust:",
-                 trust_state == "blocked"
-                     ? "BLOCKED locally"
-                     : trust_state == "explicitly-trusted"
-                           ? "explicitly trusted locally (not external identity)"
-                           : trust_state == "corrupt"
-                                 ? "CORRUPT (fail closed)"
-                                 : trust_state == "known"
-                                       ? "known key, accepted for this App ID"
-                                       : "first-seen (identity not verified)");
+        print_kv("Local trust:", presentation::local_trust_label(trust_state));
         print_kv("Channel:", record.channel);
-        print_kv("Source:", record.source);
+        // "Installed from:", not "Source:" — the same collision the install
+        // screen's label had (the Installer's "Source:" is the packaging mode,
+        // not a location) and one this screen made worse: an unqualified
+        // "Source:" sat directly above "Update source:", so the two lines read
+        // as a pair describing one thing when they name two different
+        // locations. `--json` has always called this field "packageSource"; the
+        // human label now says the same thing it does.
+        print_kv("Installed from:", record.source);
         print_kv("Update source:",
                  record.update_url.empty() ? "(none)" : record.update_url);
         print_kv("Installed at:", record.installed_at);
@@ -1211,7 +1467,10 @@ int cmd_inspect(const std::vector<std::string>& args) {
     const fs::path pkg(parsed.positionals[0]);
     std::error_code ec;
     if (!fs::is_regular_file(pkg, ec)) {
-        throw NotFoundError("no such package file: " + pkg.string());
+        throw NotFoundError(
+            "no such package file: " + pkg.string(),
+            "`lexe inspect` takes a .lexe file. Use `lexe info <id>` for an "
+            "installed application.");
     }
 
     const PackageReader reader(pkg);
@@ -1226,6 +1485,12 @@ int cmd_inspect(const std::vector<std::string>& args) {
         std::cout << manifest_json(manifest).dump(2) << "\n";
         return vr.ok() ? 0 : 3;
     }
+
+    // Passing §6 is not the same as being installable here. Gated on vr.ok()
+    // because when §6 failed, that failure is the whole story and install would
+    // refuse on authenticity long before it reached local trust.
+    std::optional<LocalInstallConflict> conflict;
+    if (vr.ok()) conflict = local_install_conflict(manifest);
 
     // Scratch extraction for the dependency/compatibility/Tux32 analysis.
     const fs::path scratch =
@@ -1270,6 +1535,11 @@ int cmd_inspect(const std::vector<std::string>& args) {
                 {{"name", s.name}, {"ok", s.ok}, {"detail", s.detail}});
         }
         j["verification"] = {{"ok", vr.ok()}, {"stages", std::move(stages)}};
+        // Kept OUT of j["verification"]: this is local state, not a §6 stage,
+        // and a script must not be able to mistake it for one.
+        if (conflict.has_value()) {
+            j["localTrust"] = local_install_conflict_json(*conflict);
+        }
         if (analysis_error.empty()) {
             j["report"] = build_report_json(report);
         } else {
@@ -1296,11 +1566,20 @@ int cmd_inspect(const std::vector<std::string>& args) {
                                       vr.first_failure()->detail
                                 : std::string("see `lexe verify`")));
     print_kv("Checksum:", "sha256:" + pkg_sha);
+    // Directly under the verdict, where a reader who stops after "PASSED" still
+    // sees that install will not accept this package here.
+    print_local_install_conflict(conflict);
 
     // Permissions, explained (human titles; enforcement detail is shown at
-    // install time, where the isolation backend is probed).
-    if (!manifest.permissions.empty()) {
-        std::cout << "\nPermissions:\n";
+    // install time, where the isolation backend is probed). "None requested" is
+    // stated rather than left out: a package asking for nothing is worth saying
+    // out loud, and every other surface says it — omitting the section made
+    // "requests no permissions" indistinguishable from "this view forgot to
+    // mention permissions".
+    std::cout << "\nPermissions:\n";
+    if (manifest.permissions.empty()) {
+        std::cout << "  (none requested)\n";
+    } else {
         for (const std::string& id : manifest.permissions) {
             std::cout << "  - " << presentation::describe_permission(id) << "\n";
         }
@@ -1332,12 +1611,18 @@ int cmd_verify(const std::vector<std::string>& args) {
     // publisher's real-world identity or local trust for any App ID.
     std::optional<Fingerprint> fp;
     std::string signing_key;
+    // Passing §6 is not the same as being installable here: `lexe install` can
+    // still refuse this package (exit 7) over LOCAL trust state. The verdict and
+    // the exit code below are unchanged by this — it is reported separately.
+    std::optional<LocalInstallConflict> conflict;
     std::error_code fec;
     if (fs::is_regular_file(file, fec)) {
         try {
             const Manifest m = Manifest::parse(PackageReader(file).read_entry("lexe.json"));
             signing_key = m.publisher_public_key;
             fp = key_fingerprint(m.decoded_public_key());
+            // Only for a package that verified; a §6 failure is the whole story.
+            if (report.ok()) conflict = local_install_conflict(m);
         } catch (const Error&) {
         }
     }
@@ -1356,6 +1641,11 @@ int cmd_verify(const std::vector<std::string>& args) {
         j["identityVerified"] = false;
         j["note"] = "Verification checks package integrity and signature "
                     "(authenticity), NOT the publisher's real-world identity.";
+        // A sibling of "ok", never a member of it: `ok` is the §6 verdict on the
+        // package and must keep meaning exactly that.
+        if (conflict.has_value()) {
+            j["localTrust"] = local_install_conflict_json(*conflict);
+        }
         ordered_json stages = ordered_json::array();
         for (const VerificationStage& stage : report.stages) {
             stages.push_back({{"name", stage.name},
@@ -1384,7 +1674,11 @@ int cmd_verify(const std::vector<std::string>& args) {
                       << (failure != nullptr ? failure->name : "unknown")
                       << ")\n";
         }
+        print_local_install_conflict(conflict);
     }
+    // Unchanged: 0/3 is the §6 verdict on the PACKAGE. A local conflict is a
+    // note, never a failure — scripts treat these codes as a compatibility
+    // promise, and `lexe install` is the command that owns exit 7.
     return report.ok() ? 0 : 3;
 }
 
@@ -1747,11 +2041,7 @@ std::uint64_t dir_size(const fs::path& dir) {
 
 // A friendly LOCAL-trust label. Never presented as external identity.
 std::string trust_label(const std::string& state) {
-    if (state == "blocked") return "blocked locally";
-    if (state == "explicitly-trusted") return "trusted locally (first-use)";
-    if (state == "corrupt") return "CORRUPT (fail closed)";
-    if (state == "known") return "known key (first-use)";
-    return "first-seen (first-use)";
+    return presentation::local_trust_label(state);
 }
 
 // The installed-application manager (DX4): a richer `list` — publisher, version,
@@ -1915,7 +2205,10 @@ int cmd_build(const std::vector<std::string>& args) {
     const fs::path project(parsed.positionals[0]);
 
     if (!fs::is_directory(project)) {
-        throw NotFoundError("no such project directory: " + project.string());
+        throw NotFoundError(
+            "no such project directory: " + project.string(),
+            "`lexe build` takes the folder that holds your lexe.json and "
+            "payload/.");
     }
     // A Lexe project folder is: lexe.json + payload/ (+ optional icons/,
     // metadata/). "Drop your app files into payload/, describe them in
@@ -1942,7 +2235,10 @@ int cmd_build(const std::vector<std::string>& args) {
     if (key_opt != parsed.options.end()) {
         keyfile = fs::path(key_opt->second);
         if (!fs::is_regular_file(keyfile)) {
-            throw NotFoundError("no such key file: " + keyfile.string());
+            throw NotFoundError(
+                "no such key file: " + keyfile.string(),
+                "Generate a signing keypair with `lexe keygen " +
+                    keyfile.string() + "`.");
         }
     } else {
         keyfile = project / "key.json";
@@ -1979,6 +2275,22 @@ int cmd_build(const std::vector<std::string>& args) {
     // Validate the manifest (friendly early error) and confirm the publisher
     // key matches the signing key — otherwise the package can never verify.
     const Manifest manifest = Manifest::parse(util::slurp(manifest_file));
+
+    // Refuse to BUILD a package nothing can install. The 0.1 permission
+    // vocabulary is frozen and the installer rejects an id outside it, but
+    // build, verify and info all accepted one — so a developer could ship a
+    // package that signs, verifies and inspects perfectly, and fails for every
+    // user at install with `unknown permission "camera"`. Catch it here, where
+    // the developer can still fix the manifest.
+    try {
+        (void)normalize_permissions(manifest.permissions);
+    } catch (const Error& e) {
+        throw Error(
+            std::string(e.what()) + " in " + manifest_file.string(),
+            "The 0.1 permission vocabulary is frozen: only \"network\" and "
+            "\"user-files-selected\" may be requested. A package asking for "
+            "anything else is refused at install time.");
+    }
     if (manifest.decoded_public_key() != key.public_key) {
         throw Error(
             "manifest publisher.publicKey (" + manifest.publisher_public_key +
@@ -2019,6 +2331,35 @@ int cmd_build(const std::vector<std::string>& args) {
               << manifest.version << " (" << manifest.id << ")\n"
               << "  publisher key: " << pubkey << "\n"
               << "  verification:  " << (report.ok() ? "OK" : "FAILED") << "\n";
+    // The Tux32 Core 1 verdict, reported the way the Builder reports it at the
+    // same moment. ADVISORY here: `lexe build` takes no runtime profile, so
+    // there is no portability claim to gate — but a developer who builds from
+    // the CLI should still learn what the Builder would have told them, instead
+    // of finding out only if they happen to run `lexe sdk verify`. Any payload
+    // this cannot analyze (non-ELF, cross-arch, an interpreted app) simply gets
+    // no line rather than a spurious failure.
+    try {
+        const ResolvedTarget t = resolve_binary_target(project, "build");
+        DependencyOptions dopts;
+        dopts.payload_search_paths = t.search;
+        const DependencyReport deps = analyze_dependencies(t.root, dopts);
+        if (deps.root_info.is_elf) {
+            const Core1VerifyResult r =
+                verify_against_profile(deps, tux32_core_1());
+            std::cout << "  portability:   ";
+            if (r.conformant()) {
+                std::cout << "conformant with Tux32 " << r.profile_id << "\n";
+            } else {
+                std::cout << to_string(r.verdict) << " (not Core 1 portable)\n"
+                          << "                 " << r.detail << "\n"
+                          << "                 Details: `lexe sdk verify "
+                          << project.string() << "`\n";
+            }
+        }
+    } catch (const std::exception&) {
+        // Not analyzable — say nothing rather than guess.
+    }
+
     if (injected_key) {
         std::cout << "  filled in publisher.publicKey in "
                   << manifest_file.string() << "\n";
@@ -2075,23 +2416,37 @@ int cmd_integrate(const std::vector<std::string>& args) {
     }
 
     const IntegrationReport result = integration.install_runtime_handler();
-    if (result.ok) {
-        std::cout << "Registered .LEXE as the persistent handler for "
-                  << DesktopIntegration::canonical_mime_type() << ":\n";
-        for (const ArtifactCheck& check : result.checks) {
-            std::cout << "  " << check.artifact.path << "\n";
-        }
-        for (const std::string& note : result.notes) {
-            std::cout << "  " << note << "\n";
-        }
-        std::cout << "\nThis registration is persistent: it survives logout, "
-                     "reboot and a\ndesktop restart. Verify it any time with "
-                     "`lexe doctor`.\n";
-    } else {
+    if (!result.ok) {
         for (const std::string& problem : result.unrepaired) {
             std::cout << "  ! " << problem << "\n";
         }
         return 1;
+    }
+
+    // "Registered" is a claim about the DESKTOP, not about writing files.
+    // With LEXE_HOME set the files land in a tree no desktop environment
+    // scans, so announcing a registration there would claim something that
+    // registered nothing — and double-clicking a .lexe would still do
+    // nothing. Say which of the two actually happened.
+    const bool visible = paths.desktop_scope() == DesktopScope::xdg;
+    std::cout << (visible ? "Registered .LEXE as the persistent handler for "
+                          : "Wrote the .LEXE handler files for ")
+              << DesktopIntegration::canonical_mime_type() << ":\n";
+    for (const ArtifactCheck& check : result.checks) {
+        std::cout << "  " << check.artifact.path << "\n";
+    }
+    for (const std::string& note : result.notes) {
+        std::cout << "  " << note << "\n";
+    }
+    if (visible) {
+        std::cout << "\nThis registration is persistent: it survives logout, "
+                     "reboot and a\ndesktop restart. Verify it any time with "
+                     "`lexe doctor`.\n";
+    } else {
+        std::cout << "\nLEXE_HOME is set, so these went to a private tree no "
+                     "desktop scans —\nnothing is registered for "
+                     "double-clicking. To register for real:\n"
+                     "  env -u LEXE_HOME lexe integrate\n";
     }
     return 0;
 }
@@ -2622,6 +2977,7 @@ std::string usage_text() {
            "  launch-ref <id> [-o <run.lexe>]          write a .LEXE launch "
            "reference for an installed app\n"
            "  completion [bash]                        print a shell-completion "
+           "  completion [bash | zsh]                  print a shell-completion "
            "script\n"
            "  version [--json]                         show runtime, format and "
            "Tux32 versions\n"
@@ -2638,6 +2994,114 @@ std::string usage_text() {
            "Learn more: docs/TUTORIAL.md and docs/README.md\n";
 }
 
+// ------------------------------------------------------- per-command help
+
+/// One line of "what this command is for", plus its usage. Every entry in
+/// known_commands() has a row here (asserted by tests/test_cli_ux.cpp), so
+/// `lexe <command> --help` can never fall through to the full banner.
+struct CommandHelp {
+    const char* summary;
+    const char* usage;
+};
+
+const std::map<std::string, CommandHelp>& command_help() {
+    static const std::map<std::string, CommandHelp> k = {
+        {"install",
+         {"Verify a .lexe package and install it for the current user.",
+          kInstallUsage}},
+        {"run",
+         {"Launch an installed application under the isolation sandbox.",
+          kRunUsage}},
+        {"list", {"List installed applications, one compact line each.",
+                  kListUsage}},
+        {"apps",
+         {"Manage installed applications (version, disk, trust, last run).",
+          kAppsUsage}},
+        {"info",
+         {"Show what a package or installed application is, before you trust it.",
+          kInfoUsage}},
+        {"inspect",
+         {"Inspect a package in full: identity, dependencies and every check.",
+          kInspectUsage}},
+        {"update", {"Apply, or check for, updates to an installed application.",
+                    kUpdateUsage}},
+        {"rollback",
+         {"Return an application to its previous installed version.",
+          kRollbackUsage}},
+        {"repair",
+         {"Re-verify an installation and restore any file that fails its hash.",
+          kRepairUsage}},
+        {"remove", {"Uninstall an application, optionally purging its data.",
+                    kRemoveUsage}},
+        {"gc", {"Reclaim disk from old versions (keeps the active one plus n).",
+                kGcUsage}},
+        {"build",
+         {"Build a signed .lexe from a project folder containing lexe.json.",
+          kBuildUsage}},
+        {"analyze",
+         {"Read an ELF binary's dependencies and explain its host compatibility.",
+          kAnalyzeUsage}},
+        {"sdk",
+         {"Check a binary against the Tux32 Core 1 portability contract.",
+          kSdkUsage}},
+        {"pack",
+         {"Build a signed package from an explicit manifest (low-level).",
+          kPackUsage}},
+        {"keygen", {"Generate an Ed25519 signing keypair into a key file.",
+                    kKeygenUsage}},
+        {"sign-update",
+         {"Sign an update manifest, writing <update.json>.sig beside it.",
+          kSignUpdateUsage}},
+        {"verify",
+         {"Run the FORMAT-0.1 verification pipeline over a package and report "
+          "each stage.",
+          kVerifyUsage}},
+        {"trust",
+         {"Inspect or set the LOCAL publisher-trust record for an application.",
+          kTrustUsage}},
+        {"source", {"Set where an installed application looks for updates.",
+                    kSourceUsage}},
+        {"config", {"View or change persisted runtime settings.", kConfigUsage}},
+        {"integrate",
+         {"Register .lexe file handling and desktop entries for this user.",
+          kIntegrateUsage}},
+        {"completion", {"Print a shell-completion script for bash or zsh.",
+                        kCompletionUsage}},
+        {"version",
+         {"Show the runtime, package-format and Tux32 baseline versions.",
+          kVersionUsage}},
+        {"help", {"Show the command list, or the help for one command.",
+                  "usage: lexe help [command]"}},
+    };
+    return k;
+}
+
+/// Print the help for one command. An unrecognised name is a usage error that
+/// suggests the closest real command, exactly like dispatch() does.
+int print_command_help(const std::string& command) {
+    const auto it = command_help().find(command);
+    if (it == command_help().end()) {
+        std::string msg = "unknown command \"" + command + "\"";
+        if (const std::string sug = suggest_command(command); !sug.empty()) {
+            msg += " — did you mean \"" + sug + "\"?";
+        }
+        throw UsageError(msg + "\n\n" + usage_text());
+    }
+    std::cout << it->second.summary << "\n\n" << it->second.usage << "\n";
+    return 0;
+}
+
+/// Whether the user asked for this command's help. Only tokens BEFORE a literal
+/// "--" count, so `lexe run <id> -- --help` still passes --help to the
+/// application rather than printing our own help.
+bool asked_for_help(const std::vector<std::string>& rest) {
+    for (const std::string& a : rest) {
+        if (a == "--") break;
+        if (a == "--help" || a == "-h") return true;
+    }
+    return false;
+}
+
 int dispatch(const std::vector<std::string>& args) {
     if (args.empty()) {
         throw UsageError(usage_text());
@@ -2646,8 +3110,21 @@ int dispatch(const std::vector<std::string>& args) {
     const std::vector<std::string> rest(args.begin() + 1, args.end());
 
     if (command == "help" || command == "--help" || command == "-h") {
+        // `lexe help <command>` answers about that one command; `lexe help
+        // --help` asks about `help` itself rather than treating its own flag
+        // as a topic name.
+        if (!rest.empty() && rest[0] != "--") {
+            const bool self = rest[0] == "--help" || rest[0] == "-h";
+            return print_command_help(self ? "help" : rest[0]);
+        }
         std::cout << usage_text();
         return 0;
+    }
+    // `lexe <command> --help` / `-h` — the affordance every CLI is expected to
+    // have. Handled before the command runs so it never becomes "unknown
+    // option", and only for real commands so a typo still gets a suggestion.
+    if (command_help().count(command) != 0 && asked_for_help(rest)) {
+        return print_command_help(command);
     }
     if (command == "version" || command == "--version" || command == "-V") {
         return cmd_version(rest);

@@ -47,11 +47,12 @@ constexpr const char* kCompatibility = "compatibility";
 constexpr const char* kPayloadRole = "payload-role";
 
 void pass(VerificationReport& report, const char* name, std::string detail) {
-    report.stages.push_back({name, true, std::move(detail)});
+    report.stages.push_back({name, true, std::move(detail), {}});
 }
 
-void fail(VerificationReport& report, const char* name, std::string detail) {
-    report.stages.push_back({name, false, std::move(detail)});
+void fail(VerificationReport& report, const char* name, std::string detail,
+          std::string hint = {}) {
+    report.stages.push_back({name, false, std::move(detail), std::move(hint)});
 }
 
 std::string join(const std::vector<std::string>& parts, const char* separator) {
@@ -280,6 +281,13 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     PipelineOutcome out;
     VerificationReport& report = out.report;
 
+    // Record a stage failure together with whatever hint its throw site
+    // attached, so the specific advice reaches every surface that renders the
+    // report rather than dying inside the pipeline.
+    auto fail_from = [&report](const char* stage, const Error& e) {
+        fail(report, stage, e.what(), e.hint());
+    };
+
     // ---- stage 1: structure (§2) --------------------------------------
     // PackageReader enforces every §2 rule (path safety, no symlinks, no
     // duplicates, required entries present). The four control entries are
@@ -299,7 +307,7 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     } catch (const Error& e) {
         // NotFoundError (no such file) and VerificationError (bad archive)
         // both land here: verify_package never throws for a failing package.
-        fail(report, kStructure, e.what());
+        fail_from(kStructure, e);
         return out;
     }
     pass(report, kStructure,
@@ -311,7 +319,7 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     try {
         manifest = Manifest::parse(manifest_bytes);
     } catch (const Error& e) {
-        fail(report, kManifest, e.what());
+        fail_from(kManifest, e);
         return out;
     }
     pass(report, kManifest,
@@ -324,7 +332,7 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     try {
         publisher_key = crypto::decode_public_key(manifest.publisher_public_key);
     } catch (const Error& e) {
-        fail(report, kKey, e.what());
+        fail_from(kKey, e);
         return out;
     }
     pass(report, kKey,
@@ -365,7 +373,7 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
         }
     } catch (const Error& e) {
         // e.g. a covered entry whose compressed data is corrupt.
-        fail(report, kHashes, e.what());
+        fail_from(kHashes, e);
         return out;
     }
     pass(report, kHashes,
@@ -433,8 +441,11 @@ Manifest verify_package_or_throw(const fs::path& lexe_file,
         const VerificationStage* failure = out.report.first_failure();
         // ok() is false only when a present stage failed (the pipeline always
         // records at least the structure stage), so failure is non-null.
+        // failure->hint is empty unless that stage's throw site attached one;
+        // VerificationError then falls back to the hint for its type.
         throw VerificationError("verification failed at stage \"" +
-                                failure->name + "\": " + failure->detail);
+                                    failure->name + "\": " + failure->detail,
+                                failure->hint);
     }
     return std::move(*out.manifest);
 }

@@ -69,7 +69,7 @@ disk usage, install date and trust; `lexe config path` shows the settings file.
 Yes. Most commands take `--json` for stable, plain (never colored) output, and
 exit codes are typed (0 ok, 1 runtime, 2 usage, 3 verification, 4 not-found,
 5 permission, 6 busy, 7 trust). `lexe sdk verify` returns 0/3 for
-conformant/non-conformant. `source <(lexe completion bash)` adds tab completion.
+conformant/non-conformant. `source <(lexe completion bash)` (or `zsh`) adds tab completion.
 
 ## Is this production-ready?
 

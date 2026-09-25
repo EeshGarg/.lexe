@@ -2,6 +2,10 @@
 
 #include "core/presentation.hpp"
 
+#include <algorithm>
+#include <cstdio>
+#include <iterator>
+
 namespace lexe::presentation {
 
 const char* to_string(AuthenticityView::Severity s) {
@@ -19,6 +23,8 @@ std::string signature_label(SignatureState s) {
     switch (s) {
     case SignatureState::Valid:                return "valid (Ed25519)";
     case SignatureState::Invalid:              return "NOT valid";
+    case SignatureState::ContentMismatch:
+        return "valid, but the package contents do not match it";
     case SignatureState::Malformed:            return "malformed package";
     case SignatureState::UnsupportedAlgorithm: return "unsupported algorithm";
     case SignatureState::Missing:              return "missing";
@@ -64,6 +70,21 @@ AuthenticityView present_authenticity(const TrustEvaluation& eval,
         v.headline = "Refused — the signing key has changed";
         v.key_text = "Publisher key: DIFFERENT from the key associated with this "
                      "application. There is no authenticated key rotation in 0.1.";
+        // Both fingerprints, so there is something to compare — and the
+        // procedure that actually clears this. Removing the application alone
+        // does NOT: it leaves the local trust record in place and the next
+        // install is refused identically.
+        if (eval.expected.has_value()) {
+            v.expected_fingerprint_grouped = eval.expected->grouped;
+        }
+        v.remedy =
+            "Confirm with the publisher — not with the package — that they "
+            "rotated their key.\n"
+            "To accept the new key you must remove the application AND clear "
+            "its local trust record, which deletes its data:\n"
+            "  lexe remove " + eval.app_id + " --purge-data\n"
+            "  lexe trust forget " + eval.app_id + "\n"
+            "Installing under a different App ID keeps the existing one.";
         break;
     case PublisherKeyState::Blocked:
         v.severity = AuthenticityView::Severity::Danger;
@@ -87,7 +108,9 @@ AuthenticityView present_authenticity(const TrustEvaluation& eval,
     // the local key relationship.
     if (eval.signature != SignatureState::Valid) {
         v.severity = AuthenticityView::Severity::Danger;
-        v.headline = "Refused — signature is not valid";
+        v.headline = eval.signature == SignatureState::ContentMismatch
+                         ? "Refused — the contents do not match the signature"
+                         : "Refused — signature is not valid";
         v.can_proceed = false;
     }
     return v;
@@ -272,6 +295,83 @@ SignerClass classify_signer(const TrustEvaluation& eval) {
         break;
     }
     return SignerClass::UnknownSigner;
+}
+
+// ------------------------------------------------- package display fields
+
+std::string format_size(std::uint64_t bytes) {
+    static const char* const kUnits[] = {"B", "KB", "MB", "GB", "TB", "PB"};
+    double value = static_cast<double>(bytes);
+    std::size_t unit = 0;
+    while (value >= 1000.0 && unit + 1 < std::size(kUnits)) {
+        value /= 1000.0;
+        ++unit;
+    }
+    char buf[64];
+    if (unit == 0) {
+        std::snprintf(buf, sizeof(buf), "%llu B",
+                      static_cast<unsigned long long>(bytes));
+    } else if (value < 10.0) {
+        std::snprintf(buf, sizeof(buf), "%.1f %s", value, kUnits[unit]);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.0f %s", value, kUnits[unit]);
+    }
+    return buf;
+}
+
+std::string application_type_line(const std::string& application_type,
+                                  const std::vector<std::string>& architectures,
+                                  const std::string& host_arch) {
+    const std::string type =
+        application_type == "native" ? "Native Linux" : application_type;
+    // The host architecture alone when this package runs here; otherwise name
+    // every architecture it does offer, so "why not here" is visible.
+    if (std::find(architectures.begin(), architectures.end(), host_arch) !=
+        architectures.end()) {
+        return type + " — " + host_arch;
+    }
+    std::string joined;
+    for (const std::string& a : architectures) {
+        if (!joined.empty()) joined += ", ";
+        joined += a;
+    }
+    return type + " — " +
+           (joined.empty() ? std::string("unknown architecture") : joined);
+}
+
+std::string install_scope_line(const std::string& scope) {
+    if (scope == "user") return "Current user only";
+    if (scope == "system") return "All users (system-wide)";
+    return scope;
+}
+
+std::string updates_line(bool enabled, const std::string& manifest_url,
+                         const std::string& channel) {
+    if (!enabled || manifest_url.empty()) return "No automatic updates";
+    return "Automatically check " + manifest_url + " (channel: " + channel + ")";
+}
+
+std::string source_line(const std::string& install_mode,
+                        const std::string& package_filename) {
+    if (install_mode == "bundled") {
+        return "Bundled package — all application files are contained in " +
+               package_filename;
+    }
+    return install_mode + " (unsupported in Lexe 0.1)";
+}
+
+std::string local_trust_label(const std::string& state) {
+    if (state == "blocked") return "blocked locally";
+    if (state == "explicitly-trusted") return "explicitly trusted locally";
+    if (state == "corrupt") return "CORRUPT (fail closed)";
+    if (state == "known") return "known key, accepted for this App ID";
+    return "first-seen (identity not verified)";
+}
+
+std::string install_size_line(std::uint64_t estimated_size,
+                              std::uint64_t payload_bytes) {
+    const std::uint64_t size = estimated_size > 0 ? estimated_size : payload_bytes;
+    return size > 0 ? format_size(size) : std::string();
 }
 
 } // namespace lexe::presentation

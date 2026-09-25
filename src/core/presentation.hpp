@@ -12,6 +12,7 @@
 #include "core/permissions.hpp"
 #include "core/trust.hpp"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,6 +37,13 @@ struct AuthenticityView {
     std::string publisher_display;   // the free-form publisher string (unverified)
     std::string fingerprint_grouped; // display fingerprint of the presented key
     std::string fingerprint_full;    // full fingerprint (for structured output)
+    /// The fingerprint this App ID is bound to, when it DIFFERS from the
+    /// presented one ("" otherwise). A changed-key screen that shows only the
+    /// key in front of you gives you nothing to compare it against.
+    std::string expected_fingerprint_grouped;
+    /// What the user can actually do about a refusal ("" when there is nothing
+    /// to do, or nothing was refused). Never a way to bypass the decision.
+    std::string remedy;
     bool can_proceed = false;        // the trust decision allows proceeding
 };
 const char* to_string(AuthenticityView::Severity s);
@@ -124,5 +132,54 @@ struct IsolationView {
     std::vector<std::pair<std::string, std::string>> controls;
 };
 IsolationView present_isolation(const IsolationCapabilities& caps);
+
+// ------------------------------------------------- package display fields
+//
+// The plain facts about a package — size, type, scope, source, update policy.
+// These are NOT security claims, but they are shown side by side with the ones
+// that are, and every frontend must state them identically. They live here for
+// the same reason the trust and permission text does: the CLI and the GTK
+// frontends each grew their own copy, and the copies drifted: the Installer
+// called a permission "Access to files you select" while the frozen vocabulary
+// (and therefore the CLI) said "Access to files you choose", and one wrote an em
+// dash in the type line where the other wrote a hyphen. Where the two disagreed,
+// SPEC.md's "Opening a .lexe File" mock is the tie-breaker. One implementation,
+// one wording, both frontends.
+
+/// Human-readable byte size in decimal units, e.g. 125829120 -> "126 MB".
+std::string format_size(std::uint64_t bytes);
+
+/// The "Application Type" line, e.g. "Native Linux - x86_64". `host_arch` is
+/// shown alone when the package supports it; otherwise every architecture the
+/// package offers is listed, so the reader can see why it will not run here.
+std::string application_type_line(const std::string& application_type,
+                                  const std::vector<std::string>& architectures,
+                                  const std::string& host_arch);
+
+/// The install-scope line, e.g. "Current user only".
+std::string install_scope_line(const std::string& scope);
+
+/// The update-policy line. A package with updates disabled, or with no manifest
+/// URL to check, has no automatic updates and is described as such.
+std::string updates_line(bool enabled, const std::string& manifest_url,
+                         const std::string& channel);
+
+/// The "Source" line. 0.1 supports bundled packages only.
+std::string source_line(const std::string& install_mode,
+                        const std::string& package_filename);
+
+/// The canonical short label for a LOCAL trust state ("blocked",
+/// "explicitly-trusted", "corrupt", "known", "first-seen"). One place, because
+/// `lexe apps` and `lexe info` each wrote their own and disagreed: apps labelled
+/// an explicitly-trusted key "trusted locally (first-use)" — appending
+/// "(first-use)" to every state including the one that is not first use —
+/// directly contradicting `lexe info` and `lexe trust show`.
+std::string local_trust_label(const std::string& state);
+
+/// The install size to display: the manifest's estimate when it declares one,
+/// otherwise the package's actual uncompressed payload size. Either may be 0
+/// (unknown), which yields an empty string rather than a fabricated figure.
+std::string install_size_line(std::uint64_t estimated_size,
+                              std::uint64_t payload_bytes);
 
 } // namespace lexe::presentation

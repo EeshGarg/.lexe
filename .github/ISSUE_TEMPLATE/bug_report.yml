@@ -1,0 +1,153 @@
+name: Bug report
+description: Something the runtime, Builder, Installer or SDK does that it should not.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this.
+
+        **Not for security vulnerabilities.** If you have found a way past
+        verification, trust, permission consent or isolation, report it privately
+        through the Security tab (**Report a vulnerability**), not here. See
+        [SECURITY.md](https://github.com/EeshGarg/.lexe/blob/main/SECURITY.md).
+
+        `.lexe` is a Developer Alpha; some behaviour that looks like a bug is a
+        documented limitation. A quick look at
+        [docs/TROUBLESHOOTING.md](https://github.com/EeshGarg/.lexe/blob/main/docs/TROUBLESHOOTING.md) and
+        [docs/ALPHA.md](https://github.com/EeshGarg/.lexe/blob/main/docs/ALPHA.md) often saves a round trip —
+        a fail-closed refusal to launch without a sandbox, a refused
+        changed-key install, and a `symbol-ceiling-exceeded` verdict are all
+        working as designed.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where
+      description: The surface the problem appeared on.
+      options:
+        - Runtime CLI (lexe install / run / update / remove / trust / ...)
+        - Builder (lexe build or lexe-builder)
+        - Installer GUI (lexe-installer)
+        - SDK / Tux32 Core 1 (lexe sdk verify, lexe analyze)
+        - Packaging and desktop integration (packaging/*.sh, lexe integrate)
+        - Build from source (CMake, tests)
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: lexe version
+      description: |
+        The output of `lexe version` (or `lexe version --json`). If the problem
+        is that the build fails, give the commit SHA instead.
+      placeholder: "lexe 0.1.0-alpha  ·  package format 0.1  ·  tux32-core-1 (spec 1)"
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and kernel
+      description: "Distribution and release, plus `uname -a`."
+      placeholder: "Ubuntu 24.04.1 · Linux 6.8.0-45-generic x86_64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: bubblewrap
+    attributes:
+      label: Is bubblewrap available?
+      description: "Check with `bwrap --version`."
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure"
+        - "Not applicable — Windows build host (no isolation)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: userns
+    attributes:
+      label: Are unprivileged user namespaces available?
+      description: |
+        Check with `unshare -U true` — exit status 0 means yes. On Ubuntu 24.04+
+        also check `sysctl kernel.apparmor_restrict_unprivileged_userns`
+        (`1` restricts them). See
+        [docs/TROUBLESHOOTING.md](https://github.com/EeshGarg/.lexe/blob/main/docs/TROUBLESHOOTING.md).
+      options:
+        - "Yes"
+        - "No — restricted or disabled"
+        - "Not sure"
+        - "Not applicable — Windows build host (no isolation)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command
+      description: |
+        Everything you ran, verbatim, from a state someone else can reach. Redact
+        paths only where you must, and say that you did.
+      render: shell
+      placeholder: |
+        lexe install ./hello.lexe --trust
+        lexe run com.example.hello
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Full output
+      description: |
+        The complete output, not an excerpt — including the exit status
+        (`echo $?`). Add `--json` where the command supports it; the typed error
+        and exit code say more than the prose line.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Reproducer
+      description: |
+        Optional but decisive. The smallest project folder, `lexe.json` or
+        `.lexe` that triggers it. Generate throwaway keys with `lexe keygen` —
+        never attach a real signing key.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: |
+        Whether it is reproducible, when it started, whether the full suite
+        (`./scripts/build.sh`) is green on your machine, and anything unusual
+        about the host (container, WSL, NFS or an unusual `LEXE_HOME`).
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is not a security vulnerability report.
+          required: true
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I checked docs/TROUBLESHOOTING.md and docs/ALPHA.md, and this is not a documented limitation.
+          required: true

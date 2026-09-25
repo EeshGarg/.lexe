@@ -159,4 +159,49 @@ TEST_CASE("default_search_dirs include the multiarch triplet") {
     CHECK(saw_triplet);
 }
 
+TEST_CASE("the glibc requirement is the PACKAGE's, not the build host's") {
+    // A host-interface library (libm.so.6) carries its own, much newer internal
+    // GLIBC_x.y needs. The target host ships its own matching copy, so those
+    // needs say nothing about this application — counting them would make the
+    // same package report a different requirement on every distribution it was
+    // analyzed on. Only the executable and BUNDLED libraries count.
+    const fs::path work = test::unique_temp_dir("lexe-dep-hostglibc-");
+    fs::create_directories(work);
+
+    test::ElfSpec host;                       // classified host-interface by soname
+    host.soname = "libm.so.6";
+    host.version_needs = {"GLIBC_2.38"};      // the build host's own internals
+    test::write_elf(work / "libm.so.6", host);
+
+    test::ElfSpec bundled;                    // an ordinary library we ship
+    bundled.soname = "libextra.so.1";
+    bundled.version_needs = {"GLIBC_2.28"};
+    test::write_elf(work / "libextra.so.1", bundled);
+
+    test::ElfSpec app;
+    app.needed = {"libm.so.6", "libextra.so.1"};
+    app.version_needs = {"GLIBC_2.34"};
+    const fs::path root = work / "app";
+    test::write_elf(root, app);
+
+    DependencyOptions opts;
+    opts.payload_search_paths = {work};
+    const DependencyReport r = analyze_dependencies(root, opts);
+
+    REQUIRE(find(r, "libm.so.6") != nullptr);
+    CHECK(find(r, "libm.so.6")->kind == DependencyKind::HostInterface);
+    CHECK(find(r, "libextra.so.1")->kind == DependencyKind::Bundle);
+
+    // The executable's 2.34 wins over the bundled 2.28; the host's 2.38 is
+    // excluded entirely.
+    CHECK(r.max_glibc_version() == "2.34");
+
+    // The raw graph accessor still reports everything it saw, host libs
+    // included — it is the diagnostic view, not the requirement.
+    const std::vector<std::string> all = r.all_version_needs();
+    CHECK(std::find(all.begin(), all.end(), "GLIBC_2.38") != all.end());
+
+    fs::remove_all(work);
+}
+
 } // TEST_SUITE("depengine")

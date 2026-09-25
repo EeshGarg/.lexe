@@ -1,0 +1,35 @@
+# Issue routing. Blank issues are disabled so that a report arrives with the
+# context this project needs to act on it — and, above all, so that a security
+# finding goes to the private channel rather than the public tracker.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/EeshGarg/.lexe/security/advisories/new
+    about: >-
+      A bypass of verification, trust, permission consent or isolation goes here,
+      privately, not in a public issue. See SECURITY.md for what is in scope.
+
+  - name: Troubleshooting — check here first
+    url: https://github.com/EeshGarg/.lexe/blob/main/docs/TROUBLESHOOTING.md
+    about: >-
+      Refusal to launch without a sandbox, a changed-key install refusal, a
+      symbol-ceiling verdict, and the other common stops, each with its fix.
+
+  - name: What this Alpha claims, and what it does not
+    url: https://github.com/EeshGarg/.lexe/blob/main/docs/ALPHA.md
+    about: >-
+      The support contract and the known limitations. Several apparent bugs are
+      documented non-goals of 0.1.0-alpha.
+
+  - name: Questions about the format, trust model or portability contract
+    url: https://github.com/EeshGarg/.lexe/blob/main/docs/README.md
+    about: >-
+      The documentation index — FAQ, tutorial, architecture, FORMAT-0.1, the
+      trust and threat models, and the Tux32 Core 1 contract.
+
+  - name: Building, testing and contributing
+    url: https://github.com/EeshGarg/.lexe/blob/main/CONTRIBUTING.md
+    about: >-
+      Per-distribution build prerequisites, how to run the suite, the project's
+      conventions, and the licensing terms a contribution is submitted under.

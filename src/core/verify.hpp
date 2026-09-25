@@ -22,6 +22,13 @@ struct VerificationStage {
     std::string name;
     bool ok = false;
     std::string detail; // human-readable success/failure explanation
+    /// The actionable next step for THIS failure, when the code that detected
+    /// it knew one; empty otherwise. It lives on the stage so every surface
+    /// reads the same remedy: without it each one invents its own, and both
+    /// the CLI and the Installer independently told anyone whose package
+    /// failed to re-download it — wrong for a mistyped path or a project
+    /// folder, neither of which is a bad download.
+    std::string hint;
 };
 
 /// Ordered stage results. Stages after the first failure are not run and are

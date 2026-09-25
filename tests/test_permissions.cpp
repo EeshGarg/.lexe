@@ -182,9 +182,18 @@ TEST_CASE("an update that EXPANDS permissions is refused without consent (WS5)")
     // and the previous version stays active.
     const fs::path v2 =
         pack_with_perms(work, key, id, {"network", "user-files-selected"}, "2.0.0");
+    // The message must NAME the permission being added — that is what the user
+    // has to weigh — and the actionable fix rides along as the error's hint.
     CHECK_THROWS_WITH_AS(Installer(paths).install(v2, InstallOptions{}),
-                         doctest::Contains("new permissions"),
+                         doctest::Contains("user-files-selected"),
                          lexe::PermissionError);
+    try {
+        Installer(paths).install(v2, InstallOptions{});
+        FAIL("expanding permissions must not install without consent");
+    } catch (const lexe::PermissionError& e) {
+        CHECK(std::string(e.hint()).find("--accept-permissions") !=
+              std::string::npos);
+    }
     CHECK(exit_code_for(lexe::PermissionError("x")) == 5);
     CHECK(Registry(paths).current_version(id) == "1.0.0");
     CHECK(Registry(paths).read_record(id).approved_permissions ==

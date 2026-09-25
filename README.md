@@ -9,6 +9,12 @@
   <img alt="Status" src="https://img.shields.io/badge/status-Developer%20Alpha-b4622a" />
 </p>
 
+<p align="center">
+  <img src="docs/images/installer-light.png" alt="The .lexe Installer showing an application's publisher, signing-key fingerprint, requested permissions and the isolation applied, before anything is written" width="420" />
+</p>
+
+<p align="center"><em>What a user sees before anything is installed: who signed it, what it may do, and what the sandbox will enforce.</em></p>
+
 ---
 
 ## What is `.lexe`?
@@ -122,20 +128,66 @@ lexe apps                          # what's installed: version, disk, trust
 lexe config                        # view or change preferences
 ```
 
-`lexe help` groups the full command surface; run any command with no arguments
-for its usage. See the full **[tutorial](docs/TUTORIAL.md)**.
+`lexe help` groups the full command surface, `lexe <command> --help` explains one,
+and bash/zsh completion comes from `lexe completion`. See the full
+**[tutorial](docs/TUTORIAL.md)**.
+
+**What verification actually prints** — every stage, named, with what it checked:
+
+```console
+$ lexe verify hello.lexe
+Verifying hello.lexe
+  [ ok ] structure          archive OK: 5 entries, §2 path rules hold, required entries present
+  [ ok ] manifest           lexe.json is a valid 0.1 manifest: org.lexe.examples.cli-tool 1.0.0
+  [ ok ] key                publisher.publicKey decodes to a 32-byte Ed25519 key (Lexe Examples)
+  [ ok ] manifest-signature signatures/manifest.sig verifies over the stored lexe.json bytes (476 bytes)
+  [ ok ] payload-signature  signatures/payload.sig verifies over the stored metadata/hashes.json bytes (140 bytes)
+  [ ok ] hashes             all 1 covered entries present, coverage is exact (both directions), every SHA-256 digest matches
+verification: OK (signature valid, Ed25519)
+signing key fingerprint: 4F46 E2C5 0A81 5180 983E EBEA 4CC7 BCF9 F52E 926F A6D9 A74A 6BBD 4C39 F75E 7350
+note: this proves package integrity + signature, NOT the publisher's real-world identity.
+```
+
+That last line is the house style: the runtime states what a signature proves and
+declines to imply more.
 
 ## Screenshots
 
-> _Placeholders — captures are pending; the flows below are described in the
-> [tutorial](docs/TUTORIAL.md) and exercised headlessly in CI._
+Real windows, captured headlessly from the build in this repository — the same
+[GUI smoke test](scripts/gui-smoke.sh) that takes them fails the build on any GTK
+warning.
 
-| Screen | Shows |
-|---|---|
-| **Builder** _(screenshot pending)_ | The seven-step wizard: Source → Dependencies → Architecture → Installer → Signing → Output → Build. |
-| **Installer** _(screenshot pending)_ | The primary screen: authenticity, publisher, permissions, isolation, and "after install" — before anything is written. |
-| **Package inspection** _(screenshot pending)_ | `lexe inspect` / the installer's read-only view: identity, verification, dependencies, checksum. |
-| **Application manager** _(screenshot pending)_ | `lexe apps`: installed apps with version, disk usage, last run, and local trust. |
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/images/installer-light.png" alt="Installer, light theme" />
+<p><strong>The Installer.</strong> Authenticity and local trust, the signing-key
+fingerprint in full, each permission with its <em>truthful</em> enforcement state
+on this platform, install scope and size, and what the sandbox does — all before
+the Install button does anything.</p>
+</td>
+<td width="50%" valign="top">
+<img src="docs/images/installer-dark.png" alt="Installer, dark theme" />
+<p><strong>Light and dark.</strong> The theme follows your desktop by default and
+is switchable in place; the preference is the same one <code>lexe config set
+theme</code> writes, not a second store.</p>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/images/builder-wizard.png" alt="Builder wizard, Source step" />
+<p><strong>The Builder.</strong> A seven-step wizard from a folder of compiled
+files to a signed package. Drag a folder onto the window, or choose one; the
+executable, architecture, icons and full dependency graph are detected for you.</p>
+</td>
+<td width="50%" valign="top">
+<img src="docs/images/installer-drop.png" alt="Installer drop zone" />
+<p><strong>Drag and drop.</strong> Opened with no argument, the Installer waits
+for a package. However one arrives, it goes through the same verification — a
+drop is not a shortcut past any check.</p>
+</td>
+</tr>
+</table>
 
 ## Platform capabilities
 
@@ -146,8 +198,8 @@ Only implemented, tested capabilities are listed.
 | **Runtime** | Verify → install → launch → update → roll back → remove, all in userspace; transactional installs with crash recovery; atomic version activation; typed, race-safe concurrency (locks, launch leases, TOCTOU closure). |
 | **Security** | Ed25519 verification over exact bytes before any byte is trusted; a strict, hardened parser (zip-slip, decompression, malformed-input defenses); a frozen permission vocabulary with a separate consent gate; a typed local trust-on-first-use model (key continuity, changed-key refusal, block/unblock). |
 | **Portability** | The frozen **Tux32 Core 1** baseline; `lexe sdk verify` (typed verdict + exit codes) reusing the one dependency engine; a Builder that hard-gates Core Portable on it; a minimal build-in-sysroot SDK; an end-to-end cross-distribution proof in CI. |
-| **Developer experience** | `lexe analyze`, `lexe build`, `lexe inspect`; the Builder wizard with automatic source detection and a dependency / profile / compatibility build report; grouped help, shell completion, JSON everywhere. |
-| **Consumer experience** | A double-click installer that explains itself; `lexe apps`, `lexe config`; errors that say what happened, why, and how to fix it. |
+| **Developer experience** | `lexe analyze`, `lexe build`, `lexe inspect`; the Builder wizard with automatic source detection (off the UI thread) and a dependency / profile / compatibility build report; drag a folder onto the window; a native folder picker; grouped help, bash + zsh completion, JSON everywhere. |
+| **Consumer experience** | A double-click installer that explains itself, or drag a package onto it; light/dark that follows your desktop and is switchable in place; `lexe apps`, `lexe config`; errors that say what happened, why, and how to fix it. |
 | **Lifecycle** | Per-app data / cache / temp; three uninstall modes; lease-aware GC; updates that require fresh consent to expand permissions; rollback. |
 | **Isolation** *(Linux)* | Every app runs in a bubblewrap sandbox: read-only image, private data/cache/temp, sanitized environment, network denied unless the `network` permission is granted. The launcher **fails closed**. |
 | **Builder & install** | GTK Builder + CLI; per-user install, `.desktop` entries, hicolor icons, and MIME registration so a double-click opens the Installer. |
@@ -245,6 +297,7 @@ Full index with reading order: **[docs/README.md](docs/README.md)**.
 
 | Document | What it covers |
 |---|---|
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability privately, what is in scope, and the documented non-guarantees. |
 | [docs/HARDENING.md](docs/HARDENING.md) | The hardening gates (A–H) and the proven-invariants table. |
 | [docs/ISOLATION.md](docs/ISOLATION.md) | The Linux bubblewrap runtime-isolation design. |
 | [docs/CONCURRENCY.md](docs/CONCURRENCY.md) | OS-backed locking, launch leases, and the TOCTOU closure. |
@@ -304,8 +357,8 @@ More in [docs/FAQ.md](docs/FAQ.md).
 
 ## Project status
 
-**Milestone:** Developer Alpha. The full suite is green on both platforms — **434
-tests on Linux, 418 on Windows (~6,100 assertions)** — plus a headless GUI smoke
+**Milestone:** Developer Alpha. The full suite is green on both platforms — **495
+tests on Linux, 475 on Windows (~6,700 assertions)** — plus a headless GUI smoke
 test and a cross-distribution portability proof, exercised in CI on every push.
 See the **[Alpha support contract](docs/ALPHA.md)** for exactly what is and is not
 claimed.
@@ -351,6 +404,12 @@ contributors should start there, then read
 ```sh
 ./scripts/build.sh          # configure + build + run the full test suite
 ```
+
+Bug reports, feature requests and portability reports each have an
+[issue template](.github/ISSUE_TEMPLATE). **Security findings go privately**
+through the Security tab, not the public tracker — see
+**[SECURITY.md](SECURITY.md)** for the channel, what is in scope, and the
+documented non-guarantees that are *not* vulnerabilities.
 
 ## License
 

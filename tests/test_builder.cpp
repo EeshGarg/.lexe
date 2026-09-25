@@ -16,6 +16,8 @@
 #include "helpers.hpp"
 
 #include "core/manifest.hpp"
+#include "core/paths.hpp"
+#include "core/settings.hpp"
 #include "core/util.hpp"
 
 #include <algorithm>
@@ -395,6 +397,235 @@ TEST_CASE("the build progress shows meaningful stages, not logs") {
     CHECK(stages.front() == "Analyzing");
     CHECK(stages[3] == "Signing");
     CHECK(stages.back() == "Finalizing");
+}
+
+TEST_CASE("an entrypoint that cannot start anything is rejected") {
+    // Pointing the Builder at a folder with no executable used to pre-select
+    // the first candidate alphabetically and build it: a signed package whose
+    // entrypoint was a text file, reported as "Build succeeded" and
+    // "Verification: PASSED" — because a package verifies against its own
+    // hashes whether or not its entrypoint can run. The break only showed up
+    // when a user installed it and pressed Launch.
+    lexe::test::TempLexeHome home;
+    const fs::path folder = home.path() / "src";
+    fs::create_directories(folder);
+
+    lexe::util::spit(folder / "data.txt", std::string_view("just some data\n"));
+    CHECK_FALSE(lexe::gui::entrypoint_looks_runnable(folder, "data.txt"));
+
+    // A shebang script counts, even without an execute bit (copies and
+    // FAT/NTFS mounts routinely lose it).
+    lexe::util::spit(folder / "run.sh", std::string_view("#!/bin/sh\nexec true\n"));
+    CHECK(lexe::gui::entrypoint_looks_runnable(folder, "run.sh"));
+
+    // So does an ELF binary.
+    lexe::test::ElfSpec app;
+    app.needed = {"libc.so.6"};
+    lexe::test::write_elf(folder / "bin", app);
+    CHECK(lexe::gui::entrypoint_looks_runnable(folder, "bin"));
+
+    // Nothing selected, or something that is not there at all.
+    CHECK_FALSE(lexe::gui::entrypoint_looks_runnable(folder, ""));
+    CHECK_FALSE(lexe::gui::entrypoint_looks_runnable(folder, "absent"));
+}
+
+TEST_CASE("'generate a new key' never destroys the key already at that path") {
+    // The Builder used to generate + write unconditionally. Its default key
+    // path is ~/<app-id>.key.json, so the SECOND build of the same application
+    // overwrote the first build's key — and with no authenticated key rotation
+    // in 0.1, that permanently ends the ability to ship an update for that App
+    // ID: the installed copy refuses the next package as "signed by a different
+    // key". `lexe build` already reuses a project's existing key.json.
+    lexe::test::TempLexeHome home;
+    const fs::path dir = home.path() / "keys";
+    fs::create_directories(dir);
+
+    // Nothing there yet: a new key is correct.
+    CHECK_FALSE(lexe::gui::should_reuse_existing_key(dir / "absent.key.json"));
+
+    // A key IS there: it must be reused, never rewritten.
+    const fs::path existing = dir / "com.example.app.key.json";
+    const lexe::crypto::KeyPair original = lexe::crypto::generate_keypair();
+    lexe::crypto::write_keyfile(existing, original);
+    const std::string before = lexe::util::slurp_text(existing);
+    CHECK(lexe::gui::should_reuse_existing_key(existing));
+
+    // And reusing really does yield the same identity, byte-for-byte on disk.
+    const lexe::crypto::KeyPair reused = lexe::crypto::read_keyfile(existing);
+    CHECK(reused.public_key == original.public_key);
+    CHECK(lexe::util::slurp_text(existing) == before);
+
+    // A directory is not a key file, and an empty path is not one either.
+    CHECK_FALSE(lexe::gui::should_reuse_existing_key(dir));
+    CHECK_FALSE(lexe::gui::should_reuse_existing_key(fs::path{}));
+}
+
+// --------------------------------------------------------------- theme (DX5)
+
+TEST_CASE("the theme toggle offers exactly the values settings accept") {
+    // The GUI toggle and `lexe config set theme` are ONE setting. If the toggle
+    // ever offered a fourth choice, or spelled one of these differently, the
+    // window would restyle itself and then fail to save — or worse, save a value
+    // the CLI refuses to read back.
+    const std::vector<std::string> expected = {"system", "light", "dark"};
+    CHECK(lexe::gui::theme_choices() == expected);
+
+    lexe::Settings settings;
+    for (const std::string& choice : lexe::gui::theme_choices()) {
+        CHECK_NOTHROW(settings.set("theme", choice));
+        CHECK(settings.theme == choice);
+    }
+}
+
+TEST_CASE("theme choice index and value are inverses, and default to System") {
+    for (int i = 0; i < 3; ++i) {
+        CHECK(lexe::gui::theme_choice_index(lexe::gui::theme_choice_at(i)) == i);
+    }
+    CHECK(lexe::gui::theme_choice_at(0) == "system");
+    CHECK(lexe::gui::theme_choice_at(1) == "light");
+    CHECK(lexe::gui::theme_choice_at(2) == "dark");
+
+    // "Follow system", word for word with the Installer. The two GUIs drive ONE
+    // persisted setting, and naming it differently in each invites the reader
+    // to wonder whether they are two; "System" also reads as a third palette
+    // rather than as deferring to the desktop.
+    CHECK(lexe::gui::theme_label("system") == "Follow system");
+    CHECK(lexe::gui::theme_label("light") == "Light");
+    CHECK(lexe::gui::theme_label("dark") == "Dark");
+
+    // Out of range, and a value from a hand-edited or newer settings file, both
+    // land on System rather than leaving the toggle blank — the same fallback
+    // style::theme_from_string makes for the stylesheet.
+    CHECK(lexe::gui::theme_choice_at(-1) == "system");
+    CHECK(lexe::gui::theme_choice_at(99) == "system");
+    CHECK(lexe::gui::theme_choice_index("solarized") == 0);
+    CHECK(lexe::gui::theme_choice_index("") == 0);
+    CHECK(lexe::gui::theme_label("solarized") == "Follow system");
+}
+
+TEST_CASE("the theme the GUI saves is the one the CLI reads back") {
+    TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+
+    // No settings file yet: follow the desktop.
+    CHECK(lexe::gui::load_theme(paths) == "system");
+
+    CHECK(lexe::gui::persist_theme(paths, "dark").empty());
+    CHECK(lexe::gui::load_theme(paths) == "dark");
+    // Read through Settings itself — the same store `lexe config get theme`
+    // uses — not just through our own loader.
+    CHECK(lexe::Settings::load(paths).theme == "dark");
+
+    CHECK(lexe::gui::persist_theme(paths, "light").empty());
+    CHECK(lexe::Settings::load(paths).theme == "light");
+    CHECK(lexe::gui::persist_theme(paths, "system").empty());
+    CHECK(lexe::Settings::load(paths).theme == "system");
+}
+
+TEST_CASE("saving the theme does not roll back the other settings") {
+    // The GUI re-reads settings.json before writing rather than saving the
+    // snapshot it took at startup. Without that, a `lexe config set` made while
+    // the Builder window was open would be silently undone the next time the
+    // developer touched the theme toggle.
+    TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+
+    lexe::Settings other = lexe::Settings::load(paths);
+    other.set("developerMode", "true");
+    other.set("updateCheck", "never");
+    other.save(paths);
+
+    CHECK(lexe::gui::persist_theme(paths, "dark").empty());
+
+    const lexe::Settings after = lexe::Settings::load(paths);
+    CHECK(after.theme == "dark");
+    CHECK(after.developer_mode == true);
+    CHECK(after.update_check == "never");
+}
+
+TEST_CASE("an unsavable theme is reported, and a corrupt file still opens") {
+    TempLexeHome home;
+    const lexe::Paths paths = lexe::Paths::detect();
+
+    // A value settings would refuse comes back as a message, not an exception
+    // crossing the GTK callback boundary.
+    const std::string refused = lexe::gui::persist_theme(paths, "solarized");
+    CHECK_FALSE(refused.empty());
+    CHECK(contains(refused, "solarized"));
+
+    // A corrupt settings file must not stop the Builder from opening: the
+    // window falls back to following the desktop and every build still works.
+    fs::create_directories(paths.home());
+    lexe::util::spit(lexe::Settings::file(paths),
+                     std::string_view("{ this is not json"));
+    CHECK_THROWS(lexe::Settings::load(paths)); // the raw store does throw...
+    CHECK(lexe::gui::load_theme(paths) == "system"); // ...the GUI copes.
+    CHECK_FALSE(lexe::gui::persist_theme(paths, "dark").empty());
+}
+
+// -------------------------------------------------------- drag and drop (DX1)
+
+TEST_CASE("a dropped FOLDER becomes the source folder") {
+    TempLexeHome home;
+    const fs::path folder = home.path() / "my app";
+    fs::create_directories(folder);
+    lexe::util::spit(folder / "run.sh", std::string_view("#!/bin/sh\nexec true\n"));
+
+    const lexe::gui::DropDecision d = lexe::gui::decide_drop({folder});
+    CHECK(d.accepted);
+    CHECK(d.folder == folder.string());
+    CHECK(contains(d.message, folder.string()));
+}
+
+TEST_CASE("a dropped FILE is refused by name, pointing at the folder instead") {
+    // The mistake this exists for: dragging the executable itself, which is the
+    // thing on screen in the file manager, rather than the folder holding it.
+    // Silently taking its parent would package whatever else happens to live
+    // beside it, so it is refused and explained.
+    TempLexeHome home;
+    const fs::path folder = home.path() / "src";
+    fs::create_directories(folder);
+    const fs::path file = folder / "myapp";
+    lexe::util::spit(file, std::string_view("#!/bin/sh\nexec true\n"));
+
+    const lexe::gui::DropDecision d = lexe::gui::decide_drop({file});
+    CHECK_FALSE(d.accepted);
+    CHECK(d.folder.empty());
+    CHECK(contains(d.message, "myapp"));
+    CHECK(contains(d.message,
+                   "that is a file; drop the folder that holds your compiled "
+                   "application"));
+}
+
+TEST_CASE("an ambiguous or unusable drop is refused rather than guessed at") {
+    TempLexeHome home;
+    const fs::path a = home.path() / "a";
+    const fs::path b = home.path() / "b";
+    fs::create_directories(a);
+    fs::create_directories(b);
+
+    // Two folders at once: picking one silently would package something the
+    // developer never pointed at.
+    const lexe::gui::DropDecision many = lexe::gui::decide_drop({a, b});
+    CHECK_FALSE(many.accepted);
+    CHECK(contains(many.message, "Drop one folder"));
+
+    // Nothing local — every dropped URI was remote or virtual.
+    const lexe::gui::DropDecision none = lexe::gui::decide_drop({});
+    CHECK_FALSE(none.accepted);
+    CHECK(contains(none.message, "this machine"));
+
+    // A path that is neither a folder nor a regular file (a dangling entry).
+    const lexe::gui::DropDecision gone =
+        lexe::gui::decide_drop({home.path() / "not-there"});
+    CHECK_FALSE(gone.accepted);
+    CHECK(contains(gone.message, "not a folder"));
+
+    // No refusal ever leaves the caller a folder to act on.
+    for (const lexe::gui::DropDecision& d : {many, none, gone}) {
+        CHECK(d.folder.empty());
+        CHECK_FALSE(d.message.empty());
+    }
 }
 
 } // TEST_SUITE("builder")

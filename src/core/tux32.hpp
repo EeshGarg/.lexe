@@ -90,7 +90,7 @@ const char* to_string(Core1Verdict v);
 
 /// The exact object + version that pushed a requirement above the ceiling.
 struct Core1Offender {
-    std::string object;   // "<executable>" or a bundled soname
+    std::string object;   // the executable's filename, or a bundled soname
     std::string version;  // e.g. "GLIBC_2.34"
 };
 

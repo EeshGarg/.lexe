@@ -196,7 +196,12 @@ Core1VerifyResult verify_against_profile(const DependencyReport& deps,
                 {object, "GLIBC_" + std::to_string(mj) + "." + std::to_string(mn)});
         }
     };
-    consider("<executable>", deps.root_info.version_needs);
+    // The executable's own name, not a placeholder: "<executable> requires
+    // GLIBC_2.34" was shown verbatim to users in `lexe analyze`, `lexe sdk
+    // verify`, `lexe inspect` and the Builder's build report.
+    const std::string root_name = deps.root.filename().string();
+    consider(root_name.empty() ? std::string("the executable") : root_name,
+             deps.root_info.version_needs);
     for (const Dependency& d : deps.dependencies) {
         if (d.kind == DependencyKind::Bundle) {
             consider(d.soname, d.version_needs);

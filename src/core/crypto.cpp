@@ -358,7 +358,10 @@ void write_keyfile(const std::filesystem::path& file, const KeyPair& key) {
 KeyPair read_keyfile(const std::filesystem::path& file) {
     std::error_code ec;
     if (!std::filesystem::exists(file, ec) || ec) {
-        throw NotFoundError("read_keyfile: no such key file: " + file.string());
+        throw NotFoundError(
+            "no such key file: " + file.string(),
+            "Generate a signing keypair with `lexe keygen " + file.string() +
+                "`.");
     }
     const std::string text = util::slurp_text(file);
     // Strict parse (HARDENING.md §E): a key file carries signing-key material;

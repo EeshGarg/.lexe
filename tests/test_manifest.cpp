@@ -707,4 +707,44 @@ TEST_CASE("decoded_public_key decodes a valid key (via crypto module)") {
     }
 }
 
+TEST_CASE("runtimeProfile is optional, preserved, and round-trips") {
+    lexe::test::TempLexeHome home;
+    const json base = {
+        {"lexeVersion", "0.1"},
+        {"id", "org.example.app"},
+        {"name", "App"},
+        {"version", "1"},
+        {"publisher",
+         {{"name", "P"},
+          {"publicKey",
+           "ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}},
+        {"applicationType", "native"},
+        {"architectures", json::array({"x86_64"})},
+        {"entrypoint", {{"executable", "app"}}},
+        {"install", {{"mode", "bundled"}}},
+    };
+
+    // Absent: not declared, and NOT emitted — a manifest that never mentioned a
+    // profile must round-trip without growing a field.
+    const Manifest none = parse_json(base);
+    CHECK(none.runtime_profile.empty());
+    CHECK(none.to_json().find("runtimeProfile") == std::string::npos);
+
+    // Declared: preserved exactly, and survives a round-trip.
+    json with = base;
+    with["runtimeProfile"] = "native-capture";
+    const Manifest declared = parse_json(with);
+    CHECK(declared.runtime_profile == "native-capture");
+    CHECK(Manifest::parse(declared.to_json()).runtime_profile ==
+          "native-capture");
+
+    // An id THIS runtime does not know is kept, not rejected: a newer builder
+    // may name a profile that did not exist yet, and FORMAT-0.1 §5 promises
+    // unknown values are tolerated. Readers that cannot resolve it treat the
+    // package as not declaring one rather than guessing Core Portable.
+    json future = base;
+    future["runtimeProfile"] = "profile-from-the-future";
+    CHECK(parse_json(future).runtime_profile == "profile-from-the-future");
+}
+
 } // TEST_SUITE("manifest")

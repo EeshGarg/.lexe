@@ -149,8 +149,17 @@ AppPlan plan_app(const Paths& paths, const Manifest& manifest,
 /// Best-effort database refresh; the tools may be absent or fail — neither
 /// is an error (ARCHITECTURE.md: "failures of the refresh tools are not
 /// errors").
+///
+/// Skipped entirely for a confined layout. update-desktop-database and
+/// update-mime-database exist to maintain the caches a DESKTOP reads, and a
+/// confined tree is read by no desktop; pointing them at `<LEXE_HOME>/mime`
+/// only builds a cache nobody consults and makes update-mime-database print
+/// "Note that '<LEXE_HOME>' is not in the search path set by the
+/// XDG_DATA_HOME and XDG_DATA_DIRS environment variables" onto the same
+/// terminal where `lexe integrate` was announcing success.
 void refresh_databases(const Paths& paths, bool desktop_changed,
                        bool mime_changed) {
+    if (paths.desktop_scope() != DesktopScope::xdg) return;
     if (desktop_changed) {
         try {
             (void)util::run_process(
@@ -169,6 +178,29 @@ void refresh_databases(const Paths& paths, bool desktop_changed,
     }
 }
 #endif
+
+/// Separate "the files were written" from "a desktop will read them", and
+/// attach the caller's explanation when the two come apart.
+///
+/// The caller builds `confined_note` because only it knows what it wrote and
+/// what the user can actually do about it — the remedy for the runtime's own
+/// registration is not the remedy for an app's menu entry. The note has to be
+/// this concrete because the failure it describes is otherwise completely
+/// silent: every write succeeds, every path reported is real, and the only
+/// symptom is that double-clicking a `.lexe` does nothing.
+void describe_visibility(IntegrationResult& result, const Paths& paths,
+                         const std::string& confined_note) {
+    if (result.status != IntegrationStatus::applied) {
+        result.visible_to_desktop = false; // nothing written; status says so
+        return;
+    }
+    if (paths.desktop_scope() == DesktopScope::xdg) {
+        result.visible_to_desktop = true; // live: nothing to warn about
+        return;
+    }
+    result.visible_to_desktop = false;
+    result.note = confined_note;
+}
 
 } // namespace
 
@@ -232,23 +264,42 @@ std::string mime_xml_text(const Manifest& manifest) {
     return mime_info_document(types, manifest.name + " document");
 }
 
+/// The runtime's own desktop entry. Byte-identical to
+/// packaging/lexe-installer.desktop — asserted by tests/test_desktop.cpp —
+/// because `lexe integrate` and packaging/install.sh both write that file and
+/// used to write DIFFERENT contents, so which one you got depended on which ran
+/// last. No Icon= line: this repository ships no icon of any name, and the two
+/// copies named two different ones that do not exist.
 std::string runtime_desktop_entry_text() {
     return "[Desktop Entry]\n"
            "Type=Application\n"
            "Name=Lexe Installer\n"
            "Comment=Install Lexe application packages\n"
            "Exec=lexe-installer %f\n"
-           "Icon=lexe\n"
            "Terminal=false\n"
            "NoDisplay=true\n"
            "Categories=System;PackageManager;\n"
            "MimeType=application/x-lexe;\n";
 }
 
+/// The runtime's own MIME definition. Byte-identical to
+/// packaging/application-x-lexe.xml — asserted by tests/test_desktop.cpp —
+/// because `lexe integrate` and packaging/install.sh both write it and used to
+/// write DIFFERENT documents under different names, leaving whichever ran
+/// second to win and whichever ran first orphaned.
 std::string runtime_mime_xml_text() {
-    return mime_info_document(
-        {{"application/x-lexe", {"*.lexe"}}},
-        "Lexe application package");
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           "<mime-info xmlns=\"http://www.freedesktop.org/standards/"
+           "shared-mime-info\">\n"
+           "  <mime-type type=\"application/x-lexe\">\n"
+           "    <comment>Lexe application package</comment>\n"
+           "    <!-- A .lexe file is a signed ZIP archive; declaring the parent "
+           "type lets\n"
+           "         tools that understand ZIP fall back gracefully. -->\n"
+           "    <sub-class-of type=\"application/zip\"/>\n"
+           "    <glob pattern=\"*.lexe\"/>\n"
+           "  </mime-type>\n"
+           "</mime-info>\n";
 }
 
 IntegrationResult integrate_app(const Paths& paths, const Manifest& manifest,
@@ -275,6 +326,19 @@ IntegrationResult integrate_app(const Paths& paths, const Manifest& manifest,
                       plan.mime_file.has_value());
     result.status = IntegrationStatus::applied;
 #endif
+    describe_visibility(
+        result, paths,
+        "LEXE_HOME is set, so this app's desktop integration went under " +
+            paths.home().string() +
+            " — which no desktop environment reads. The app is installed and "
+            "`lexe run " +
+            manifest.id +
+            "` works; it just will not appear in the application menu and its "
+            "files will not open with it.\nAn app kept outside the default "
+            "location can only get a working menu entry if LEXE_HOME is "
+            "exported for the whole desktop session, because the entry's "
+            "Exec=`lexe run " +
+            manifest.id + "` has to resolve the same home.");
     return result;
 }
 
@@ -296,7 +360,12 @@ void remove_integration(const Paths& paths,
 IntegrationResult integrate_runtime(const Paths& paths) {
     const fs::path desktop_file =
         paths.applications_dir() / "lexe-installer.desktop";
-    const fs::path mime_file = paths.mime_dir() / "packages" / "lexe.xml";
+    // application-x-lexe.xml, NOT lexe.xml: packaging/install.sh installs that
+    // name and packaging/uninstall.sh removes it. Writing a different name left
+    // the file behind on uninstall while the script reported the MIME type
+    // removed.
+    const fs::path mime_file =
+        paths.mime_dir() / "packages" / "application-x-lexe.xml";
 
     IntegrationResult result;
     result.created_files = {desktop_file.string(), mime_file.string()};
@@ -308,6 +377,17 @@ IntegrationResult integrate_runtime(const Paths& paths) {
     refresh_databases(paths, true, true);
     result.status = IntegrationStatus::applied;
 #endif
+    describe_visibility(
+        result, paths,
+        "LEXE_HOME is set, so the installer entry and the application/x-lexe "
+        "definition went to " +
+            paths.applications_dir().string() + " and " +
+            paths.mime_dir().string() +
+            " — which no desktop environment reads. Double-clicking a .lexe "
+            "file will NOT open lexe-installer: this registered nothing.\n"
+            "Neither file contains a LEXE_HOME-dependent path, so re-running "
+            "with LEXE_HOME unset (or running packaging/install.sh) writes the "
+            "same two files where the desktop will find them.");
     return result;
 }
 

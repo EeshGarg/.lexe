@@ -214,7 +214,19 @@ MUST be recorded as success even when no window appears.
 
 `entrypoint.arguments` (`[]`), `install.scope` (`"user"`),
 `install.estimatedSize`, `permissions` (`[]`, informational in 0.1), `updates`
-(disabled when absent, see §7), `integration` (§9), `publisher.website`.
+(disabled when absent, see §7), `integration` (§9), `publisher.website`,
+`runtimeProfile`.
+
+`runtimeProfile` names the [runtime profile](RUNTIME_PROFILES.md) the builder
+targeted and gated the build on — `"core-portable"`, `"forward-runtime"` or
+`"native-capture"`. It is **declarative, not a promise about the payload**: a
+reader MUST still verify conformance itself rather than trusting the string.
+
+A reader that cannot resolve the value — including one naming a profile it does
+not know — MUST treat the package as declaring no profile, and MUST NOT
+substitute a default. Reading an absent or unknown declaration as
+`"core-portable"` makes a package deliberately built as `"native-capture"` —
+host-locked by definition — report as a portability failure.
 
 ## 6. Verification Pipeline (normative order)
 
@@ -331,7 +343,7 @@ Base directory (`LEXE_HOME` environment variable overrides; used by tests):
 │                                 UTC timestamp, files created outside the app dir
 │                                 (desktop entries, icons, MIME xml), channel
 ├── txn.json / .txn-staging/      transaction journal + staging (see HARDENING §A)
-└── icons are copied to the XDG hicolor theme; the .desktop entry Exec line is
+└── icons are copied to the hicolor theme; the .desktop entry Exec line is
     `lexe run <id>` (never a version-specific path)
 
 <LEXE_HOME>/data/<id>/            PERSISTENT application data (see below)
@@ -344,6 +356,32 @@ Base directory (`LEXE_HOME` environment variable overrides; used by tests):
 ├── <id>.v.<version>.lease        per-version launch lease (shared while running)
 └── global.recovery.lock          global recovery coordination
 ```
+
+### Desktop integration is written to one of two places
+
+Desktop entries, icons and MIME definitions are the only things the runtime
+writes *outside* its own tree, and where they go depends on whether `LEXE_HOME`
+is set:
+
+| Scope | When | Written to | Seen by the desktop? |
+|---|---|---|---|
+| `xdg` | `LEXE_HOME` unset | `$XDG_DATA_HOME/{applications,icons,mime}` (default `~/.local/share`) | **yes** |
+| `confined` | `LEXE_HOME` set | `<LEXE_HOME>/{applications,icons,mime}` | **no** |
+
+A confined layout keeps the runtime from touching the real user profile — which
+is what makes the test suite and the demos safe to run — but nothing scans those
+directories, so the files are inert. Integration therefore reports **whether the
+files are live, not merely that they were written**: `IntegrationResult` carries
+`visible_to_desktop` and, when they are inert, a `note` naming the directory,
+the consequence and the remedy. `lexe integrate` says "Registered the Lexe
+runtime as the .lexe handler" only in the `xdg` case; otherwise it says it wrote
+the files and explains why double-clicking a `.lexe` will not open them.
+
+The database refresh (`update-desktop-database`, `update-mime-database`) is
+skipped entirely for a confined tree: those caches exist for a desktop to read,
+and running the tools against `<LEXE_HOME>/mime` only builds a cache nobody
+consults while printing "…is not in the search path set by the XDG_DATA_HOME and
+XDG_DATA_DIRS environment variables" over the command's own output.
 
 **Storage taxonomy (paths are constructed and validated in ONE place — the
 registry — never assembled ad hoc by callers).**

@@ -139,21 +139,33 @@ std::vector<std::string> DependencyReport::all_version_needs() const {
 
 std::string DependencyReport::max_glibc_version() const {
     int best_major = -1, best_minor = -1;
-    for (const std::string& v : all_version_needs()) {
-        if (v.rfind("GLIBC_", 0) != 0) continue;
-        const std::string num = v.substr(6);
-        const std::size_t dot = num.find('.');
-        if (dot == std::string::npos) continue;
-        try {
-            const int major = std::stoi(num.substr(0, dot));
-            const int minor = std::stoi(num.substr(dot + 1));
-            if (major > best_major ||
-                (major == best_major && minor > best_minor)) {
-                best_major = major;
-                best_minor = minor;
+    const auto consider = [&](const std::vector<std::string>& needs) {
+        for (const std::string& v : needs) {
+            if (v.rfind("GLIBC_", 0) != 0) continue;
+            const std::string num = v.substr(6);
+            const std::size_t dot = num.find('.');
+            if (dot == std::string::npos) continue;
+            try {
+                const int major = std::stoi(num.substr(0, dot));
+                const int minor = std::stoi(num.substr(dot + 1));
+                if (major > best_major ||
+                    (major == best_major && minor > best_minor)) {
+                    best_major = major;
+                    best_minor = minor;
+                }
+            } catch (const std::exception&) {
             }
-        } catch (const std::exception&) {
         }
+    };
+    // The package = the executable + everything it ships. Host-interface
+    // libraries are deliberately excluded: the target host supplies its own
+    // matching libc/libm, and the BUILD host's copies carry their own internal
+    // GLIBC_x.y needs that have nothing to do with this application. Including
+    // them made the same package report a different requirement on every
+    // distribution it was analyzed on.
+    consider(root_info.version_needs);
+    for (const Dependency& d : dependencies) {
+        if (d.kind == DependencyKind::Bundle) consider(d.version_needs);
     }
     if (best_major < 0) return "";
     return std::to_string(best_major) + "." + std::to_string(best_minor);

@@ -744,4 +744,29 @@ TEST_CASE("tamper_entry flips bytes of exactly one entry in place") {
                     lexe::Error);
 }
 
+TEST_CASE("a directory handed to the reader is a typed error, not a crash") {
+    // Pointing a package command at the project folder is the single easiest
+    // mistake to make, and it used to end in "lexe: std::bad_alloc" (exit 1).
+    // It must be a VerificationError (exit 3) that names the right command.
+    TempLexeHome home;
+    const fs::path project = home.path() / "project";
+    fs::create_directories(project);
+    try {
+        const lexe::PackageReader reader(project);
+        FAIL("a directory must not open as a package");
+    } catch (const lexe::VerificationError& e) {
+        const std::string what = e.what();
+        CHECK(what.find("directory") != std::string::npos);
+        // The actionable next step rides on the error as a hint, so the CLI
+        // shows it instead of the generic "re-download the package" advice.
+        CHECK(e.hint().find("lexe build") != std::string::npos);
+    }
+}
+
+TEST_CASE("a missing package file is still reported as not found") {
+    TempLexeHome home;
+    CHECK_THROWS_AS(lexe::PackageReader(home.path() / "absent.lexe"),
+                    lexe::NotFoundError);
+}
+
 } // TEST_SUITE("package")
