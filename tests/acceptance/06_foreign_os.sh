@@ -80,16 +80,31 @@ acc_contains "$info_out" "run through a compatibility layer" \
     "lexe info never calls it just a Windows application"
 
 # The three ways a Windows package can be wrong, all refused before install.
+#
+# The refusal is read from `lexe build`'s OWN output rather than by verifying the
+# artefact afterwards. Two reasons, and the second is the stronger one:
+#
+#   * `lexe build` no longer leaves a package that failed its own verification on
+#     disk, so there is nothing to verify afterwards — it exits 3 and removes it,
+#     because a plausible-looking .lexe in an output directory is the next thing
+#     somebody sends to someone else;
+#   * and `lexe build` now names the failing stage and its reason itself, so
+#     asking IT is a test of the tool the developer actually ran. Needing a second
+#     command to find out what the first one already knew was the defect.
 bad_project="$work/bad"
 mkdir -p "$bad_project/payload/bin"
 cp "$project/lexe.json" "$bad_project/lexe.json"
 
 # (a) a Linux binary wearing a .exe name
 cp "$LEXE" "$bad_project/payload/$WIN_ENTRY"
-"$LEXE" build "$bad_project" -o "$work/elf.lexe" --key "$key" >/dev/null 2>&1
-elf_out="$("$LEXE" verify "$work/elf.lexe" 2>&1)"
+elf_out="$("$LEXE" build "$bad_project" -o "$work/elf.lexe" --key "$key" 2>&1)"
+elf_status=$?
+acc_true "$([[ $elf_status -ne 0 ]] && echo 0 || echo 1)" \
+    "a Linux binary named .exe is refused (exit $elf_status)"
 acc_contains "$elf_out" "not a Windows PE image" \
-    "a Linux binary named .exe is refused"
+    "and the build says why, without needing a second command"
+acc_file_absent "$work/elf.lexe" \
+    "and the package that failed its own verification was not left behind"
 
 # (b) a DLL, which nothing can launch. Wine ships real ones; the path differs
 # between distributions, so look rather than assume.
@@ -97,9 +112,12 @@ real_dll="$(find /usr/lib /usr/lib64 -name '*.dll' -path '*x86_64-windows*' \
     2>/dev/null | head -1)"
 if [[ -n "$real_dll" ]]; then
     cp "$real_dll" "$bad_project/payload/$WIN_ENTRY"
-    "$LEXE" build "$bad_project" -o "$work/dll.lexe" --key "$key" >/dev/null 2>&1
-    dll_out="$("$LEXE" verify "$work/dll.lexe" 2>&1)"
-    acc_contains "$dll_out" "DLL" "a real Windows DLL is refused as an entrypoint"
+    dll_out="$("$LEXE" build "$bad_project" -o "$work/dll.lexe" --key "$key" 2>&1)"
+    dll_status=$?
+    acc_true "$([[ $dll_status -ne 0 ]] && echo 0 || echo 1)" \
+        "a real Windows DLL is refused as an entrypoint (exit $dll_status)"
+    acc_contains "$dll_out" "DLL" "and the build names it as a DLL"
+    acc_file_absent "$work/dll.lexe" "and left no package behind"
 else
     skip "no Windows DLL on this host to test the DLL refusal against"
 fi
