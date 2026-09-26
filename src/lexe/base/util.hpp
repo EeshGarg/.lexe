@@ -46,6 +46,21 @@ void copy_recursive(const std::filesystem::path& from, const std::filesystem::pa
 /// Recursively delete; missing paths are not an error.
 void remove_recursive(const std::filesystem::path& p);
 
+// --- text ---
+/// Whether `text` is well-formed UTF-8 (RFC 3629).
+///
+/// Strict on purpose, and each rejection is a real attack shape rather than
+/// pedantry: an OVERLONG encoding lets the same character be written more than
+/// one way, so a name that compares unequal to `..` can decode to it; a
+/// SURROGATE half (U+D800-DFFF) is not a character and round-trips differently
+/// through every UTF-16 platform; and a value above U+10FFFF is not Unicode at
+/// all. A validator that accepted any of the three would let two distinct byte
+/// strings mean one filename.
+///
+/// Used for text that becomes a filesystem path, where "we assumed it was UTF-8"
+/// is not a safe assumption to leave unchecked.
+bool is_valid_utf8(std::string_view text);
+
 // --- this program ---
 /// The absolute path of the currently running executable.
 ///

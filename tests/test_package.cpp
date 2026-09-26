@@ -548,6 +548,147 @@ TEST_CASE("reader rejects missing and non-zip files") {
 // FORMAT-0.1 §2 rejection rules
 // ===================================================================
 
+TEST_CASE("an entry name that is not valid UTF-8 is refused") {
+    // REGRESSION. §1 says entry paths are UTF-8, but it said so as a WRITER
+    // obligation and no reader checked it -- a name carrying a lone 0xFF byte
+    // passed the structure stage, having already been through every §2 rule,
+    // and would have reached the filesystem. `utf8_segment_to_path` builds a
+    // std::u8string from exactly these bytes on Windows while its own comment
+    // promises "validated UTF-8": an assumption documented and not enforced.
+    //
+    // The rejections below are not pedantry. Each is a way for two different
+    // byte strings to mean one filename:
+    //
+    //   overlong   a second, longer spelling of a character -- which is how a
+    //              segment that does not compare equal to ".." or to "/" can
+    //              still decode to it, and every §2 check compares BYTES
+    //   surrogate  not a character; round-trips differently on UTF-16 platforms
+    //   truncated  a lead byte announcing continuation bytes that never arrive
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path good = lexe::test::make_test_package(home.path(), key);
+    const std::vector<RawEntry> base = read_raw_entries(good);
+    const fs::path bad = home.path() / "bad.lexe";
+
+    // Each patched name is EXACTLY as long as its placeholder, because
+    // patch_bytes is a same-length byte substitution -- the technique the NUL
+    // case below uses, and necessary because miniz's writer will not emit these
+    // names directly. The lengths are asserted rather than assumed: a mismatch
+    // would silently skip the case and leave a green test proving nothing.
+    struct Case {
+        std::string placeholder;
+        std::string patched;
+        const char* what;
+    };
+    const std::vector<Case> cases = {
+        // "payload/u8" (10) + 2 bytes + ".txt" (4) = 16
+        {"payload/u8AA.txt", std::string("payload/u8\xFF\xFE.txt", 16),
+         "a lone 0xFF 0xFE pair, valid in no encoding"},
+        {"payload/u8BB.txt", std::string("payload/u8\xC0\xAF.txt", 16),
+         "an overlong two-byte encoding of '/'"},
+        {"payload/u8CC.txt", std::string("payload/u8\xE0\xA0.txt", 16),
+         "a truncated three-byte sequence"},
+        // "payload/u8" (10) + 3 bytes + ".txt" (4) = 17
+        {"payload/u8DDD.txt", std::string("payload/u8\xED\xA0\x80.txt", 17),
+         "a UTF-16 surrogate half (U+D800)"},
+        {"payload/u8EEE.txt", std::string("payload/u8\xC0\x80\x41.txt", 17),
+         "an overlong encoding of NUL"},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(c.what);
+        REQUIRE(c.placeholder.size() == c.patched.size());
+        std::vector<RawEntry> entries = base;
+        entries.push_back({c.placeholder, text_bytes("x")});
+        write_raw_zip(bad, entries);
+        // The placeholder itself must be ACCEPTED, or the case would be
+        // rejected for some reason other than the bytes under test.
+        CHECK_NOTHROW((lexe::PackageReader{bad}));
+        patch_bytes(bad, c.placeholder, c.patched);
+        CHECK_THROWS_AS((lexe::PackageReader{bad}), lexe::VerificationError);
+    }
+
+    // And ordinary non-ASCII UTF-8 must still be ACCEPTED: the rule is
+    // well-formedness, not ASCII-only. A rule that rejected every accented
+    // filename would be a worse bug than the one it replaced.
+    SUBCASE("well-formed non-ASCII names stay valid") {
+        std::vector<RawEntry> entries = base;
+        entries.push_back({"payload/caf\xC3\xA9.txt", text_bytes("x")});       // é
+        entries.push_back({"payload/\xE6\x97\xA5\xE6\x9C\xAC.txt", text_bytes("x")}); // 日本
+        entries.push_back({"payload/\xF0\x9F\x93\xA6.txt", text_bytes("x")});  // U+1F4E6
+        write_raw_zip(bad, entries);
+        CHECK_NOTHROW((lexe::PackageReader{bad}));
+    }
+}
+
+TEST_CASE("nothing may ride along under signatures/") {
+    // REGRESSION for the most serious defect of this wave: a package that
+    // verified OK while carrying content nobody signed.
+    //
+    // §3 excludes the whole `signatures/` PREFIX from hash coverage -- correctly,
+    // because a hash document cannot cover a signature taken over itself -- and
+    // §2's top-level allowlist permits the prefix in general. The two rules met
+    // in the middle, and an extra entry under `signatures/` was covered by no
+    // hash, covered by no signature, and rejected by nothing. The signature
+    // covered everything in the package except one directory an attacker could
+    // write into.
+    //
+    // Demonstrated before the fix against a real signed package:
+    // `signatures/smuggled.bin` (3328 bytes) and `signatures/deep/nested/evil.so`
+    // added by hand, and `lexe verify` answered
+    //
+    //     verification: OK (signature valid, Ed25519)
+    //
+    // with all seven stages green. Note what is NOT wrong with such a package:
+    // its hashes are correct and its signatures are valid. That is what made
+    // this dangerous rather than merely untidy -- there was no integrity failure
+    // to notice, because the smuggled bytes were outside everything integrity
+    // was computed over.
+    TempLexeHome home;
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path good = lexe::test::make_test_package(home.path(), key);
+    const std::vector<RawEntry> base = read_raw_entries(good);
+    const fs::path bad = home.path() / "smuggled.lexe";
+
+    // Control: the two legitimate signature entries are already in `base`, so
+    // rebuilding it unmodified must still be accepted. Without this, a rule that
+    // rejected ALL of signatures/ would pass every case below and break every
+    // real package.
+    write_raw_zip(bad, base);
+    CHECK_NOTHROW((lexe::PackageReader{bad}));
+
+    const std::vector<std::string> smuggled = {
+        "signatures/smuggled.bin",        // the demonstrated case
+        "signatures/deep/nested/evil.so", // nested, in case only the top level
+                                          // were checked
+        "signatures/manifest.sig.bak",    // a name that merely looks plausible
+        "signatures/extra.sig",           // ditto, with the right extension
+        "signatures/README",              // innocuous-looking, equally uncovered
+    };
+    for (const std::string& name : smuggled) {
+        CAPTURE(name);
+        std::vector<RawEntry> entries = base;
+        entries.push_back({name, text_bytes("nobody signed this")});
+        write_raw_zip(bad, entries);
+        // The rule is an EXACT SET, not a pattern: a future signature scheme has
+        // to be specified and given a coverage rule rather than arriving
+        // unannounced in a directory nothing checks.
+        CHECK_THROWS_AS((lexe::PackageReader{bad}), lexe::VerificationError);
+    }
+
+    // The refusal must name the offending entry, or it is unactionable.
+    std::vector<RawEntry> entries = base;
+    entries.push_back({"signatures/smuggled.bin", text_bytes("x")});
+    write_raw_zip(bad, entries);
+    try {
+        const lexe::PackageReader reader{bad};
+        FAIL("the reader accepted a smuggled entry");
+    } catch (const lexe::VerificationError& e) {
+        INFO("message was: " << e.what());
+        CHECK(std::string(e.what()).find("signatures/smuggled.bin") !=
+              std::string::npos);
+    }
+}
+
 TEST_CASE("reader rejects the malicious entry-path corpus") {
     TempLexeHome home;
     const lexe::crypto::KeyPair key = lexe::test::make_keypair();

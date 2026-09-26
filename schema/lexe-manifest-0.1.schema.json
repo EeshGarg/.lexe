@@ -1,0 +1,581 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lexe.dev/schema/lexe-manifest-0.1.schema.json",
+  "title": "Lexe Package Manifest 0.1 (lexe.json)",
+  "description": "The `lexe.json` manifest at the root of a `.lexe` package. Describes either an installable application package (`role: \"application\"`) or a launch reference to an already-installed application (`role: \"launch\"`). The role decides which of the remaining fields are required and which are forbidden, so this schema is mostly conditional.",
+  "$comment": "AUTHORITY: this schema encodes what `Manifest::parse` actually accepts, in src/lexe/package/manifest.cpp:462-641, together with src/lexe/base/identity.cpp (App ID and version rules), src/lexe/base/limits.hpp (numeric budgets) and src/lexe/sandbox/permissions.cpp (the permission vocabulary). docs/FORMAT-0.1.md §5 is the prose spec; where it is looser than the code, the code wins here and a $comment marks the divergence. Constraints the parser enforces that JSON Schema CANNOT express are listed in $defs.notExpressible.\n\nROOT `type`: manifest.cpp:477 — `if (!root.is_object()) fail(\"top-level value must be a JSON object\")`.\n\nROOT `additionalProperties`: DELIBERATELY true, and true for every object in this schema. The parser reads only the keys it knows (`find_member`, manifest.cpp:37-41) and never enumerates or rejects unknown ones; the file header states the rule outright (manifest.cpp:2 \"Unknown JSON fields are ignored (forward compatibility)\"), as does docs/FORMAT-0.1.md:128-129 (\"Unknown fields MUST be ignored\"). `additionalProperties: false` anywhere here would reject manifests this runtime accepts and would break the forward compatibility the format promises. This applies to `publisher`, `entrypoint`, `install`, `build`, `updates`, `integration`, `execution`, `launch` and each `integration.fileAssociations[]` element alike.\n\nROOT `required`: manifest.cpp:484-530 — the five fields required for EVERY role, checked before `role` is even read. `require_nonempty_string`/`require_object` (manifest.cpp:43-57, 103-113) treat JSON `null` as absent (manifest.cpp:37-41), so `\"name\": null` fails with `missing required field`, not a type error. These five are therefore NOT nullable here, while every optional field below is.",
+
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["lexeVersion", "id", "name", "version", "publisher"],
+
+  "properties": {
+    "lexeVersion": {
+      "title": "Package format version",
+      "description": "The `.lexe` package format this manifest is written against. Must be exactly \"0.1\": this runtime implements one format version and refuses every other, rather than guessing at a newer one.",
+      "type": "string",
+      "const": "0.1",
+      "$comment": "manifest.cpp:486 compares against `version::kPackageFormat`, defined as \"0.1\" in src/lexe/base/version.hpp:34. Encoded as a `const` rather than a pattern because the comparison is literal string equality — \"0.1.0\" and \"0.10\" are both rejected."
+    },
+
+    "id": {
+      "title": "Application ID",
+      "description": "The reverse-DNS identity of the package, e.g. \"com.example.myapp\". This is what a trust store binds to a publisher key, so it is part of the signed manifest and cannot be changed by renaming the file.",
+      "$ref": "#/$defs/appId",
+      "$comment": "manifest.cpp:492-493: `require_nonempty_string` then `validate_id` (manifest.cpp:137-166). See $defs.appId for the character rules."
+    },
+
+    "name": {
+      "title": "Display name",
+      "description": "Human-readable application name, shown in install prompts and desktop entries. Free-form text; no character restrictions.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "$comment": "manifest.cpp:495-499. `maxLength` mirrors `limits::kMaxNameBytes` = 1024 (limits.hpp:62). CAVEAT: the code bounds BYTES (`std::string::size()`), JSON Schema bounds CHARACTERS, so a name of 1024 non-ASCII characters passes this schema and is rejected by the parser. The limit is a resource bound on untrusted input (limits.hpp:1-13), not a display constraint. docs/FORMAT-0.1.md:150 states only \"non-empty string\" — the 1024-byte cap is code-only."
+    },
+
+    "version": {
+      "title": "Package version",
+      "description": "The version of this package, ordered per docs/FORMAT-0.1.md §8 (\"semver-lite\"). It is also used verbatim as a filesystem path component, so its character set is far narrower than a display string.",
+      "$ref": "#/$defs/versionString",
+      "$comment": "manifest.cpp:500-512. The narrow character set is NOT cosmetic: manifest.cpp:501-504 explains that a version is a path component, part of lock and lease file names, and the entire contents of `current.txt` on hosts without symlinks — so a version that cannot survive all three is refused at parse time rather than failing later on another machine. docs/FORMAT-0.1.md:151 says only \"non-empty string, see §8 ordering\" and states none of these rules."
+    },
+
+    "publisher": {
+      "title": "Publisher identity",
+      "description": "Who signed this package. `publicKey` is the key the signature is verified against; the manifest stage only checks that it is a plausible string — actually decoding it is verification pipeline stage 3.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "publicKey"],
+      "properties": {
+        "name": {
+          "title": "Publisher name",
+          "description": "Human-readable publisher name, shown in the install prompt.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "$comment": "manifest.cpp:515-520; bound is `limits::kMaxNameBytes` = 1024 (limits.hpp:62). Bytes vs characters caveat as for `name`."
+        },
+        "publicKey": {
+          "title": "Publisher public key",
+          "description": "The Ed25519 public key, encoded as \"ed25519:\" + base64 of 32 raw bytes (52 characters). Checked here only for presence, string-ness and a sane length.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "$comment": "manifest.cpp:521-528; bound is `limits::kMaxKeyFieldBytes` = 128 (limits.hpp:66: \"reject anything absurd before base64-decoding\"). NO `pattern` is imposed here on purpose: manifest.cpp:4-6 states that decoding the key is deliberately NOT part of §5 validation but verification pipeline stage 3, in `decoded_public_key()` / `crypto::decode_public_key()`. Encoding an `^ed25519:` pattern would make this schema stricter than the parser and would reject the build-time placeholder `\"AUTO\"` used by every manifest under examples/, which lexe-build substitutes before signing."
+        },
+        "website": {
+          "title": "Publisher website",
+          "description": "Optional informational URL. Never fetched or validated by the runtime.",
+          "type": ["string", "null"],
+          "$comment": "manifest.cpp:529-530 — `optional_string` with fallback \"\": string-ness only, no URL syntax check, no length cap, and an empty string is accepted. Deliberately NOT given `format: \"uri\"`, which the parser does not enforce."
+        }
+      }
+    },
+
+    "role": {
+      "title": "Artifact role",
+      "description": "What this `.lexe` file IS: an installable application (\"application\", the default when absent) or a launch reference naming an already-installed application (\"launch\"). A handler dispatches on this, never on the file name.",
+      "enum": ["application", "launch", null],
+      "$comment": "manifest.cpp:535-547. `null` is in the enum because `optional_string` resolves absent OR null to the default \"application\" (manifest.cpp:37-41, 60-68). The role is part of the SIGNED manifest so renaming a file cannot turn a launch reference into an installable package (manifest.cpp:532-534)."
+    },
+
+    "applicationType": {
+      "title": "Payload kind",
+      "description": "What the payload IS. \"native\": a compiled Linux ELF. \"portable\": source, compiled for this host at install time (requires `build`). \"windows\": a Windows PE, which can only run through a foreign-OS execution chain. REQUIRED for role \"application\"; forbidden for role \"launch\".",
+      "enum": ["native", "portable", "windows", null],
+      "$comment": "manifest.cpp:549-559 via `application_type_from_string` (manifest.cpp:768-774). `null` is permitted at the property level only so the role conditionals below can express \"absent or null\"; the role \"application\" branch forbids null and the role \"launch\" branch requires it."
+    },
+
+    "architectures": {
+      "title": "Supported CPU architectures",
+      "description": "The host ISAs this package can install on — a hard gate, not a hint. REQUIRED (and non-empty) for role \"application\"; forbidden for role \"launch\".",
+      "type": ["array", "null"],
+      "minItems": 1,
+      "items": { "enum": ["x86_64", "aarch64"] },
+      "$comment": "manifest.cpp:561-578. The vocabulary is a literal two-way comparison (manifest.cpp:573), not a lookup table. `uniqueItems` is NOT set: manifest.cpp:568-578 pushes every element without a duplicate check, so `[\"x86_64\", \"x86_64\"]` is accepted by the parser and must be accepted here."
+    },
+
+    "entrypoint": {
+      "title": "What to execute",
+      "description": "The program to run, as a path relative to `payload/`, plus any fixed arguments. REQUIRED for role \"application\"; forbidden for role \"launch\", which carries no payload at all.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "required": ["executable"],
+      "properties": {
+        "executable": {
+          "title": "Executable path",
+          "description": "Path inside `payload/` to the program. For \"portable\" packages this names the file the build must PRODUCE, which must NOT already be in the archive.",
+          "allOf": [{ "$ref": "#/$defs/relativePayloadPath" }],
+          "$comment": "manifest.cpp:582-585 — `require_nonempty_string` then `validate_relative_payload_path`."
+        },
+        "arguments": {
+          "title": "Fixed arguments",
+          "description": "Arguments always passed to the executable, as an argv list. Defaults to [].",
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "$comment": "manifest.cpp:586-588 — `optional_string_array` checks only that every element is a string. No per-element length limit and no non-empty requirement: an empty-string argument is accepted, unlike in `build.command`."
+        }
+      },
+      "$comment": "`required: [\"executable\"]` is vacuous when the value is `null`, which is what lets the role \"launch\" branch forbid this block by constraining it to `null`."
+    },
+
+    "install": {
+      "title": "Install behaviour",
+      "description": "How the package is installed. In 0.1 the only supported mode is \"bundled\" — the payload travels inside the package. REQUIRED for role \"application\"; forbidden for role \"launch\".",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "title": "Install mode",
+          "description": "Must be \"bundled\" in 0.1.",
+          "type": "string",
+          "const": "bundled",
+          "$comment": "manifest.cpp:212-222. \"network\" and \"launcher\" are recognised names that get a distinct \"unsupported in 0.1\" diagnostic (manifest.cpp:214-217) rather than \"invalid\", but both are still rejected — so the accepted set is exactly {\"bundled\"} and a `const` is the honest encoding."
+        },
+        "scope": {
+          "title": "Install scope",
+          "description": "Where the application is installed; defaults to \"user\".",
+          "type": ["string", "null"],
+          "minLength": 1,
+          "$comment": "manifest.cpp:224-228 — `optional_string` with fallback \"user\", then an explicit non-empty check. NOT an enum: the parser accepts ANY non-empty string here, so a schema restricting it to {\"user\", \"system\"} would reject manifests the parser accepts. docs/FORMAT-0.1.md:271 documents only the default. (`minLength` is vacuous for `null`, which the parser also treats as absent.)"
+        },
+        "estimatedSize": {
+          "title": "Estimated installed size",
+          "description": "Advisory installed size in bytes, used to show the user what the install will cost.",
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "$comment": "manifest.cpp:230-243. The parser accepts an unsigned JSON integer, or a signed integer that is >= 0, and rejects anything else including a float — so `1.0` and `1e5` fail in the parser but satisfy JSON Schema's `integer` (which tests the VALUE, not the token). That gap is not expressible in JSON Schema."
+        }
+      }
+    },
+
+    "build": {
+      "title": "Build recipe for a portable package",
+      "description": "How to compile the payload on the destination machine. Present EXACTLY when `applicationType` is \"portable\": a native or windows package declaring a build recipe has nothing to build, and a portable package without one can be installed nowhere.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "required": ["system", "sourceDir", "toolchain"],
+      "properties": {
+        "system": {
+          "title": "Build driver",
+          "description": "\"make\" and \"cmake\" are drivers the runtime knows how to invoke itself; \"command\" is the escape hatch and carries its own argv in `build.command`.",
+          "type": "string",
+          "enum": ["make", "cmake", "command"],
+          "$comment": "manifest.cpp:326-332 via `build_system_from_string` (manifest.cpp:817-822). `require_nonempty_string`, so `null` is rejected as missing."
+        },
+        "sourceDir": {
+          "title": "Source directory",
+          "description": "Directory inside `payload/` holding the sources. The build sees this directory and nothing else of the package.",
+          "allOf": [{ "$ref": "#/$defs/relativePayloadPath" }],
+          "$comment": "manifest.cpp:334-336 — held to the SAME path rules as `entrypoint.executable`, by the same function (manifest.cpp:168-172)."
+        },
+        "command": {
+          "title": "Build argv",
+          "description": "The command to run, as an argv list — never a shell string, because a shell string is a second language between the manifest and exec, with its own quoting and injection bugs. argv[0] is resolved on the build sandbox PATH. Required when `system` is \"command\"; must be absent, null or empty otherwise.",
+          "type": ["array", "null"],
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "allOf": [{ "$ref": "#/$defs/noNulByte" }]
+          },
+          "$comment": "manifest.cpp:338-360. Element rules: non-empty (manifest.cpp:351-353), no NUL byte (manifest.cpp:354-356), at most `limits::kMaxNameBytes` = 1024 bytes (manifest.cpp:357-359, limits.hpp:62). docs/FORMAT-0.1.md:297 states only \"non-empty argv of non-empty strings\" — the NUL and 1024-byte rules are code-only."
+        },
+        "toolchain": {
+          "title": "Required host executables",
+          "description": "The tools the build needs, as BARE executable names. Probed on the host BEFORE the user is asked to approve anything, so a machine that cannot build the package says which tool is missing instead of failing part-way through a build.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "allOf": [{ "$ref": "#/$defs/bareExecutableName" }]
+          },
+          "$comment": "manifest.cpp:367-387. Read with `optional_string_array` but an empty result is a hard failure (manifest.cpp:382-387), so it is effectively REQUIRED and non-empty — hence `minItems: 1` and no `null` in `type`. Bare names only (manifest.cpp:362-366): the build resolves them on the sandbox PATH, and an absolute host path in a signed manifest would be a claim about a machine the publisher has never seen."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "`build.command` is required exactly when `build.system` is \"command\" (manifest.cpp:340-349). In the `else` branch the parser's test is `!m.build.command.empty()`, and the value arrives through `optional_string_array` — so for \"make\"/\"cmake\" the accepted forms are absent, `null` AND an empty array. `[]` really is accepted; that is why this is not a plain `not: {required: [...]}`.",
+          "if": {
+            "required": ["system"],
+            "properties": { "system": { "const": "command" } }
+          },
+          "then": {
+            "required": ["command"],
+            "properties": { "command": { "type": "array", "minItems": 1 } },
+            "$comment": "manifest.cpp:340-344 — \"build.system \\\"command\\\" requires a non-empty \\\"build.command\\\" argv\"."
+          },
+          "else": {
+            "properties": {
+              "command": {
+                "anyOf": [{ "type": "null" }, { "type": "array", "maxItems": 0 }]
+              }
+            },
+            "$comment": "manifest.cpp:345-349 — a driver the runtime invokes itself must not be handed an argv."
+          }
+        }
+      ]
+    },
+
+    "permissions": {
+      "title": "Requested permissions",
+      "description": "The closed 0.1 permission vocabulary. Informational at the manifest stage; shown to the user at install and recorded as the approved set.",
+      "type": ["array", "null"],
+      "uniqueItems": true,
+      "items": { "enum": ["network", "user-files-selected"] },
+      "$comment": "The vocabulary is the frozen list in src/lexe/sandbox/permissions.cpp:16-23 — exactly \"network\" and \"user-files-selected\" — kept small \"because a permission is only listed when its semantics and enforcement ceiling are defined\". IMPORTANT DIVERGENCE FROM THE PARSER: `Manifest::parse` does NOT validate these values (manifest.cpp:609 is a bare `optional_string_array`, which checks only string-ness). Unknown ids and duplicates are rejected later, by `normalize_permissions` -> `validate_and_sort` (permissions.cpp:50-67), which every consumer runs: installer.cpp:465, commands.cpp:426 and commands.cpp:2353. So this enum and `uniqueItems` describe what a package must carry to be INSTALLABLE, and are stricter than manifest parsing alone. docs/FORMAT-0.1.md:272 calls `permissions` merely \"informational in 0.1\" and does not name the vocabulary."
+    },
+
+    "updates": {
+      "title": "Update policy",
+      "description": "Where and whether to look for newer versions. Updates are disabled when the whole block is absent.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "title": "Updates enabled",
+          "description": "Whether the runtime should check for updates at all. Defaults to false.",
+          "type": ["boolean", "null"],
+          "$comment": "manifest.cpp:249-250."
+        },
+        "channel": {
+          "title": "Update channel",
+          "description": "Channel name to follow; defaults to \"stable\".",
+          "type": ["string", "null"],
+          "$comment": "manifest.cpp:251-252 — `optional_string` with fallback \"stable\". No enum and NO non-empty check, unlike `install.scope`: an empty channel string is accepted by the parser."
+        },
+        "manifest": {
+          "title": "Update manifest URL",
+          "description": "URL of the `update.json` document (docs/FORMAT-0.1.md §7).",
+          "type": ["string", "null"],
+          "$comment": "manifest.cpp:253-254 — string-ness only. No `format: \"uri\"`: the parser does not check the syntax here, and the URL scheme policy is enforced at fetch time, not at parse time."
+        },
+        "allowSourceChange": {
+          "title": "Allow update source change",
+          "description": "Whether an update may move the package to a different update source. Defaults to TRUE.",
+          "type": ["boolean", "null"],
+          "$comment": "manifest.cpp:255-256 — note the default is `true`, not `false` like the other booleans here."
+        }
+      }
+    },
+
+    "integration": {
+      "title": "Desktop integration",
+      "description": "How the application appears in the desktop environment: menu entry, categories, file associations.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "desktopEntry": {
+          "title": "Create a desktop entry",
+          "description": "Whether to write a .desktop entry. Defaults to TRUE — the only optional boolean in the manifest besides `updates.allowSourceChange` that defaults on.",
+          "type": ["boolean", "null"],
+          "$comment": "manifest.cpp:431-432 — fallback is `true`."
+        },
+        "categories": {
+          "title": "Menu categories",
+          "description": "Freedesktop menu categories, e.g. [\"Utility\", \"Development\"].",
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "$comment": "manifest.cpp:433-434 — `optional_string_array`: string-ness only. The parser does NOT check these against the freedesktop registered category list, nor reject empty strings."
+        },
+        "fileAssociations": {
+          "title": "File associations",
+          "description": "File types this application can open.",
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["extension", "mimeType"],
+            "properties": {
+              "extension": {
+                "title": "File extension",
+                "description": "The extension to associate, e.g. \".example\".",
+                "type": "string",
+                "minLength": 1,
+                "$comment": "manifest.cpp:446-447 — `require_nonempty_string`. The parser does NOT require a leading dot, reject spaces, or cap the length, so no `pattern` is imposed here."
+              },
+              "mimeType": {
+                "title": "MIME type",
+                "description": "The MIME type to associate, e.g. \"application/x-example\".",
+                "type": "string",
+                "minLength": 1,
+                "$comment": "manifest.cpp:448-449 — `require_nonempty_string` only; no `type/subtype` syntax check in the parser, so none here."
+              }
+            }
+          },
+          "$comment": "manifest.cpp:435-451. Elements must be JSON objects (manifest.cpp:441-444)."
+        }
+      }
+    },
+
+    "execution": {
+      "title": "Execution policy",
+      "description": "Which execution chains may be used to run the payload, and whether execution is restricted to a strictly native realization. Absent means the boring native path only, which is the safe default.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "missionCritical": {
+          "title": "Mission-critical execution",
+          "description": "An EXECUTION RESTRICTION, not a safety certification. When true the runtime must require a Linux-native, host-ISA-native realization and must forbid ISA translation, Wine/Proton, compatibility fallback and any \"run anyway\" affordance. If strict native execution cannot be achieved, execution stops.",
+          "type": ["boolean", "null"],
+          "$comment": "manifest.cpp:266-267; the runtime-side consequence is `effective_allowed_chains()` (manifest.cpp:824-832), which returns {\"native\"} whatever the list says."
+        },
+        "allowedChains": {
+          "title": "Permitted execution chains",
+          "description": "The set a resolver may choose from and a frontend may offer. A user preference may narrow or reorder it, never extend it. A chain id is one layer, or several joined with \"+\", outermost first — e.g. \"proton+fex\" is Proton over FEX. Defaults to [\"native\"].",
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/chainId" },
+          "$comment": "manifest.cpp:269-287. NOTE THE MISSING `minItems`: docs/FORMAT-0.1.md:216 specifies a \"non-empty array of chain ids\", but manifest.cpp:271-273 SILENTLY SUBSTITUTES [\"native\"] for an empty or absent list rather than rejecting it, so `\"allowedChains\": []` parses. Adding `minItems: 1` here would reject manifests the parser accepts. The same default makes an empty list fatal for `applicationType: \"windows\"`, which is enforced in the root conditional below rather than here."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "manifest.cpp:288-298 — \"a mission-critical package may not carry a compatibility policy at all\", so `missionCritical: true` with any chain other than \"native\" is a contradiction and is rejected at parse time rather than silently ignored at launch. docs/FORMAT-0.1.md:224-225 agrees.",
+          "if": {
+            "required": ["missionCritical"],
+            "properties": { "missionCritical": { "const": true } }
+          },
+          "then": {
+            "properties": { "allowedChains": { "items": { "const": "native" } } }
+          }
+        }
+      ]
+    },
+
+    "launch": {
+      "title": "Launch semantics",
+      "description": "How the application presents itself when launched, and — for a launch reference — which installed App ID it launches. Presentation is DECLARED here and must never be inferred from whether the desktop happened to provide a terminal.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "title": "Presentation mode",
+          "description": "\"gui\" opens its own window; \"console\" must be GIVEN a terminal by the runtime (or have its output captured) rather than silently appearing to do nothing; \"service\" is started detached and gets no exit status reported. Defaults to \"gui\".",
+          "enum": ["gui", "console", "service", null],
+          "$comment": "manifest.cpp:395-400 via `launch_mode_from_string` (manifest.cpp:752-757). `null` resolves to the \"gui\" default."
+        },
+        "singleInstance": {
+          "title": "Single instance",
+          "description": "Advisory hint for frontends that only one instance should run. Defaults to false.",
+          "type": ["boolean", "null"],
+          "$comment": "manifest.cpp:401-402. Advisory only — docs/FORMAT-0.1.md:251."
+        },
+        "applicationId": {
+          "title": "Launched application ID",
+          "description": "The App ID of the already-installed application this reference launches. REQUIRED for role \"launch\"; must not be a non-empty value for role \"application\".",
+          "type": ["string", "null"],
+          "$comment": "Shape is NOT constrained at the property level, because `validate_id` is only reached when the role is \"launch\" (manifest.cpp:408-413). The two role conditionals at the root add the real constraint: a valid App ID for role \"launch\", and only absent/null/\"\" for role \"application\"."
+        }
+      }
+    },
+
+    "runtimeProfile": {
+      "title": "Declared runtime profile",
+      "description": "The runtime profile the builder targeted and gated the build on (e.g. \"core-portable\", \"forward-runtime\", \"native-capture\"). Declarative, not a promise about the payload: a reader must still verify conformance itself.",
+      "type": ["string", "null"],
+      "$comment": "manifest.cpp:419-425 — stored AS WRITTEN and deliberately NOT validated against a known list: \"an id this runtime does not recognise is NOT an error (a newer builder may name a profile that did not exist yet)\". That is why there is no `enum` here even though docs/FORMAT-0.1.md:276-286 names three profiles. A reader that cannot resolve the value must treat the package as declaring NO profile and must not substitute a default — reading an unknown declaration as \"core-portable\" would make a package deliberately built as \"native-capture\" report as a portability failure."
+    }
+  },
+
+  "allOf": [
+    {
+      "title": "Role-based required and forbidden fields",
+      "$comment": "manifest.cpp:549-606 (Definitive Architecture §15.1). The role decides WHICH remaining fields are required, and the two roles are kept STRUCTURALLY distinct rather than merely differently labelled: a launch reference carries no payload and no entrypoint, so declaring any of those fields is an error, not an ignored leftover (manifest.cpp:592-604). Forbidden-ness is encoded as `{\"type\": \"null\"}` rather than `not: {required: [...]}` because `find_member` treats JSON `null` as absent (manifest.cpp:37-41), so `\"entrypoint\": null` genuinely IS accepted alongside role \"launch\". Combined with the nullable property schemas above, `{\"type\": \"null\"}` admits exactly absent-or-null.",
+      "if": {
+        "required": ["role"],
+        "properties": { "role": { "const": "launch" } }
+      },
+      "then": {
+        "title": "role: \"launch\" — a reference to an installed application",
+        "$comment": "manifest.cpp:592-606 and 408-413.",
+        "properties": {
+          "applicationType": { "type": "null" },
+          "architectures": { "type": "null" },
+          "entrypoint": { "type": "null" },
+          "install": { "type": "null" },
+          "build": { "type": "null" },
+          "launch": {
+            "type": "object",
+            "required": ["applicationId"],
+            "properties": { "applicationId": { "$ref": "#/$defs/appId" } },
+            "$comment": "manifest.cpp:408-413 — \"a launch reference (role \\\"launch\\\") must declare \\\"launch.applicationId\\\"\", then `validate_id` on it. Since an empty string trips the same failure (manifest.cpp:409), the id must be present, non-null and a valid App ID — which also forces the whole `launch` block to exist."
+          }
+        },
+        "required": ["launch"]
+      },
+      "else": {
+        "title": "role: \"application\" (the default) — an installable package",
+        "$comment": "manifest.cpp:549-591. This branch also covers an ABSENT or `null` role, both of which default to \"application\" (manifest.cpp:536-537). `required` alone is not enough here: `null` satisfies JSON Schema's `required` but is reported as `missing required field` by the parser, so each conditionally-required field is additionally forbidden from being `null`.",
+        "required": ["applicationType", "architectures", "entrypoint", "install"],
+        "properties": {
+          "applicationType": { "not": { "type": "null" } },
+          "architectures": { "not": { "type": "null" } },
+          "entrypoint": { "not": { "type": "null" } },
+          "install": { "not": { "type": "null" } },
+          "launch": {
+            "properties": {
+              "applicationId": {
+                "anyOf": [{ "type": "null" }, { "const": "" }]
+              }
+            },
+            "$comment": "manifest.cpp:414-416 — \"\\\"launch.applicationId\\\" is only valid for role \\\"launch\\\"\". The test is `!m.launch_application_id.empty()`, and the value came from `optional_string(..., \"\")`, so absent, `null` AND the EMPTY STRING all pass for an application. docs/FORMAT-0.1.md:209 says it \"MUST be absent for role: \\\"application\\\"\" — strictly, `\"applicationId\": \"\"` is accepted by the code, and this schema follows the code."
+          }
+        }
+      }
+    },
+
+    {
+      "title": "build is required exactly for applicationType \"portable\"",
+      "$comment": "manifest.cpp:309-324 (`parse_build`). \"Present exactly when `applicationType` is \\\"portable\\\": a native package declaring a build recipe is a contradiction (there is nothing to build), and a portable package without one cannot be installed anywhere.\" Validated BEFORE any approval is asked for and long before anything is executed, so an unbuildable package is refused by the parser rather than halfway through a compile (manifest.cpp:306-308). The `else` branch also covers role \"launch\", whose `applicationType` is null and whose `build` is forbidden anyway (manifest.cpp:596-598).",
+      "if": {
+        "required": ["applicationType"],
+        "properties": { "applicationType": { "const": "portable" } }
+      },
+      "then": {
+        "required": ["build"],
+        "properties": { "build": { "not": { "type": "null" } } },
+        "$comment": "manifest.cpp:321-324. `null` is excluded because `optional_object` treats it as absent (manifest.cpp:116-124), which trips the same failure."
+      },
+      "else": {
+        "properties": { "build": { "type": "null" } },
+        "$comment": "manifest.cpp:312-320 — absent or `null` only."
+      }
+    },
+
+    {
+      "title": "A windows payload must permit a foreign-OS execution chain",
+      "$comment": "manifest.cpp:616-638. \"A payload and a policy that cannot run it is a contradiction, and the place to say so is here — not at launch, where the user would meet it as 'no execution chain is available' long after installing something that was never going to run.\" docs/FORMAT-0.1.md:188-196 agrees, and is explicit that a windows package relying on the DEFAULT [\"native\"] must also be rejected: silence is not consent to run under a compatibility layer. That is why `execution` and `execution.allowedChains` become REQUIRED here — for every other applicationType they are optional.",
+      "if": {
+        "required": ["applicationType"],
+        "properties": { "applicationType": { "const": "windows" } }
+      },
+      "then": {
+        "required": ["execution"],
+        "properties": {
+          "execution": {
+            "type": "object",
+            "required": ["allowedChains"],
+            "properties": {
+              "missionCritical": {
+                "not": { "const": true },
+                "$comment": "manifest.cpp:622-627 — \"mission-critical execution requires a Linux-native, host-ISA-native realization, and a Windows payload has none by construction\". `not: {const: true}` rather than `const: false` so that absent and `null` (both meaning false) still pass."
+              },
+              "allowedChains": {
+                "type": "array",
+                "contains": { "$ref": "#/$defs/foreignOsChainId" },
+                "$comment": "manifest.cpp:628-637 — at least one permitted chain must satisfy `chain_runs_foreign_os` (manifest.cpp:795-806), which splits the id on \"+\" and asks whether ANY layer is a foreign-OS layer. See $defs.foreignOsChainId."
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "appId": {
+      "title": "App ID (reverse-DNS)",
+      "description": "Two or more dot-separated segments of [a-zA-Z0-9-]+, at most 255 characters. No empty segments, so no leading, trailing or doubled dots.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$",
+      "$comment": "`validate_id` (manifest.cpp:137-166) and `app_id_is_valid` (identity.cpp:25-38), which agree. The pattern encodes all three parser rules at once: the allowed character set (manifest.cpp:151), the ban on empty dot-separated segments (manifest.cpp:146-148, 158-160) and the >= 2 segment count (manifest.cpp:161-165) — the `(\\.[A-Za-z0-9-]+)+` tail requires at least one dot with a non-empty segment either side. `maxLength` mirrors `limits::kMaxIdBytes` = 255 (limits.hpp:61) and counts characters rather than bytes, but the character set is pure ASCII so the two coincide here. Note that the segment characters are case-insensitive and `-` is permitted anywhere in a segment, including at the start: unlike DNS, `-foo.bar` is a valid App ID."
+    },
+
+    "versionString": {
+      "title": "Version string",
+      "description": "1 to 64 characters. No space or control character, no \"/\", \"\\\\\" or \":\", and not \".\" or \"..\".",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[^\\u0000-\\u0020\\u007F/\\\\:]+$",
+      "not": { "enum": [".", ".."] },
+      "$comment": "`version_string_is_valid` (identity.cpp:47-57), called from manifest.cpp:505-508. The character class excludes U+0000-U+0020 (identity.cpp:53 `c <= 0x20`, which covers SPACE and every C0 control) and U+007F (DEL), plus the three path-hostile characters (identity.cpp:54): \"/\" and \"\\\\\" are separators and \":\" is a Windows drive designator. \".\" and \"..\" are excluded by name (identity.cpp:49) because they are the two path components that mean something other than themselves. `maxLength` is 64 from identity.cpp:48, NOT the 256 of `limits::kMaxVersionBytes` (limits.hpp:63): manifest.cpp:509-512 checks that looser bound as well, but it can never fire because 64 < 256 — so 64 is the real limit. CAVEATS: (1) the parser iterates BYTES, so a 64-character non-ASCII version passes this schema and is rejected by the parser; (2) the parser's per-byte test only rejects bytes <= 0x20 and 0x7F, which means every byte >= 0x80 is allowed and non-ASCII versions parse, even though C1 controls such as U+0085 are excluded by neither check."
+    },
+
+    "relativePayloadPath": {
+      "title": "Relative path inside payload/",
+      "description": "A non-empty path relative to `payload/`: no leading \"/\", no \"..\" segment, no backslash, no NUL byte, no Windows drive designator, no empty path segments.",
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "not": { "pattern": "\\u0000" },
+          "$comment": "manifest.cpp:176-178 — no NUL byte, mirroring the §2 archive-entry rules. A NUL truncates the path for any C API downstream."
+        },
+        {
+          "not": { "pattern": "\\\\" },
+          "$comment": "manifest.cpp:179-181 — no backslash. The regex is a single escaped backslash: in JSON, \"\\\\\\\\\" is the two-character regex `\\\\`, which matches one literal backslash."
+        },
+        {
+          "not": { "pattern": "^/" },
+          "$comment": "manifest.cpp:182-185 — no leading \"/\": the path must be relative, so it can never escape `payload/` by being absolute."
+        },
+        {
+          "not": { "pattern": "^[A-Za-z]:" },
+          "$comment": "manifest.cpp:186-189 — no Windows drive designator, i.e. an ASCII letter followed by \":\" at the very start (`is_ascii_alpha(path[0]) && path[1] == ':'`)."
+        },
+        {
+          "not": { "pattern": "(^|/)\\.\\.($|/)" },
+          "$comment": "manifest.cpp:201-203 — no \"..\" SEGMENT, which is what makes path traversal out of `payload/` impossible. Only a whole segment counts: \"a..b\" and \"..c\" are fine, \"../x\", \"a/../b\" and \"a/..\" are not."
+        },
+        {
+          "not": { "pattern": "//" },
+          "$comment": "manifest.cpp:197-200 — no empty path segments (doubled separator)."
+        },
+        {
+          "not": { "pattern": "/$" },
+          "$comment": "manifest.cpp:197-200 — no empty path segments; a trailing \"/\" produces one. Note the parser imposes NO length limit on this field: `limits::kMaxPathBytes`/`kMaxPathComponentBytes`/`kMaxPathDepth` (limits.hpp:45-49) bound ARCHIVE entry paths, not manifest path fields, so none is encoded here."
+        }
+      ],
+      "$comment": "`validate_relative_payload_path` (manifest.cpp:168-207), shared verbatim by `entrypoint.executable` and `build.sourceDir` (manifest.cpp:170-172: \"both such fields and are held to the same rules by the same code\"). Expressed as a list of negative patterns, one per parser check, so each failure mode keeps its own citation. docs/FORMAT-0.1.md:165 lists only three of these rules (\"no leading /, no .., no backslash\") and omits the NUL byte, the drive designator and the empty-segment check."
+    },
+
+    "chainId": {
+      "title": "Execution chain id",
+      "description": "One layer, or several joined with \"+\", outermost first. Known layers: \"native\" (runs the payload directly), \"fex\"/\"box64\"/\"qemu-user\" (ISA translation), \"wine\"/\"proton\" (foreign OS).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9+_-]+$",
+      "$comment": "manifest.cpp:274-287. Non-empty (manifest.cpp:275-277), at most `limits::kMaxNameBytes` = 1024 bytes (manifest.cpp:278-280, limits.hpp:62), characters [a-zA-Z0-9-+_] only (manifest.cpp:281-286). Deliberately NOT an enum of known layer ids: `chain_layer_kind` (manifest.cpp:785-793) returns `Unknown` for an unrecognised layer without failing, so a manifest may name a chain this runtime does not implement and still parse. Only the `applicationType: \"windows\"` rule cares about the layer NAMES."
+    },
+
+    "foreignOsChainId": {
+      "title": "Chain id containing a foreign-OS layer",
+      "description": "A chain id at least one of whose \"+\"-separated layers is \"wine\" or \"proton\" — the only layers that can run a Windows payload on Linux.",
+      "allOf": [{ "$ref": "#/$defs/chainId" }],
+      "pattern": "(^|\\+)(wine|proton)(\\+|$)",
+      "$comment": "`chain_runs_foreign_os` (manifest.cpp:795-806) splits the id on \"+\" and returns true if `chain_layer_kind` of any layer is `ForeignOs`; the foreign-OS layers are exactly \"wine\" and \"proton\" (manifest.cpp:789-790). The anchors `(^|\\+)` and `(\\+|$)` reproduce the WHOLE-LAYER match, so \"winehq\" and \"my-proton\" do not qualify while \"proton+fex\" and \"fex+wine\" do. The parser accepts a reversed order like \"fex+proton\" here even though docs/FORMAT-0.1.md:239-241 says the foreign-OS layer must be outermost and that \"fex+proton\" is not a chain — layer ORDER is not checked at parse time, so this schema does not check it either."
+    },
+
+    "noNulByte": {
+      "title": "No NUL byte",
+      "type": "string",
+      "not": { "pattern": "\\u0000" },
+      "$comment": "manifest.cpp:354-356 for `build.command`. A NUL truncates the string for exec()."
+    },
+
+    "bareExecutableName": {
+      "title": "Bare executable name",
+      "description": "An executable name with no path separator of either kind, resolved on the sandbox PATH.",
+      "type": "string",
+      "allOf": [
+        { "not": { "pattern": "/" } },
+        { "not": { "pattern": "\\\\" } }
+      ],
+      "$comment": "manifest.cpp:376-381 — neither \"/\" nor \"\\\\\" may appear, so neither an absolute nor a relative path is accepted. docs/FORMAT-0.1.md:298 mentions only \"no /\"; the code rejects backslashes too."
+    },
+
+    "notExpressible": {
+      "title": "Parser rules this schema cannot express",
+      "description": "Recorded here so a reader does not mistake schema validity for parser acceptance. A manifest that satisfies this schema may still be rejected by `Manifest::parse`, and by the later verification stages, for any of these reasons.",
+      "$comment": "1. NO UTF-8 BOM (manifest.cpp:463-469): a byte-level property of the file, invisible once the document is parsed into a JSON value. 2. NO DUPLICATE OBJECT KEYS at any nesting level (src/lexe/base/json_strict.cpp, `DuplicateKeyDetector`): JSON Schema validates a parsed value, in which a duplicate key has already collapsed. This one matters — manifest.cpp:471-474 notes that a duplicate \"publicKey\" or \"entrypoint\" could otherwise make the verifier and a human reviewer read different values. 3. DOCUMENT SIZE <= 1 MiB (`limits::kMaxManifestBytes`, limits.hpp:53), checked against the raw text before the DOM is built. 4. VALID UTF-8 throughout (json_strict). 5. BYTE-vs-CHARACTER LENGTHS: every `maxLength` here counts characters while the parser counts bytes, so non-ASCII values can pass this schema and fail the parser (`name`, `publisher.name`, `version`, `id`, `build.command[]`, `build.toolchain[]`, `execution.allowedChains[]`). 6. `install.estimatedSize` MUST BE AN INTEGER TOKEN (manifest.cpp:230-243): `1.0` and `1e5` are integer-valued and satisfy `\"type\": \"integer\"`, but nlohmann parses them as floats and the parser rejects them. 7. EVERYTHING AFTER PARSE STAGE: the payload-role checks that the entrypoint really is an ELF (\"native\") or a PE (\"windows\") or is absent and will be built (\"portable\"), the host-ISA gate on `architectures`, signature verification, hash coverage and `publisher.publicKey` actually decoding to 32 Ed25519 bytes (docs/FORMAT-0.1.md §6). The three manifests under examples/broken/ are all VALID against this schema and are exactly this class of failure: a .dll entrypoint, C source declared as a native payload, and an architecture the payload was not built for."
+    }
+  }
+}

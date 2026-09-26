@@ -71,11 +71,42 @@ TEST_CASE("a highly-compressible payload trips the expansion-ratio guard") {
     // The package on disk is far smaller than what it expands to.
     CHECK(fs::file_size(pkg) * lexe::limits::kMaxExpansionRatio < big);
 
-    const lexe::PackageReader reader(pkg);
-    const fs::path dest = home.path() / "out";
-    CHECK_THROWS_WITH_AS(reader.extract_payload(dest),
+    // It is refused at OPEN, not at extraction, and that move is the point.
+    //
+    // This case used to construct the reader and then assert that
+    // extract_payload() threw -- which was true, and was also the whole defect:
+    // a guard that only fires during extraction leaves `lexe verify` reporting
+    // OK on a package `lexe install` refuses, and `verify` is what a CI job or a
+    // repository gate runs to decide whether a package is acceptable. The guard
+    // now lives in the PackageReader constructor and reads the central
+    // directory's declared sizes, so nothing gets as far as inflating a byte.
+    CHECK_THROWS_WITH_AS(lexe::PackageReader{pkg},
                          doctest::Contains("decompression-bomb"),
                          lexe::VerificationError);
+}
+
+TEST_CASE("the ratio guard is still enforced against bytes actually emitted") {
+    // Defence in depth, and not redundant: the constructor's check reads the
+    // central directory, which is the package's own claim about itself. A
+    // crafted archive can understate a size there, so extract_payload() keeps
+    // counting what it really writes and enforces the same two limits against
+    // that total. Cheap and early in one place; authoritative in the other.
+    //
+    // Checked by reading the code path rather than by crafting an understating
+    // archive, because miniz refuses to inflate an entry past its declared size
+    // -- so the only way to reach the emitted-bytes guard is a size that is
+    // truthful, which the constructor catches first. What this pins is that the
+    // second guard has not been deleted as "unreachable"; it is the one that
+    // holds if the first is ever fooled.
+    const std::string source =
+        lexe::util::slurp_text(fs::path(LEXE_SOURCE_DIR) / "src" / "lexe" /
+                               "package" / "package.cpp");
+    const std::size_t ctor_guard = source.find("decompression-bomb guard");
+    REQUIRE(ctor_guard != std::string::npos);
+    const std::size_t extract_guard =
+        source.find("decompression-bomb guard", ctor_guard + 1);
+    INFO("extract_payload must keep its own aggregate guard");
+    CHECK(extract_guard != std::string::npos);
 }
 
 TEST_CASE("a normal package extracts without tripping the ratio guard") {

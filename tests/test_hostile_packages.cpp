@@ -14,6 +14,7 @@
 
 #include "lexe/package/crypto.hpp"
 #include "lexe/base/error.hpp"
+#include "lexe/base/limits.hpp"
 #include "lexe/package/package.hpp"
 #include "lexe/base/util.hpp"
 #include "lexe/verify/verify.hpp"
@@ -131,6 +132,73 @@ TEST_CASE("container-level defects fail at the structure stage") {
                  false, "structure");
 }
 
+TEST_CASE("a decompression bomb is refused by VERIFY, not only by install") {
+    // REGRESSION, and the interesting part is which command used to accept it.
+    //
+    // The aggregate resource guards -- total uncompressed size, and the
+    // expansion ratio past a grace threshold -- lived only in
+    // `extract_payload()`. So `lexe install` refused a bomb and `lexe verify`
+    // reported OK on the SAME FILE, with all seven stages green. Reproduced
+    // before the fix: a 413 KB package carrying one 400 MiB entry of zeroes,
+    // correct hashes and real signatures, 1015x expansion, `verify` exit 0 and
+    // `install` exit 3.
+    //
+    // That gap matters more than the bomb does. The guard did fire before
+    // extraction, so nothing was ever unpacked -- but `verify` is the command a
+    // CI job, a repository gate or a cautious user runs to decide whether a
+    // package is ACCEPTABLE, and a gate that passes what the installer will
+    // refuse hands out an assurance the runtime does not honour.
+    //
+    // Found by the independent conformance validator in tools/lexe-conformance,
+    // which disagreed with `lexe verify` and turned out to be right. It is the
+    // reason that validator does not share this implementation's parser.
+    //
+    // The guard now lives in the PackageReader constructor, so it applies to
+    // every consumer at once -- verify, install, info, inspect -- and is read
+    // from the central directory's declared sizes, which means a bomb is
+    // refused before a single byte of it is decompressed.
+    test::TempLexeHome home;
+    const fs::path w = home.path();
+    const crypto::KeyPair key = test::make_keypair();
+
+    const fs::path good = test::make_test_package(w, key);
+    REQUIRE(verify_package(good, false).ok()); // control
+
+    // Past the 16 MiB grace threshold, and vastly past the 200x ratio: 32 MiB
+    // of zeroes deflates to a few kilobytes. Zeroes rather than a pattern
+    // because the point is the RATIO, and this keeps the test quick.
+    test::TestAppSpec spec;
+    spec.public_key = test::encode_public_key_str(key.public_key);
+    const test::TestAppTree tree =
+        test::make_test_app_tree(w / "tree-bomb", spec);
+    const std::vector<std::uint8_t> zeroes(
+        static_cast<std::size_t>(limits::kRatioGraceBytes) * 2, 0);
+    util::spit(tree.payload_dir / "big.dat", zeroes);
+
+    PackageWriter::Inputs in;
+    in.payload_dir = tree.payload_dir;
+    in.manifest_file = tree.manifest_file;
+    const fs::path bomb = w / "bomb.lexe";
+    PackageWriter::write(in, key, bomb);
+
+    // Signed, hashed and structurally perfect -- and still refused, at the
+    // FIRST stage, which is the only stage that can refuse it without reading
+    // the bytes it is refusing.
+    expect_stage(bomb, false, "structure");
+
+    // And the reason must name the guard, because "structure" alone would send
+    // someone looking for a corrupt archive.
+    const VerificationReport report = verify_package(bomb, false);
+    const VerificationStage* failure = report.first_failure();
+    REQUIRE(failure != nullptr);
+    INFO("detail was: " << failure->detail);
+    CHECK(failure->detail.find("decompression-bomb guard") != std::string::npos);
+
+    // Opening it directly must refuse too: the gate is the reader, not the
+    // verifier, so nothing can reach the entries by going around verify().
+    CHECK_THROWS_AS(PackageReader{bomb}, lexe::Error);
+}
+
 TEST_CASE("manifest §5 violations fail at the manifest stage") {
     test::TempLexeHome home;
     const fs::path w = home.path();
@@ -167,6 +235,109 @@ TEST_CASE("manifest §5 violations fail at the manifest stage") {
     expect_stage(pack([](json& m) { m["applicationType"] = "wine"; },
                       "bad-type"),
                  false, "manifest");
+}
+
+TEST_CASE("verify refuses a permission install would refuse") {
+    // REGRESSION, and the same defect shape as the decompression bomb: `verify`
+    // said yes to a package `install` said no to.
+    //
+    // `Manifest::parse` checks only that `permissions` is an array of strings.
+    // The closed 0.1 vocabulary and the no-duplicates rule were enforced by
+    // `normalize_permissions`, which every CONSUMER runs -- but which the
+    // verification pipeline did not. `verify` is the command a CI job or a
+    // repository gate runs to decide whether a package is acceptable, so the
+    // gap meant a publisher could ship something that verified perfectly and
+    // failed for every user at install.
+    test::TempLexeHome home;
+    const fs::path w = home.path();
+    const crypto::KeyPair key = test::make_keypair();
+
+    json base = base_manifest(test::encode_public_key_str(key.public_key));
+    REQUIRE(verify_package(pack_manifest(w, key, base, "perm-ok"), false).ok());
+
+    // Outside the frozen vocabulary.
+    json unknown = base;
+    unknown["permissions"] = json::array({"camera"});
+    expect_stage(pack_manifest(w, key, unknown, "perm-unknown"), false,
+                 "manifest");
+
+    // In the vocabulary, but repeated: a duplicate changes the permission
+    // DIGEST that install records, so it is not merely cosmetic.
+    json duplicated = base;
+    duplicated["permissions"] = json::array({"network", "network"});
+    expect_stage(pack_manifest(w, key, duplicated, "perm-dup"), false,
+                 "manifest");
+
+    // Both legal ids together must still pass, or the fix would have broken
+    // every package that asks for anything.
+    json legal = base;
+    legal["permissions"] = json::array({"network", "user-files-selected"});
+    CHECK(verify_package(pack_manifest(w, key, legal, "perm-legal"), false).ok());
+}
+
+TEST_CASE("a publisher key must have exactly one spelling") {
+    // REGRESSION. Base64 leaves the unused bits of the final group free, so a
+    // 32-byte key has many valid spellings that all decode identically. The key
+    // string is an IDENTITY -- `installer.cpp` pins the trusted publisher by
+    // comparing the manifest string against the recorded one -- so a key with
+    // more than one name means the update-trust anchor turns on a string that
+    // was never required to be unique: a re-spelling of the very same key reads
+    // as a changed key.
+    //
+    // `trust.cpp` already required canonical encoding of trust records; the
+    // manifest was the odd one out. The check now lives in decode_public_key, so
+    // every consumer inherits it.
+    test::TempLexeHome home;
+    const fs::path w = home.path();
+    const crypto::KeyPair key = test::make_keypair();
+    const std::string canonical = test::encode_public_key_str(key.public_key);
+
+    // Find a different spelling that decodes to the SAME bytes, by varying the
+    // final significant character across the alphabet. Derived rather than
+    // hard-coded so the case does not depend on which key was generated.
+    static constexpr std::string_view kAlphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const std::size_t last = canonical.find_last_not_of('=');
+    REQUIRE(last != std::string::npos);
+    const std::string prefix = "ed25519:";
+    const std::vector<std::uint8_t> want =
+        util::base64_decode(std::string_view(canonical).substr(prefix.size()));
+
+    std::string non_canonical;
+    for (const char c : kAlphabet) {
+        if (c == canonical[last]) continue;
+        std::string candidate = canonical;
+        candidate[last] = c;
+        try {
+            if (util::base64_decode(
+                    std::string_view(candidate).substr(prefix.size())) == want) {
+                non_canonical = candidate;
+                break;
+            }
+        } catch (const std::exception&) {
+            // Not a decodable variant; try the next.
+        }
+    }
+    REQUIRE_FALSE(non_canonical.empty());
+    REQUIRE(non_canonical != canonical);
+    INFO("canonical:     " << canonical);
+    INFO("non-canonical: " << non_canonical);
+
+    // The premise: it really is the same key, so nothing downstream could tell
+    // these two packages apart by their key BYTES.
+    CHECK(util::base64_decode(
+              std::string_view(non_canonical).substr(prefix.size())) == want);
+
+    json manifest = base_manifest(non_canonical);
+    // Signed with the real key, so only the SPELLING is wrong -- the signature
+    // over the manifest is genuine and stage 4 would have passed.
+    expect_stage(pack_manifest(w, key, manifest, "noncanon-key"), false, "key");
+
+    // The canonical spelling of the same key must still verify.
+    CHECK(verify_package(
+              pack_manifest(w, key, base_manifest(canonical), "canon-key"),
+              false)
+              .ok());
 }
 
 TEST_CASE("undecodable publisher keys fail at the key stage") {

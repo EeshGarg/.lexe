@@ -121,6 +121,7 @@ the matching private key. It does **not** establish who they are. No surface say
 | Session-managed services | `integration/session`, `integration/session_manager` | `lexe service [status\|enable\|disable]` | n/a — see note | n/a | `test_session.cpp`, session 01 (against real `systemd --user`) |
 | Runtime settings | `base/settings` | `lexe config` | yes — Settings | yes — theme | `test_settings.cpp` |
 | Dependency and portability analysis | `analysis/depengine`, `analysis/tux32` | `lexe analyze`, `lexe sdk verify` | n/a — developer-only | yes — dependency review, profile gate | `test_depengine.cpp`, `test_tux32*.cpp`, `test_cli_sdk.cpp` |
+| Independent conformance checking | n/a — deliberately NOT the engine | `tools/lexe-conformance/lexe_conformance.py` | n/a | n/a | conformance 01 (differential against `lexe verify`) |
 | Shell completion | `commands` | `lexe completion bash\|zsh` | n/a | n/a | `test_cli_ux.cpp` |
 
 **Why `lexe service` is `n/a` in `lexe-ui` rather than a gap.** Enabling a

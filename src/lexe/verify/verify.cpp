@@ -20,6 +20,7 @@
 #include "lexe/base/json_strict.hpp"
 #include "lexe/base/limits.hpp"
 #include "lexe/package/package.hpp"
+#include "lexe/sandbox/permissions.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -413,6 +414,28 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
         fail_from(kManifest, e);
         return out;
     }
+    // The permission vocabulary is part of manifest validity, and checking it
+    // HERE is what stops `verify` promising something `install` will refuse.
+    //
+    // `Manifest::parse` only checks that `permissions` is an array of strings;
+    // the closed 0.1 vocabulary (and the no-duplicates rule) was enforced by
+    // `normalize_permissions`, which every CONSUMER runs -- installer, launcher,
+    // the permission prompt -- but which the verification pipeline did not. So
+    // `lexe verify` accepted `["camera"]` and `["network","network"]` and
+    // `lexe install` refused the same file.
+    //
+    // That is the same defect shape as the decompression bomb: `verify` is the
+    // command a CI job, a repository gate or a cautious user runs to decide
+    // whether a package is ACCEPTABLE, and a gate that passes what the installer
+    // refuses hands out an assurance the runtime does not honour. A publisher
+    // who trusts it ships a package that fails for every user at install.
+    try {
+        (void)normalize_permissions(manifest.permissions);
+    } catch (const Error& e) {
+        fail_from(kManifest, e);
+        return out;
+    }
+
     pass(report, kManifest,
          "lexe.json is a valid 0.1 manifest: " + manifest.id + " " +
              manifest.version + " (\"" + manifest.name + "\")");

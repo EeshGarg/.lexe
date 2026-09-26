@@ -98,6 +98,17 @@ std::optional<std::string> entry_path_problem(const std::string& raw) {
                std::to_string(limits::kMaxPathBytes) + "-byte limit";
     }
     if (raw.find('\0') != std::string::npos) return "path contains a NUL byte";
+    // §1 states entry paths are UTF-8, but it stated it as a WRITER obligation
+    // and no reader checked it -- so a name carrying a lone 0xFF byte passed the
+    // structure stage and reached the filesystem, and `utf8_segment_to_path`
+    // below builds a std::u8string from these bytes on Windows while its own
+    // comment says "validated UTF-8". An assumption documented and not enforced.
+    //
+    // Checked here, with the rest of the §2 path rules, because an entry name
+    // BECOMES a filesystem path: an overlong encoding is a second spelling of a
+    // character, which is how a segment that does not compare equal to `..` can
+    // still decode to it, and every check above compares bytes.
+    if (!util::is_valid_utf8(raw)) return "path is not valid UTF-8";
     if (raw.find('\\') != std::string::npos) return "path contains a backslash";
     if (raw.front() == '/') return "absolute path";
 
@@ -368,6 +379,90 @@ PackageReader::PackageReader(const fs::path& lexe_file)
               });
     for (std::size_t i = 0; i < impl_->files.size(); ++i) {
         impl_->lookup.emplace(impl_->files[i].entry.path, i);
+    }
+
+    // The decompression-bomb policy, applied at OPEN rather than at extraction.
+    //
+    // It used to live only in extract_payload(), which meant `lexe install`
+    // refused a bomb and `lexe verify` reported it OK -- and `verify` is the
+    // command a CI job, a repository gate or a cautious user runs to decide
+    // whether a package is acceptable. A gate that passes what the installer
+    // will refuse is worse than no gate: it hands out an assurance the runtime
+    // does not honour. (Found by the independent conformance validator in
+    // tools/lexe-conformance, which flagged a 411 KB package expanding 1019x
+    // that every one of verify's seven stages passed.)
+    //
+    // Enforced here, in the reader's constructor, so it applies to every
+    // consumer at once -- verify, install, info, inspect and anything added
+    // later -- instead of being a rule each caller has to remember.
+    //
+    // Read from the central directory's DECLARED sizes, which costs no
+    // decompression: a bomb is refused before a single byte of it is expanded,
+    // which is the whole point of the guard. A lying central directory cannot
+    // buy anything by understating, because extract_payload() still counts the
+    // bytes it actually emits and enforces the same two limits against the
+    // real total. Cheap and early here; authoritative there.
+    {
+        std::uint64_t declared_total = 0;
+        for (const Impl::File& f : impl_->files) {
+            // Overflow-safe: each entry is <= 1 GiB (read_entry's cap) and
+            // entries are <= 65535, so the sum cannot approach UINT64_MAX.
+            declared_total += f.entry.uncompressed_size;
+        }
+        if (declared_total > limits::kMaxTotalUncompressedBytes) {
+            throw VerificationError(
+                "package: entries declare " + std::to_string(declared_total) +
+                    " uncompressed bytes in total, exceeding the " +
+                    std::to_string(limits::kMaxTotalUncompressedBytes) +
+                    "-byte limit",
+                "This package would expand to more than the runtime will "
+                "accept. It is either corrupt or deliberately oversized.");
+        }
+        const std::uint64_t package_size = impl_->bytes.size();
+        if (declared_total > limits::kRatioGraceBytes && package_size != 0 &&
+            declared_total > package_size * limits::kMaxExpansionRatio) {
+            throw VerificationError(
+                "package: expands more than " +
+                    std::to_string(limits::kMaxExpansionRatio) +
+                    "x its packaged size (decompression-bomb guard)",
+                "A package this compressible is not a normal application "
+                "payload. The runtime refuses it rather than expanding it.");
+        }
+    }
+
+    // `signatures/` holds EXACTLY the two signature files and nothing else.
+    //
+    // This closes a hole, and the hole was the signature covering everything in
+    // the package except one directory an attacker could write into.
+    //
+    // §3 excludes the whole `signatures/` PREFIX from hash coverage -- correctly,
+    // since a hash document cannot cover a signature over itself -- while §2's
+    // top-level allowlist permits the prefix in general. Those two rules met in
+    // the middle: any additional entry under `signatures/` was covered by no
+    // hash, covered by no signature, and rejected by nothing. Demonstrated
+    // against a real package: `signatures/smuggled.bin` (3328 bytes) and
+    // `signatures/deep/nested/evil.so` added to a validly signed package, and
+    // `lexe verify` reported "verification: OK (signature valid, Ed25519)" with
+    // all seven stages green.
+    //
+    // Nothing in the format needs anything else there, and the reference writer
+    // emits only these two, so the rule is an exact allowlist rather than a
+    // pattern: a closed set cannot be widened by a filename that happens to look
+    // plausible. An extra signature scheme in a later format version gets its own
+    // specified name and its own coverage rule; it does not get to arrive
+    // unannounced in a directory nothing checks.
+    for (const Impl::File& f : impl_->files) {
+        if (f.entry.path.rfind("signatures/", 0) != 0) continue;
+        if (f.entry.path == "signatures/manifest.sig" ||
+            f.entry.path == "signatures/payload.sig") {
+            continue;
+        }
+        throw VerificationError(
+            "package: unexpected entry under signatures/: " + f.entry.path,
+            "Only signatures/manifest.sig and signatures/payload.sig may appear "
+            "there. Nothing else under that prefix is covered by the package's "
+            "hashes or its signatures, so a package carrying one is carrying "
+            "content nobody signed.");
     }
 
     // Required entries (FORMAT-0.1 §2). 0.1 supports only bundled mode, so

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -309,6 +310,48 @@ void remove_recursive(const fs::path& p) {
     if (ec && fs::exists(p)) {
         throw Error("remove_recursive: " + p.string() + ": " + ec.message());
     }
+}
+
+// ---------------------------------------------------------------- text
+
+bool is_valid_utf8(std::string_view text) {
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        std::size_t length = 0;
+        std::uint32_t code = 0;
+        if (c < 0x80) {
+            ++i;
+            continue;
+        } else if ((c & 0xE0u) == 0xC0u) {
+            length = 2;
+            code = c & 0x1Fu;
+        } else if ((c & 0xF0u) == 0xE0u) {
+            length = 3;
+            code = c & 0x0Fu;
+        } else if ((c & 0xF8u) == 0xF0u) {
+            length = 4;
+            code = c & 0x07u;
+        } else {
+            return false; // a continuation byte in leading position, or 0xF8+
+        }
+        if (i + length > text.size()) return false; // truncated sequence
+        for (std::size_t k = 1; k < length; ++k) {
+            const unsigned char cont = static_cast<unsigned char>(text[i + k]);
+            if ((cont & 0xC0u) != 0x80u) return false;
+            code = (code << 6) | (cont & 0x3Fu);
+        }
+        // Overlong: a value that a shorter sequence could have encoded. This is
+        // the one that matters most -- it is how `..` gets written so that a
+        // byte comparison against ".." does not match it.
+        if (length == 2 && code < 0x80) return false;
+        if (length == 3 && code < 0x800) return false;
+        if (length == 4 && code < 0x10000) return false;
+        if (code > 0x10FFFF) return false;                 // beyond Unicode
+        if (code >= 0xD800 && code <= 0xDFFF) return false; // surrogate half
+        i += length;
+    }
+    return true;
 }
 
 // ------------------------------------------------------ this program

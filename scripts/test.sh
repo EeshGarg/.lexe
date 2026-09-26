@@ -65,7 +65,7 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 # "blocked" instead of "skip" when the obstacle is the environment rather than
 # applicability), and a `<lane>_run`.
 
-ALL_LANES=(unit acceptance integration gui lifecycle concurrency session security windows proton sanitizers)
+ALL_LANES=(unit acceptance integration gui lifecycle concurrency session conformance security windows proton sanitizers)
 
 lane_desc() {
     case "$1" in
@@ -76,6 +76,7 @@ lane_desc() {
     lifecycle)  echo "install -> run -> update -> rollback -> repair -> uninstall, and the same interrupted" ;;
     concurrency) echo "the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection" ;;
     session) echo "the session-manager boundary, against the real systemd --user of this session" ;;
+    conformance) echo "lexe verify vs the independent validator over the same packages: every disagreement is a finding" ;;
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;
@@ -131,6 +132,14 @@ session_check() {
             echo "skip: no systemd --user session here ($err)"; return 1 ;;
     esac
     return 0
+}
+
+conformance_check() {
+    acceptance_check || return 1
+    have python3 || have python || {
+        echo "skip: no python3, so the independent validator cannot run"; return 1; }
+    [[ -f "$REPO/tools/lexe-conformance/lexe_conformance.py" ]] || {
+        echo "skip: the independent validator is not present"; return 1; }
 }
 
 windows_check() {
@@ -193,6 +202,10 @@ concurrency_run() {
 
 session_run() {
     LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/session/run_all.sh"
+}
+
+conformance_run() {
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/conformance/run_all.sh"
 }
 
 security_run() {

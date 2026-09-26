@@ -305,6 +305,33 @@ PublicKey decode_public_key(const std::string& encoded) {
     }
     PublicKey key{};
     std::copy(raw.begin(), raw.end(), key.begin());
+
+    // The encoding must be CANONICAL: re-encoding the decoded key must give
+    // back exactly the string we were handed.
+    //
+    // Base64 leaves the unused bits of the final group free, so a 32-byte key
+    // has many valid spellings -- `...p0g=` and `...p0h=` decode identically.
+    // Without this check a publisher key had more than one name, and the key is
+    // an IDENTITY: `installer.cpp` pins the trusted publisher by comparing the
+    // manifest string against the recorded one, so a re-spelling of the very
+    // same key reads as a changed key, and the update-trust anchor -- the thing
+    // that decides whether an update is from the same publisher -- turns on a
+    // string that was never required to be unique.
+    //
+    // `trust.cpp` already required this of trust records; the manifest was the
+    // odd one out. Enforcing it here rather than at each call site means every
+    // consumer gets it: verify, install, update and the key file reader.
+    //
+    // No real package is affected: `encode_public_key` only ever emits the
+    // canonical form, so anything this runtime or its builder produced already
+    // satisfies it.
+    if (encode_public_key(key) != encoded) {
+        throw VerificationError(
+            "publisher key: not in canonical base64 encoding: " + encoded,
+            "A key must have exactly one spelling, because the publisher key "
+            "string is what pins update trust. Re-encode it with `lexe keygen` "
+            "output, or copy it from `lexe info`.");
+    }
     return key;
 }
 
