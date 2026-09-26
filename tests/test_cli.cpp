@@ -385,6 +385,80 @@ TEST_CASE("build turns a project folder into an installable .lexe") {
     CHECK(util::slurp(out) == util::slurp(out2));
 }
 
+TEST_CASE("a build that fails verification names the stage and keeps nothing") {
+    // Two defects, both about what a developer is left with.
+    //
+    // `lexe build` printed "verification:  FAILED" and stopped. The failing
+    // stage and its reason were already in the report it had just computed, and
+    // it threw them away at the moment they were most wanted -- so the developer
+    // had to run `lexe verify` on the artefact to learn what `lexe build` already
+    // knew.
+    //
+    // And it LEFT that artefact on disk, under the name they asked for. The exit
+    // code was 3, so a script knew; a person had a plausible-looking .lexe in
+    // their output directory, and the next thing anyone does with one of those is
+    // send it to somebody.
+    test::TempLexeHome home;
+    TempWorkDir work;
+
+    // Wrong in exactly one way: the payload is a real host ELF, and the manifest
+    // declares only an architecture it is not. This is what a cross-compiling
+    // build script produces when it silently falls back to the host compiler.
+    const fs::path project = work.dir / "wrongarch";
+    fs::create_directories(project / "payload" / "bin");
+    test::write_native_executable(project / "payload" / "bin" / "app", "hi");
+    util::spit(
+        project / "lexe.json",
+        std::string_view(
+            "{\n  \"lexeVersion\": \"0.1\",\n  \"id\": \"com.example.wrongarch\",\n"
+            "  \"name\": \"Wrong Arch\",\n  \"version\": \"1.0.0\",\n"
+            "  \"publisher\": { \"name\": \"Me\", \"publicKey\": \"AUTO\" },\n"
+            "  \"applicationType\": \"native\",\n"
+            "  \"architectures\": [\"aarch64\"],\n"
+            "  \"entrypoint\": { \"executable\": \"bin/app\" },\n"
+            "  \"install\": { \"scope\": \"user\", \"mode\": \"bundled\" }\n}\n"));
+
+    const fs::path out = work.dir / "wrongarch.lexe";
+    const auto r = run_cli({"build", project.string(), "-o", out.string()});
+
+    // Exit 3 is the documented verification-failure code.
+    CHECK(r.exit_code == 3);
+
+    // It must say WHICH stage, and why.
+    INFO(r.stdout_text);
+    CHECK(r.stdout_text.find("FAILED") != std::string::npos);
+    CHECK(r.stdout_text.find("payload-role") != std::string::npos);
+    CHECK(r.stdout_text.find("aarch64") != std::string::npos);
+
+    // And it must not have left the package behind.
+    INFO("a package that fails its own verification must not survive the build");
+    CHECK_FALSE(fs::exists(out));
+}
+
+TEST_CASE("a build that SUCCEEDS still leaves its package") {
+    // The counterpart, so the removal above cannot be over-eager: the only thing
+    // that gets deleted is a package that failed.
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const fs::path project = work.dir / "fine";
+    fs::create_directories(project / "payload" / "bin");
+    test::write_native_executable(project / "payload" / "bin" / "app", "hi");
+    util::spit(
+        project / "lexe.json",
+        std::string_view(
+            "{\n  \"lexeVersion\": \"0.1\",\n  \"id\": \"com.example.fine\",\n"
+            "  \"name\": \"Fine\",\n  \"version\": \"1.0.0\",\n"
+            "  \"publisher\": { \"name\": \"Me\", \"publicKey\": \"AUTO\" },\n"
+            "  \"applicationType\": \"native\",\n"
+            "  \"architectures\": [\"x86_64\", \"aarch64\"],\n"
+            "  \"entrypoint\": { \"executable\": \"bin/app\" },\n"
+            "  \"install\": { \"scope\": \"user\", \"mode\": \"bundled\" }\n}\n"));
+
+    const fs::path out = work.dir / "fine.lexe";
+    CHECK(run_cli({"build", project.string(), "-o", out.string()}).exit_code == 0);
+    CHECK(fs::exists(out));
+}
+
 TEST_CASE("build rejects a folder that is not a Lexe project") {
     test::TempLexeHome home;
     TempWorkDir work;

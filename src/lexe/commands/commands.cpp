@@ -2397,7 +2397,31 @@ int cmd_build(const std::vector<std::string>& args) {
               << "  application:   " << manifest.name << " "
               << manifest.version << " (" << manifest.id << ")\n"
               << "  publisher key: " << pubkey << "\n"
-              << "  verification:  " << (report.ok() ? "OK" : "FAILED") << "\n";
+              << "  verification:  " << (report.ok() ? "OK" : "FAILED");
+    if (!report.ok()) {
+        // Name the stage and the reason, the way `lexe verify` does.
+        //
+        // This printed "FAILED" and nothing else, so a developer whose package
+        // did not verify learned only that something was wrong and had to go and
+        // run `lexe verify` on the artefact to find out what. The information was
+        // already in hand; it was being thrown away at the moment it was most
+        // wanted.
+        const VerificationStage* failed = nullptr;
+        for (const VerificationStage& stage : report.stages) {
+            if (!stage.ok) {
+                failed = &stage;
+                break;
+            }
+        }
+        if (failed != nullptr) {
+            std::cout << " (" << failed->name << ")\n"
+                      << "                 " << failed->detail << "\n";
+        } else {
+            std::cout << "\n";
+        }
+    } else {
+        std::cout << "\n";
+    }
     // The Tux32 Core 1 verdict, reported the way the Builder reports it at the
     // same moment. ADVISORY here: `lexe build` takes no runtime profile, so
     // there is no portability claim to gate — but a developer who builds from
@@ -2435,6 +2459,20 @@ int cmd_build(const std::vector<std::string>& args) {
         std::cout << "  generated a signing key at " << keyfile.string()
                   << " — keep it safe and out of version control; it is the "
                      "identity of every future update\n";
+    }
+    if (!report.ok()) {
+        // Do not leave a package that failed its own verification lying around
+        // under the name the developer asked for. It exited 3, so a script knows
+        // — but a person who ran this by hand has a plausible-looking .lexe in
+        // their output directory, and the next thing they do with it is send it
+        // to someone. Removing it makes the failure impossible to ignore, which
+        // is the whole point of having detected it.
+        std::error_code remove_ec;
+        if (fs::remove(out, remove_ec)) {
+            std::cout << "  removed " << out.string()
+                      << " — a package that fails its own verification is not "
+                         "something to keep\n";
+        }
     }
     return report.ok() ? 0 : 3;
 }

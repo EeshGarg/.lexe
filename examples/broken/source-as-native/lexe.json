@@ -1,0 +1,34 @@
+{
+  "lexeVersion": "0.1",
+  "name": "Source As Native",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Lexe Examples",
+    "publicKey": "AUTO"
+  },
+  "role": "application",
+  "applicationType": "native",
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "permissions": [],
+  "launch": {
+    "mode": "console",
+    "singleInstance": false
+  },
+  "execution": {
+    "missionCritical": false,
+    "allowedChains": [
+      "native"
+    ]
+  },
+  "id": "org.lexe.broken.sourceasnative",
+  "architectures": [
+    "x86_64"
+  ],
+  "entrypoint": {
+    "executable": "src/main.c",
+    "arguments": []
+  }
+}

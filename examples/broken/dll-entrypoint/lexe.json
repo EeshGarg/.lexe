@@ -1,0 +1,35 @@
+{
+  "lexeVersion": "0.1",
+  "name": "DLL Entrypoint",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Lexe Examples",
+    "publicKey": "AUTO"
+  },
+  "role": "application",
+  "applicationType": "windows",
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "permissions": [],
+  "launch": {
+    "mode": "console",
+    "singleInstance": false
+  },
+  "execution": {
+    "missionCritical": false,
+    "allowedChains": [
+      "wine",
+      "proton"
+    ]
+  },
+  "id": "org.lexe.broken.dllentrypoint",
+  "architectures": [
+    "x86_64"
+  ],
+  "entrypoint": {
+    "executable": "bin/lib.dll",
+    "arguments": []
+  }
+}
