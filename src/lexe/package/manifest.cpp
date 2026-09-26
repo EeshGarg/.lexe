@@ -7,6 +7,8 @@
 
 #include "lexe/package/manifest.hpp"
 
+#include "lexe/base/identity.hpp"
+
 #include "lexe/base/error.hpp"
 #include "lexe/base/json_strict.hpp"
 #include "lexe/base/limits.hpp"
@@ -496,6 +498,14 @@ Manifest Manifest::parse(std::string_view json_text) {
              "-byte limit");
     }
     m.version = require_nonempty_string(root, "version", "version");
+    // A version is a path component, part of lock and lease file names, and the
+    // whole contents of current.txt on a host without symlinks. Refuse one that
+    // cannot survive all three HERE, so an unusable package cannot be built
+    // rather than failing later on somebody else's machine.
+    if (!version_string_is_valid(m.version)) {
+        fail("\"version\" must be 1-64 characters with no whitespace, control "
+             "characters, path separators or drive designators");
+    }
     if (m.version.size() > limits::kMaxVersionBytes) {
         fail("\"version\" exceeds the " +
              std::to_string(limits::kMaxVersionBytes) + "-byte limit");

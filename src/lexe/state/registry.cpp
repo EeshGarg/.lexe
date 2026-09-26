@@ -10,6 +10,8 @@
 
 #include "lexe/state/registry.hpp"
 
+#include "lexe/base/identity.hpp"
+
 #include "lexe/base/error.hpp"
 #include "lexe/base/json_strict.hpp"
 #include "lexe/base/limits.hpp"
@@ -37,31 +39,11 @@ using nlohmann::ordered_json;
 }
 
 /// One dot-separated id segment: non-empty, [a-zA-Z0-9-]+ (FORMAT-0.1 §5).
-bool id_segment_ok(std::string_view segment) {
-    if (segment.empty()) return false;
-    for (const char c : segment) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
-
-/// Enforce the FORMAT-0.1 §5 reverse-DNS id shape (2+ dot-separated segments
-/// of [a-zA-Z0-9-]+, ≤255 chars). Because the shape excludes separators,
-/// drive designators and `.`/`..` segments, a validated id is always safe to
-/// join under apps/. Throws lexe::Error otherwise.
+/// The shared rules (base/identity.hpp). Both used to have a second copy here.
 void validate_id(const std::string& id) { validate_app_id(id, "registry"); }
 
-/// Version strings are free-form (FORMAT-0.1 §5) but become a single path
-/// component under versions/, so reject anything that could traverse or
-/// re-root the path. Throws lexe::Error.
 void validate_version(const std::string& version) {
-    const bool ok = !version.empty() && version != "." && version != ".." &&
-                    version.find_first_of("/\\:\0", 0, 4) == std::string::npos;
-    if (!ok) {
-        throw Error("registry: invalid version string: \"" + version + "\"");
-    }
+    validate_version_string(version, "registry");
 }
 
 /// Strict member lookup helpers; JSON null is treated as an absent key.
@@ -90,28 +72,6 @@ std::string trim_whitespace(std::string text) {
 }
 
 } // namespace
-
-bool app_id_is_valid(const std::string& id) {
-    bool ok = !id.empty() && id.size() <= 255;
-    std::size_t segments = 0;
-    std::size_t start = 0;
-    while (ok) {
-        const std::size_t dot = id.find('.', start);
-        const std::size_t end = (dot == std::string::npos) ? id.size() : dot;
-        ok = id_segment_ok(std::string_view(id).substr(start, end - start));
-        ++segments;
-        if (dot == std::string::npos) break;
-        start = dot + 1;
-    }
-    return ok && segments >= 2;
-}
-
-void validate_app_id(const std::string& id, const char* context) {
-    if (!app_id_is_valid(id)) {
-        throw Error(std::string(context) + ": invalid application id: \"" + id +
-                    "\"");
-    }
-}
 
 // ------------------------------------------------------- InstallationRecord
 

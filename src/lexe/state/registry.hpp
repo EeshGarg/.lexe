@@ -4,24 +4,21 @@
 // version listing, and the `current` symlink (with the `current.txt` text
 // fallback where symlinks are unavailable).
 
-#include "lexe/package/manifest.hpp"
+// The App ID and version rules live in base/identity.hpp: package/manifest
+// needs them too, and package/ is BELOW state/ in the layering, so it cannot
+// reach up here for them. While they lived in THIS header the manifest carried
+// its own second copy of both, and the version copies did not agree -- see
+// base/identity.hpp for what that cost. Included here so the modules that
+// already include registry.hpp for validate_app_id keep compiling.
+#include "lexe/base/identity.hpp"
 #include "lexe/base/paths.hpp"
+#include "lexe/package/manifest.hpp"
 
 #include <filesystem>
 #include <string>
 #include <vector>
 
 namespace lexe {
-
-/// True when `id` has the FORMAT-0.1 §5 reverse-DNS shape (2+ dot-separated
-/// segments of [a-zA-Z0-9-]+, ≤255 chars). Because that shape excludes path
-/// separators, drive designators and `.`/`..` segments, a valid id is always
-/// safe to use as a single path component. Shared by every module that joins
-/// an App ID into a path (registry, diagnostics, per-app config, launch
-/// references) so the rule is stated exactly once.
-bool app_id_is_valid(const std::string& id);
-/// app_id_is_valid, throwing lexe::Error with `context` in the message.
-void validate_app_id(const std::string& id, const char* context);
 
 /// Contents of `apps/<id>/installation.json` (FORMAT-0.1 §9). The pinned
 /// publisher key recorded here is the trust anchor for updates (§7.1).
