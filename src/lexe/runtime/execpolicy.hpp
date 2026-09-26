@@ -75,6 +75,7 @@ struct ProviderSet {
 /// directory listings); never executes a provider.
 ProviderSet probe_providers();
 
+
 /// Every absolute path `probe_providers()` will consider for `id`, in the order
 /// it considers them, whether or not anything is there.
 ///
@@ -168,6 +169,32 @@ struct HostFacts {
     std::string os = "linux"; // this runtime targets Linux hosts
 };
 HostFacts detect_host();
+
+/// Whether a launch will certainly use the NATIVE chain, so that no
+/// compatibility provider needs to be probed for it.
+///
+/// This is a performance predicate with a measured motive. `probe_providers()`
+/// searches every directory on `PATH` for `qemu-x86_64`, `proton`, `box64` and
+/// `FEXInterpreter`, and a launch called it unconditionally -- including for a
+/// plain native application that can never use any of them.
+///
+/// On this development host that cost 1.4 of the 1.8 seconds a launch took:
+/// `PATH` under WSL includes several dozen Windows directories, each stat on
+/// that filesystem costs milliseconds, and the trace showed 784 failed
+/// `newfstatat` calls hunting for emulators that were never going to be used.
+/// The waste is real everywhere -- it is merely cheaper on a host whose `PATH`
+/// is short and local.
+///
+/// Conservative by construction: it answers true only when the native chain is
+/// permitted by the package, viable on this host, and not displaced by a manual
+/// preference. Anything else falls through to the full probe, so a wrong answer
+/// costs performance and never correctness.
+///
+/// It is deliberately NOT used by the paths that DISPLAY what a host could run
+/// (`lexe compat`, `lexe runtime`, `lexe info`): those exist to enumerate
+/// alternatives, and enumerating them requires looking.
+bool native_launch_is_certain(const Manifest& manifest, const AppConfig& config,
+                              const HostFacts& host);
 
 /// Resolve the execution chain for `manifest` on `host`, honouring the user's
 /// per-application overrides and the providers actually present.

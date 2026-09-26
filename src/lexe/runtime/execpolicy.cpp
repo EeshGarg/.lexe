@@ -245,6 +245,31 @@ std::vector<Provider> ProviderSet::available() const {
     return out;
 }
 
+bool native_launch_is_certain(const Manifest& manifest,
+                              const AppConfig& config, const HostFacts& host) {
+    // A manual preference may name a non-native chain, and §10 lets it REORDER
+    // the usable set -- so the answer is no whenever one is set, without
+    // inspecting it. Cheap and conservative beats clever here.
+    if (config.compatibility_mode == CompatibilityMode::Manual &&
+        !config.preferred_chain.empty()) {
+        return false;
+    }
+    // The package must permit native at all.
+    if (!manifest.chain_allowed("native")) return false;
+    // A foreign-OS payload is never native, whatever the host is.
+    if (manifest.application_kind == ApplicationType::Windows) return false;
+    // The host must be able to run a native binary of this package's ISA.
+    if (host.os != "linux") return false;
+    const std::vector<std::string>& arches = manifest.architectures;
+    if (std::find(arches.begin(), arches.end(), host.isa) == arches.end()) {
+        return false;
+    }
+    // Native is considered FIRST among candidates (see resolve_chain), needs no
+    // provider (chain_available returns true for it immediately), and is
+    // permitted and viable -- so it wins, and nothing else will be consulted.
+    return true;
+}
+
 ProviderSet probe_providers() {
     ProviderSet set;
     for (const ProviderSpec& spec : provider_specs()) {

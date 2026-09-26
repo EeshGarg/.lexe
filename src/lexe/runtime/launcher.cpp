@@ -318,9 +318,23 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
         config.compatibility_mode = CompatibilityMode::Manual;
         config.preferred_chain = {*request.chain_override};
     }
-    const ProviderSet providers = probe_providers();
+    // Probe compatibility runtimes only when the launch might actually use one.
+    //
+    // See native_launch_is_certain: a native launch cannot use Proton, FEX,
+    // Box64 or qemu, and probing for them searched every `PATH` directory for
+    // each of the four. That was 1.4 of the 1.8 seconds a launch took on this
+    // host, spent entirely on stats that could not change the outcome.
+    //
+    // An empty set is safe for the native case precisely because
+    // `chain_available` returns true for a native chain without consulting
+    // providers at all. Every other case takes the full probe, so the cost is
+    // paid where it buys something.
+    const HostFacts host = detect_host();
+    const ProviderSet providers = native_launch_is_certain(manifest, config, host)
+                                      ? ProviderSet{}
+                                      : probe_providers();
     const ChainResolution resolution =
-        resolve_chain(manifest, config, detect_host(), providers);
+        resolve_chain(manifest, config, host, providers);
     if (!resolution.ok) {
         ErrorRecord failure = base_record(
             id, version,

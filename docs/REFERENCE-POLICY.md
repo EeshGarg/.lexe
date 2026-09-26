@@ -191,6 +191,44 @@ older versions, any version referenced by a pending transaction, and any version
 a running launch is using.
 
 
+## 2.1 Measured costs
+
+Baselines, not budgets. They are recorded so a change can be NOTICED, which is
+the thing that was missing: a launch took 1.8 seconds for an entire development
+wave with every lane green, because nothing in the suite asked what anything
+cost. It was found by measuring the command, not by a test failing.
+
+Measured on the development host (WSL2, ext4 scratch tree, warm cache):
+
+| | |
+|---|---|
+| the payload executed directly | 2–3 ms |
+| bare `bwrap … /bin/true` | 5–6 ms |
+| `lexe list`, `lexe info` | 17–19 ms |
+| `lexe run` (native, sandboxed) | **35 ms** |
+
+`lexe run` was **1800 ms** before the fix described below, and the difference was
+not in the sandbox, the registry, or the payload — those together account for
+about 25 ms of it.
+
+`probe_providers()` searches every directory on `PATH` for `qemu-x86_64`,
+`proton`, `box64` and `FEXInterpreter`, and a launch called it unconditionally.
+Under WSL, `PATH` carries several dozen Windows directories where each stat costs
+milliseconds: a trace showed 784 failed `newfstatat` calls hunting for
+interpreters a native launch can never use. A native launch now skips the probe
+entirely (`native_launch_is_certain`), and anything that might actually use a
+chain still takes the full probe.
+
+The waste existed on every host. It was merely cheap where `PATH` is short and
+local, which is why nobody had noticed.
+
+What guards it now is `tests/test_launch_cost.cpp`, and it deliberately asserts
+the **work** rather than the time: that a launch which cannot use a compatibility
+runtime does not look for one. A wall-clock budget on a shared machine is the
+flakiest test there is — one had already cost this suite three false failures —
+so the assertion is on a property of the code, which is stable under load and is
+what actually regressed.
+
 ## 3. Exit codes
 
 | Code | Meaning |
