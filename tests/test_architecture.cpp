@@ -91,6 +91,24 @@ std::string bullets(const std::vector<std::string>& lines) {
     return s;
 }
 
+// Every run of whitespace becomes one space, so a comparison against prose is
+// not defeated by where the markdown happens to wrap.
+std::string collapse_whitespace(const std::string& text) {
+    std::string out;
+    bool in_space = false;
+    for (const char c : text) {
+        const bool space = c == ' ' || c == '\n' ||
+                           c == '\r' || c == '\t';
+        if (space) {
+            if (!in_space) out += ' ';
+        } else {
+            out += c;
+        }
+        in_space = space;
+    }
+    return out;
+}
+
 // The subsystem directory an engine include names, or "" if it names none.
 std::string included_subsystem(const std::string& include) {
     if (include.rfind("lexe/", 0) != 0) return "";
@@ -123,6 +141,45 @@ TEST_CASE("every engine subsystem on disk is a documented layer") {
              << subsystem << ", which does not exist on disk");
         CHECK(found.count(subsystem) == 1);
     }
+}
+
+TEST_CASE("docs/ARCHITECTURE.md names every subsystem, and only those") {
+    // The layer order above is checked against the TREE, which is what matters
+    // for correctness — but the prose table in docs/ARCHITECTURE.md is what a
+    // reader actually learns the architecture from, and nothing was checking it.
+    //
+    // It drifted immediately: `state/` was created during the same wave that
+    // wrote the table, and the table went on describing `base/` as the home of
+    // locking and `install/` as the home of records for the rest of that wave.
+    // A documented layering that does not match the code is worse than none,
+    // because it is believed.
+    const std::string doc =
+        lexe::util::slurp_text(fs::path(LEXE_SOURCE_DIR) / "docs" /
+                               "ARCHITECTURE.md");
+    REQUIRE_FALSE(doc.empty());
+
+    for (const std::string& subsystem : layer_order()) {
+        // The table's first column, as it is written there.
+        const std::string cell = "| `" + subsystem + "/` |";
+        INFO("docs/ARCHITECTURE.md has no subsystem table row for `"
+             << subsystem << "/` — add one, or remove the layer");
+        CHECK(doc.find(cell) != std::string::npos);
+    }
+
+    // And the documented ORDER must be the order this test enforces, stated in
+    // one place in the prose so the two cannot disagree quietly.
+    //
+    // Compared with whitespace collapsed, because markdown gets reflowed: the
+    // sentence naming the order wraps across lines, and a verbatim search would
+    // fail for a reason that has nothing to do with the architecture.
+    const std::string flat = collapse_whitespace(doc);
+    std::string order;
+    for (const std::string& subsystem : layer_order()) {
+        order += (order.empty() ? "" : " ") + subsystem;
+    }
+    INFO("docs/ARCHITECTURE.md must state the layer order as:\n  "
+         << order);
+    CHECK(flat.find(order) != std::string::npos);
 }
 
 TEST_CASE("the engine is layered: no subsystem includes one above it") {

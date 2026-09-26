@@ -44,19 +44,37 @@ other, and the `lexe` binary is just its entry point. `lexe-ui` and
 
 | Subsystem | Holds | Depends on |
 |---|---|---|
-| `base/` | foundations with no .LEXE policy in them: errors and exit codes, paths, process/hex/file utilities, locking, strict JSON, HTTP, version ordering, settings | — |
+| `base/` | foundations with no .LEXE policy in them: errors and exit codes, the App ID and version rules, paths, process/hex/file utilities, strict JSON, HTTP, version ordering, settings | — |
 | `package/` | the container and what it declares: ZIP reader/writer, manifest, Ed25519/SHA-256, and the defensive ELF and PE readers | `base` |
 | `verify/` | the FORMAT §6 pipeline and the local trust model | `base`, `package` |
 | `analysis/` | dependency graphs, runtime profiles and the Tux32 Core 1 baseline — read-only inspection, no installed state | `base`, `package` |
-| `install/` | installed state: records, transactional install/uninstall/rollback/repair, updates, per-app overrides | `base`, `package`, `verify` |
+| `state/` | the LAYOUT of installed state: the installation records, the canonical per-application path API, per-app user overrides, and the operation locks and version leases that serialise access to it | `base`, `package` |
+| `install/` | ORCHESTRATION over that state: transactional install/uninstall/rollback/repair and updates | everything below |
 | `runtime/` | getting an application to run: execution-policy resolution, compatibility chains, host compilation, launch references, and the launcher | `base`, `package`, `verify`, `install`, `sandbox`, `analysis` |
 | `sandbox/` | the isolation backend and the permission model | `base`, `package` |
 | `integration/` | durable desktop integration and the pure content generation behind it | `base`, `package`, `install` |
 | `diagnostics/` | structured error records and the frontend-neutral display model | `base`, `package` |
 | `commands/` | the `lexe` command surface: parsing, help, output formatting, exit codes | everything above |
 
-Nothing below `base/` reaches upward, and no frontend reaches past `commands/`
-into a private detail. Modules, in dependency order:
+The layer order is `base package analysis sandbox state verify diagnostics
+runtime integration install commands`, and it was not chosen for symmetry — it was
+chosen by running the include graph and looking for a grouping with no cycles in
+it. That took two attempts. The first kept `lock` in `base/` and `registry` in
+`install/`, and the audit came back with six upward edges, the worst being a
+foundation module reaching into installed state. Both of those modules turned out
+to be about installed state rather than about foundations: `lock` locks per-
+application operations, and `registry`'s most-used face is the canonical per-app
+path API that `lock` and `trust` were both reaching for. Moving them, with
+`appconfig`, into `state/` leaves the graph strictly layered.
+
+`tests/test_architecture.cpp` enforces it by reading this tree: an upward include
+fails, a subsystem that exists on disk but not in the order above fails (and the
+reverse), the engine including a frontend fails, and a frontend including anything
+but engine headers and `gui/*.hpp` fails. That last rule is not hypothetical — it
+is what caught `lexe-ui` including `src/gui/main.cpp`, another frontend's
+translation unit, to reuse its view model.
+
+Modules, in dependency order:
 
 | Module | Responsibility |
 |---|---|
