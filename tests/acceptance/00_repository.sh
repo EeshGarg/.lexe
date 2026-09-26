@@ -9,7 +9,7 @@
 #     was a `native` package, where the payload is a compiled binary and
 #     committing it would mean committing build output. Then the `portable`
 #     application type arrived, for which the payload IS THE SOURCE. The rule
-#     therefore excluded examples/portable-hello/payload/src/ from the
+#     therefore excluded examples/portable/c-hello/payload/src/ from the
 #     repository, and 05_portable_compile.sh — the suite that proves the whole
 #     portable capability — could not have run on a fresh clone.
 #

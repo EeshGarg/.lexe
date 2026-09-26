@@ -24,7 +24,7 @@ acc_begin "06 foreign os"
 acc_require_binaries
 acc_scratch_home
 
-WIN_EXAMPLE="$ACC_REPO/examples/windows-hello"
+WIN_EXAMPLE="$ACC_REPO/examples/windows/console-hello"
 WIN_ID="com.usha.windowshello"
 WIN_VERSION="1.0.0"
 WIN_ENTRY="bin/windows-hello.exe"

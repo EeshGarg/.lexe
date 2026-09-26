@@ -38,7 +38,7 @@ acc_require_binaries
 acc_scratch_home
 
 WIN_EXAMPLE="$ACC_REPO/examples/windows/console-hello"
-[[ -d "$WIN_EXAMPLE" ]] || WIN_EXAMPLE="$ACC_REPO/examples/windows-hello"
+[[ -d "$WIN_EXAMPLE" ]] || WIN_EXAMPLE="$ACC_REPO/examples/windows/console-hello"
 WIN_ID="com.usha.windowshello"
 
 if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then

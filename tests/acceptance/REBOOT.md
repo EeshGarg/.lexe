@@ -52,10 +52,10 @@ ls ~/.local/share/lexe/launch/ 2>/dev/null
 ## 1. Build and package the GUI test application
 
 ```sh
-make -C examples/gui-hello
+make -C examples/native/gui-hello
 lexe keygen /tmp/lexe-manual-key.json
-lexe build examples/gui-hello -o ~/Desktop/App.lexe --key /tmp/lexe-manual-key.json
-git checkout -- examples/gui-hello/lexe.json   # `build` fills in publisher.publicKey
+lexe build examples/native/gui-hello -o ~/Desktop/App.lexe --key /tmp/lexe-manual-key.json
+git checkout -- examples/native/gui-hello/lexe.json   # `build` fills in publisher.publicKey
 ```
 
 **Pass:** `~/Desktop/App.lexe` exists and `lexe verify ~/Desktop/App.lexe`

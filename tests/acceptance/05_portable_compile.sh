@@ -22,7 +22,7 @@ acc_begin "05 portable compile"
 acc_require_binaries
 acc_scratch_home
 
-PORTABLE_EXAMPLE="$ACC_REPO/examples/portable-hello"
+PORTABLE_EXAMPLE="$ACC_REPO/examples/portable/c-hello"
 PORTABLE_ID="com.usha.portablehello"
 PORTABLE_VERSION="1.0.0"
 PORTABLE_ENTRY="bin/portable-hello"
