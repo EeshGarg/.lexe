@@ -222,11 +222,36 @@ proton_run() {
 
 sanitizers_run() {
     local san_dir="$BUILD_DIR-san"
+    local stamp="$san_dir/.build-complete"
+
+    # An INTERRUPTED build of this tree is discarded rather than continued.
+    #
+    # This lane once reported eight failures that looked exactly like logic bugs:
+    # `approve_compile = true` read as not approved, `explicit_trust = true` read
+    # as not trusted, `allow_permission_expansion = true` read as not approved.
+    # Three unrelated booleans, all wrong, all in InstallOptions -- because a
+    # field had been added to that struct and the tree held object files from
+    # both layouts, so those booleans were being read from the wrong offsets.
+    # The same 729 tests passed in the ordinary build and passed here again from
+    # a clean tree.
+    #
+    # That is the worst shape a false failure can take: it is indistinguishable
+    # from a real defect, and it sends you looking for a bug that is not there.
+    # The stamp is removed before building and written after, so an interrupted
+    # or killed build is detected on the next run and the tree is rebuilt from
+    # scratch instead of being half-trusted.
+    if [[ -d "$san_dir" && ! -f "$stamp" ]]; then
+        echo "  (the previous sanitizer build did not complete — rebuilding clean)"
+        rm -rf "$san_dir"
+    fi
+    rm -f "$stamp"
+
     cmake -S "$REPO" -B "$san_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" >/dev/null || return 1
     cmake --build "$san_dir" -j "$JOBS" --target lexe_tests || return 1
+    : > "$stamp" # the build completed; this tree may be trusted incrementally
     # The vendored ed25519 performs signed left-shifts that UBSan reports.
     # Suppress them BY NAME so a new finding is still visible, rather than
     # tolerating a permanently noisy run that nobody reads.

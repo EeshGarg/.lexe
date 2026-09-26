@@ -47,7 +47,7 @@ Corpus packages are constructed in-test (raw miniz / raw bytes where the
 ## C. Crash-Recovery Corpus — `tests/test_crash_recovery.cpp`
 
 Installation MUST be transactional: extract + verify into a staging directory
-under `apps/<id>/staging.<nonce>/` (same filesystem), verify the staged tree,
+under `apps/<id>/.txn-staging/` (same filesystem), verify the staged tree,
 atomically rename to `versions/<v>/`, then atomically flip `current`
 (temp-name + rename for both symlink and `current.txt`). Any `lexe` command
 sweeps stale staging dirs on startup.
@@ -82,24 +82,45 @@ executable in the source tree, **0644** otherwise — the only two modes ever
 written; no special bits; see FORMAT §1), no ZIP64 records for small archives.
 Two different source-tree enumeration orders (created shuffled) MUST still
 produce identical packages. Multi-executable payloads (a helper binary beside
-the entrypoint) MUST install and run — the round-trip preserves each file's
-exec bit, not only the declared entrypoint's.
+the entrypoint) MUST install and run.
 
-## E. Health Check + Automatic Rollback (minimal 0.1 semantics)
+**How the exec bit survives the round trip changed in the 0.1 freeze**, and this
+paragraph used to describe the old mechanism. It is no longer the ZIP
+external-attribute mode: that field is covered by no hash and no signature, so
+it could be altered on a signed package undetected, and a data file's mode was
+demonstrated being flipped to `04755` on a package that still verified.
 
-Optional manifest field:
+The exec bit now comes from the `executable` member of `metadata/hashes.json`
+(FORMAT-0.1 §3.1.1), which the payload signature covers. The guarantee this
+section asserts is unchanged and is now actually enforceable: a publisher's
+declaration of which payload files are executable round-trips exactly, for
+helpers as well as for the declared entrypoint. A package written before that
+member existed falls back to a content check (ELF, PE, `#!`), which is lossy for
+a `.jar` or a shebang-less script — so a package with such helpers MUST be
+repacked to carry the declaration.
 
-```json
-"healthCheck": { "arguments": ["--health"], "timeoutSeconds": 10 }
-```
+## E. Health Check + Automatic Rollback — NOT IN 0.1
 
-Semantics: after an update is staged and flipped, the runtime runs **the
-entrypoint executable itself** (never another program, never a shell) with
-exactly these arguments, structured argv end-to-end. Non-zero exit or timeout →
-automatic rollback to the previous version and a non-zero `lexe update` exit
-with an explanation. No `healthCheck` field → no health gate. This is the whole
-0.1 hook surface: `scripts/` remain inert (FORMAT §2) and no package-controlled
-shell ever runs.
+**Status: deferred. `healthCheck` is not a field of Format 0.1.**
+
+This section previously specified an optional `healthCheck` manifest field in
+normative terms. Nothing has ever read it: no code in `src/` parses it, and
+`Installer::check_health` is an unrelated static integrity check. Because
+FORMAT-0.1 §5.0 requires readers to **ignore unknown members**, a package
+carrying `healthCheck` was silently accepted and silently ignored — the worst
+possible outcome for a field a publisher might reasonably have believed was
+protecting their users.
+
+It is recorded here as a design sketch for a later version, not a requirement:
+
+> After an update is staged and flipped, the runtime runs **the entrypoint
+> executable itself** (never another program, never a shell) with exactly the
+> declared arguments, structured argv end-to-end. Non-zero exit or timeout →
+> automatic rollback to the previous version.
+
+The constraint that matters and which 0.1 DOES hold: `scripts/` remains inert
+(FORMAT §2) and no package-controlled shell ever runs. 0.1's hook surface is
+empty, which is a stronger statement than the one this section used to make.
 
 ## F. Update Trust Binding
 

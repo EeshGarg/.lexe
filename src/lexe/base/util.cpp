@@ -4,6 +4,7 @@
 #include "lexe/base/error.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -266,22 +267,59 @@ void spit(const fs::path& file, std::string_view text) {
     spit(file, reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
 }
 
+/// This process's id, for making a temporary name unique per writer.
+std::uint64_t process_id() {
+#ifdef _WIN32
+    return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
 void write_atomic(const fs::path& file, std::string_view text) {
-    const fs::path tmp = file.string() + ".tmp";
+    // The temporary name is UNIQUE PER WRITER, and that is a bug fix rather
+    // than fastidiousness.
+    //
+    // It used to be `<file>.tmp`, one name shared by every writer, and two
+    // processes writing the same file concurrently broke each other: the first
+    // renamed the shared temporary into place, and the second then found its own
+    // temporary gone, failed its rename, and threw.
+    //
+    // The failure was worse than an error, because of what the fallback below
+    // did on the way out. It removed the DESTINATION before retrying -- so the
+    // loser of the race deleted the record the winner had just written, and only
+    // then reported that it could not write. A function whose entire purpose is
+    // that a reader sees either the whole old content or the whole new content
+    // could leave a reader seeing no file at all.
+    //
+    // Found by the concurrency lane, on `installation.json` during simultaneous
+    // launches, which is exactly the case this write was made atomic for. The
+    // torn read it was guarding against had never been observed; the collision
+    // it introduced was reproducible two runs in five.
+    static std::atomic<std::uint64_t> counter{0};
+    const fs::path tmp =
+        file.string() + ".tmp." +
+        std::to_string(static_cast<std::uint64_t>(process_id())) + "." +
+        std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
+
     spit(tmp, text);
     std::error_code ec;
     fs::rename(tmp, file, ec);
-    if (ec) {
-        // Fall back to remove+rename for filesystems where rename over an
-        // existing file fails.
+    if (!ec) return;
+
+    // Only reached where rename-over-existing is unsupported (some Windows
+    // filesystems). The destination is removed ONLY when our own temporary is
+    // still there to put in its place -- otherwise this would destroy content
+    // it cannot replace, which is the hazard described above.
+    std::error_code exists_ec;
+    if (fs::exists(tmp, exists_ec)) {
         fs::remove(file, ec);
         std::error_code ec2;
         fs::rename(tmp, file, ec2);
-        if (ec2) {
-            remove_recursive(tmp);
-            throw Error("cannot write file atomically: " + file.string());
-        }
+        if (!ec2) return;
     }
+    remove_recursive(tmp);
+    throw Error("cannot write file atomically: " + file.string());
 }
 
 // ---------------------------------------------------------------- dir ops

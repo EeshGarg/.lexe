@@ -46,6 +46,28 @@ namespace lexe::test {
 namespace fs = std::filesystem;
 
 /// A unique, not-yet-created directory path under the system temp dir.
+/// The 8-byte PNG signature plus enough of an IHDR to look like a file.
+///
+/// Icons are validated before being installed into the user's hicolor theme
+/// (integration.cpp): the application is sandboxed, its icon is parsed by the
+/// desktop's image stack in an unsandboxed process, so bytes that are not
+/// plausibly the image kind their name claims are refused. Test fixtures
+/// therefore have to carry a real signature -- a placeholder string is exactly
+/// what the check exists to reject, and using one would have meant either a
+/// failing test or a weakened check.
+inline std::vector<std::uint8_t> minimal_png() {
+    return {0x89, 'P',  'N',  'G',  0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00,
+            0x00, 0x0D, 'I',  'H',  'D',  'R',  0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00};
+}
+
+/// A minimal but well-formed SVG document.
+inline std::string minimal_svg() {
+    return "<?xml version=\"1.0\"?>\n"
+           "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+           "width=\"16\" height=\"16\"/>\n";
+}
+
 inline fs::path unique_temp_dir(const std::string& prefix) {
     static std::mt19937_64 rng(
         static_cast<std::uint64_t>(std::random_device{}()) ^

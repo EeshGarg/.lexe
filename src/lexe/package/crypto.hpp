@@ -50,6 +50,24 @@ bool verify_signature(const std::vector<std::uint8_t>& message,
 /// padding (FORMAT-0.1 §4 "Publisher key encoding").
 std::string encode_public_key(const PublicKey& key);
 
+/// Whether two encoded publisher keys are the SAME KEY.
+///
+/// Compares decoded 32-byte key material, never the strings. Trust pinning asks
+/// "is this the same publisher?", which is a question about the key, and a
+/// string comparison answers a different question: "is this the same spelling?".
+///
+/// Canonical encoding is separately required by `decode_public_key`, so in a
+/// well-formed package the two questions currently coincide. They are kept apart
+/// anyway, because the consequence of them diverging is not a cosmetic mismatch:
+/// it is an installed application refusing every legitimate update from its own
+/// publisher, or -- if the comparison were ever relaxed the other way -- a
+/// different publisher taking over an installed id. A security decision should
+/// not rest on an encoding rule enforced somewhere else.
+///
+/// Returns false when either side fails to decode. A key that cannot be read is
+/// not equal to anything, including another unreadable key.
+bool same_public_key(const std::string& a, const std::string& b);
+
 /// Decode a publisher key string. Throws VerificationError on a wrong prefix,
 /// bad base64, or decoded length != 32 (FORMAT-0.1 §4).
 PublicKey decode_public_key(const std::string& encoded);

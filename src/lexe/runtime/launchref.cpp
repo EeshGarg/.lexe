@@ -90,6 +90,17 @@ std::string local_launch_key_string(const Paths& paths) {
     return crypto::encode_public_key(local_launch_key(paths).public_key);
 }
 
+bool launch_reference_is_local(const Paths& paths, const Manifest& manifest,
+                               const std::string& signing_key) {
+    if (manifest.role != PackageRole::Launch) return false;
+    try {
+        return crypto::same_public_key(signing_key,
+                                       local_launch_key_string(paths));
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 fs::path launch_reference_path(const Paths& paths, const std::string& id) {
     validate_app_id(id, "launch reference");
     return paths.launch_dir() / (id + ".lexe");

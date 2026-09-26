@@ -46,6 +46,32 @@ crypto::KeyPair local_launch_key(const Paths& paths);
 /// The public key string ("ed25519:…") of the machine-local launch key.
 std::string local_launch_key_string(const Paths& paths);
 
+/// Whether this launch reference was made on THIS machine.
+///
+/// A launch reference is signed by the machine-local key, and nothing checked
+/// it. So a reference signed by any key at all verified as OK and launched the
+/// installed application it named -- `lexe verify` even printed the attacker's
+/// fingerprint as though it meant something.
+///
+/// The blast radius was small: a reference carries no arguments, so the worst
+/// outcome was starting an application the user already had, in its normal
+/// configuration, which anyone able to write the file could have done with a
+/// `.desktop` entry instead. It did NOT poison the target's trust record.
+///
+/// It is enforced anyway, for two reasons. `lexe verify` reporting OK on a
+/// foreign-signed reference tells a user -- or a repository gate -- something
+/// untrue about an artifact whose only claim is local provenance. And the
+/// moment a reference carries anything more than a target id (arguments, a
+/// chain selection, a version pin), an unchecked signature stops being
+/// cosmetic and becomes the delivery mechanism. The information needed to tell
+/// the two apart already existed; it simply was not compared.
+///
+/// Returns false when the key does not match, or when the local key cannot be
+/// read -- an unreadable local key means provenance cannot be established, and
+/// the answer to "was this made here?" is then no.
+bool launch_reference_is_local(const Paths& paths, const Manifest& manifest,
+                               const std::string& signing_key);
+
 /// Where the canonical launch reference for `id` lives:
 /// `<home>/launch/<application-id>.lexe` (§15.1).
 std::filesystem::path launch_reference_path(const Paths& paths,

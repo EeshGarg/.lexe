@@ -512,12 +512,17 @@ def check_container(c, rep):
                     % MAX_ENTRY_UNCOMPRESSED_BYTES,
                     "declares %d uncompressed bytes" % e.uncomp_size, "§1")
         if e.is_directory:
-            rep.warn("CONTAINER_DIRECTORY_ENTRY", e.name,
-                     "no ZIP directory entries (paths ending in '/'): "
-                     "docs/HARDENING.md §B.11 says readers reject them in 0.1, "
-                     "but FORMAT-0.1 §2 does not list them, so this is reported "
-                     "as a warning rather than a violation",
-                     "a directory entry is present", "§2")
+            # Upgraded from a warning to a violation when FORMAT-0.1 §2.1 made
+            # the rule normative. It had been a warning precisely because the
+            # spec did not state it while HARDENING.md §B.11 did, and the
+            # reference reader did neither -- it silently SKIPPED them. That was
+            # settled the hard way: a directory record can carry data bytes, and
+            # because a skipped entry is an entry no later rule applies to, one
+            # named `signatures/evil/` bypassed the exact allowlist written to
+            # stop exactly that. Both implementations now reject.
+            rep.add("CONTAINER_DIRECTORY_ENTRY", e.name,
+                    "no ZIP directory entries (paths ending in '/')",
+                    "a directory entry is present", "§2.1")
         total_declared += e.uncomp_size
 
     if total_declared > MAX_TOTAL_UNCOMPRESSED_BYTES:

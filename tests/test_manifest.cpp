@@ -488,14 +488,29 @@ TEST_CASE("install.mode gating: network/launcher are \"unsupported in 0.1\"") {
         {"empty mode", [](json& j) { j["install"]["mode"] = ""; }},
         {"mode not a string", [](json& j) { j["install"]["mode"] = 1; }},
         {"install not an object", [](json& j) { j["install"] = "bundled"; }},
+        {"reserved scope \"system\"",
+         [](json& j) { j["install"]["scope"] = "system"; }},
+        {"reserved scope \"machine-wide\"",
+         [](json& j) { j["install"]["scope"] = "machine-wide"; }},
+        {"empty scope", [](json& j) { j["install"]["scope"] = ""; }},
     });
 }
 
 TEST_CASE("install.scope and install.estimatedSize constraints") {
     lexe::test::TempLexeHome home;
+    // `install.scope` used to accept ANY non-empty string, and this row
+    // asserted it -- "scope system parses (not gated by §5)". FORMAT-0.1 §5.7
+    // now defines `"user"` as the only scope 0.1 has and reserves every other
+    // value, so the row moved to the rejection table below.
+    //
+    // The spec changed deliberately, which is why the test changed with it: the
+    // old behaviour was an omission rather than an extension point. A package
+    // declaring `"scope": "machine-wide"` was installed per-user anyway --
+    // silently doing something other than what it said, which is the outcome a
+    // reserved value exists to prevent.
     check_accepts({
-        {"scope system parses (not gated by §5)",
-         [](json& j) { j["install"]["scope"] = "system"; }},
+        {"scope user is the one 0.1 defines",
+         [](json& j) { j["install"]["scope"] = "user"; }},
         {"estimatedSize zero",
          [](json& j) { j["install"]["estimatedSize"] = 0; }},
         {"estimatedSize large",

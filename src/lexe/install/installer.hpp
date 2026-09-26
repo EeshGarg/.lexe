@@ -30,6 +30,25 @@ struct InstallOptions {
     /// explicit "install anyway" flows). Every other verification stage
     /// (FORMAT-0.1 §6.1–§6.6) always runs.
     bool force_arch = false;
+    /// Explicit consent to move an application BACKWARDS to an older version
+    /// (FORMAT-0.1 §7.1).
+    ///
+    /// `lexe update` already refuses to go backwards (§7 check 7). A direct
+    /// install did not: the package is authentic, so nothing in verification
+    /// objects, and `lexe install app-1.0.0.lexe` over 3.0.0 silently returned
+    /// the user to 1.0.0 with a success exit and no mention of it.
+    ///
+    /// That matters because "open this .lexe" is the PRIMARY user gesture. An
+    /// old signed package is exactly what an attacker who cannot forge a
+    /// signature still has, and a downgrade to a known-vulnerable version is a
+    /// real outcome to reach by a double-click.
+    ///
+    /// Downgrading stays possible -- it is legitimate when a new version is
+    /// broken, and refusing outright would make the runtime worse than the
+    /// problem. It just has to be asked for. A bare `--yes` does NOT set this,
+    /// for the same reason it does not grant new permissions: confirming an
+    /// action is not the same as choosing a different one.
+    bool allow_downgrade = false;
     /// Explicit consent to grant NEW permissions on an update (runtime-trust
     /// WS5). Without it, an update whose normalized permission set expands
     /// beyond the installed approved set is refused with PermissionError. A

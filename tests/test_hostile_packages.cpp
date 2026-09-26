@@ -16,6 +16,7 @@
 #include "lexe/base/error.hpp"
 #include "lexe/base/limits.hpp"
 #include "lexe/package/package.hpp"
+#include "lexe/runtime/launchref.hpp"
 #include "lexe/base/util.hpp"
 #include "lexe/verify/verify.hpp"
 
@@ -338,6 +339,196 @@ TEST_CASE("a publisher key must have exactly one spelling") {
               pack_manifest(w, key, base_manifest(canonical), "canon-key"),
               false)
               .ok());
+}
+
+TEST_CASE("a launch reference is only as good as its local provenance") {
+    // REGRESSION for a contract violation rather than an exploit, which is why
+    // it is worth writing down carefully.
+    //
+    // A `role: "launch"` artifact is a local shortcut. Its signature's entire
+    // claim is "the machine that made me made me" -- launchref.hpp has always
+    // documented the machine-local key -- and nothing verified that claim. A
+    // reference signed by ANY key verified as OK, and `lexe verify` printed the
+    // signer's fingerprint as though it established something.
+    //
+    // The blast radius was genuinely small, and saying so is part of reporting
+    // it honestly: a reference carries no arguments, so the worst outcome was
+    // starting an application the user already had, in its normal
+    // configuration -- which anyone able to write that file could have done with
+    // a desktop entry instead. It did not affect the target's trust binding.
+    //
+    // It is enforced because of what generalises. Reporting an artifact as
+    // verified when the only thing its signature could attest was never checked
+    // tells a user -- or a repository gate -- something untrue. And the moment a
+    // reference carries arguments, a chain selection or a version pin, an
+    // unchecked signature stops being cosmetic and becomes the delivery
+    // mechanism. FORMAT-0.1 §9.8.1.
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+
+    Manifest reference;
+    reference.id = kLaunchReferenceId;
+    reference.role = PackageRole::Launch;
+    reference.launch_application_id = "com.example.target";
+
+    // The machine's own key: accepted.
+    const std::string local = local_launch_key_string(paths);
+    CHECK(launch_reference_is_local(paths, reference, local));
+
+    // Any other key: refused, however well-formed the signature is. This is the
+    // case that used to verify OK.
+    const crypto::KeyPair foreign = test::make_keypair();
+    const std::string foreign_encoded =
+        crypto::encode_public_key(foreign.public_key);
+    REQUIRE(foreign_encoded != local);
+    INFO("local: " << local << "  foreign: " << foreign_encoded);
+    CHECK_FALSE(launch_reference_is_local(paths, reference, foreign_encoded));
+
+    // A key that cannot be decoded is not the local key either: "unreadable"
+    // must not read as "acceptable".
+    CHECK_FALSE(launch_reference_is_local(paths, reference, "ed25519:not-base64!"));
+    CHECK_FALSE(launch_reference_is_local(paths, reference, ""));
+
+    // The check applies ONLY to launch references. An application package is
+    // signed by its publisher and has nothing to do with this machine's key --
+    // if this returned true for an application, the caller would start refusing
+    // every legitimate package.
+    Manifest application = reference;
+    application.role = PackageRole::Application;
+    application.id = "com.example.app";
+    CHECK_FALSE(launch_reference_is_local(paths, application, local));
+
+    // And the reference id itself must remain the fixed one: binding a real
+    // application's id to the machine-local key is what kLaunchReferenceId
+    // exists to prevent (§5.4).
+    CHECK(std::string(kLaunchReferenceId) == "org.lexe.launch");
+}
+
+TEST_CASE("a resource limit is reported as policy, not as a malformed package") {
+    // FORMAT 0.1 FREEZE DECISION, pinned as a test.
+    //
+    // The expansion-ratio and total-size caps are REFERENCE POLICY, not format
+    // validity: another conforming implementation may choose a different ratio,
+    // or none, and read the same package correctly. So a package that trips one
+    // has NOT been shown to be invalid, and reporting it as malformed would be
+    // a claim about the format that the format does not support -- it would
+    // make 199x a .lexe and 201x not a .lexe, which is absurd as an
+    // interoperability rule because it turns on how well a compressor happened
+    // to do.
+    //
+    // Both failures land on the same STAGE, because the same code detects them.
+    // What must differ is the CATEGORY, because the remedies differ: one says
+    // "reject this package", the other says "raise your limit, or do not".
+    test::TempLexeHome home;
+    const fs::path w = home.path();
+    const crypto::KeyPair key = test::make_keypair();
+
+    const fs::path good = test::make_test_package(w, key);
+    REQUIRE(verify_package(good, false).ok());
+
+    // A genuinely malformed archive.
+    const fs::path truncated = corrupt(good, w / "trunc.lexe", [](auto& b) {
+        b.resize(b.size() / 2);
+    });
+    {
+        const VerificationReport report = verify_package(truncated, false);
+        const VerificationStage* failure = report.first_failure();
+        REQUIRE(failure != nullptr);
+        CHECK(std::string(failure->name) == "structure");
+        INFO("a truncated archive is a defect in the package");
+        CHECK(failure->category == FailureCategory::FormatInvalid);
+    }
+
+    // A well-formed archive that is merely too compressible.
+    test::TestAppSpec spec;
+    spec.public_key = test::encode_public_key_str(key.public_key);
+    const test::TestAppTree tree = test::make_test_app_tree(w / "tree-big", spec);
+    util::spit(tree.payload_dir / "big.dat",
+               std::vector<std::uint8_t>(
+                   static_cast<std::size_t>(limits::kRatioGraceBytes) * 2, 0));
+    PackageWriter::Inputs in;
+    in.payload_dir = tree.payload_dir;
+    in.manifest_file = tree.manifest_file;
+    const fs::path big = w / "big.lexe";
+    PackageWriter::write(in, key, big);
+    {
+        const VerificationReport report = verify_package(big, false);
+        const VerificationStage* failure = report.first_failure();
+        REQUIRE(failure != nullptr);
+        INFO("detail: " << failure->detail);
+        CHECK(std::string(failure->name) == "structure");
+        INFO("an over-compressible package is this runtime declining to expand "
+             "it, which is not the same statement");
+        CHECK(failure->category == FailureCategory::ResourceLimit);
+    }
+
+    // The two categories must be distinguishable without reading prose: a gate
+    // that had to grep the message would break the first time it was reworded.
+    CHECK(std::string(to_string(FailureCategory::FormatInvalid)) ==
+          "format-invalid");
+    CHECK(std::string(to_string(FailureCategory::ResourceLimit)) ==
+          "resource-limit");
+}
+
+TEST_CASE("publisher identity is key material, not the string that spells it") {
+    // FORMAT 0.1 FREEZE DECISION, pinned as a test.
+    //
+    // Trust pinning asks "is this the same publisher?". That is a question
+    // about the KEY. Comparing the encoded strings answers a different
+    // question -- "is this the same spelling?" -- and base64 leaves the unused
+    // bits of its final group free, so a 32-byte key has many valid spellings.
+    //
+    // Canonical encoding is separately required, so in a well-formed package
+    // the two questions coincide today. They are kept apart because the
+    // consequence of them diverging is not cosmetic: an installed application
+    // refusing every legitimate update from its own publisher, or a different
+    // publisher taking over an installed id. A security decision should not
+    // rest on an encoding rule enforced in another file.
+    const crypto::KeyPair a = test::make_keypair();
+    const crypto::KeyPair b = test::make_keypair();
+    const std::string enc_a = crypto::encode_public_key(a.public_key);
+    const std::string enc_b = crypto::encode_public_key(b.public_key);
+    REQUIRE(enc_a != enc_b);
+
+    CHECK(crypto::same_public_key(enc_a, enc_a));
+    CHECK_FALSE(crypto::same_public_key(enc_a, enc_b));
+
+    // A different spelling of the SAME key compares equal as key material...
+    static constexpr std::string_view kAlphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const std::string prefix = "ed25519:";
+    const std::size_t last = enc_a.find_last_not_of('=');
+    REQUIRE(last != std::string::npos);
+    std::string other_spelling;
+    for (const char c : kAlphabet) {
+        if (c == enc_a[last]) continue;
+        std::string candidate = enc_a;
+        candidate[last] = c;
+        try {
+            if (util::base64_decode(
+                    std::string_view(candidate).substr(prefix.size())) ==
+                util::base64_decode(
+                    std::string_view(enc_a).substr(prefix.size()))) {
+                other_spelling = candidate;
+                break;
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    REQUIRE_FALSE(other_spelling.empty());
+    REQUIRE(other_spelling != enc_a);
+    INFO("canonical: " << enc_a << "  other spelling: " << other_spelling);
+    // ...even though it is rejected on the way IN by the canonical-encoding
+    // rule. Both properties are wanted: one spelling in a package, and an
+    // identity check that does not depend on that being true.
+    CHECK(crypto::same_public_key(enc_a, other_spelling));
+    CHECK_THROWS_AS(crypto::decode_public_key(other_spelling), lexe::Error);
+
+    // A key that cannot be read is not equal to anything, including another
+    // unreadable key -- otherwise two identically-broken records would match.
+    CHECK_FALSE(crypto::same_public_key("ed25519:not-base64!!", "ed25519:not-base64!!"));
+    CHECK_FALSE(crypto::same_public_key("", ""));
+    CHECK_FALSE(crypto::same_public_key(enc_a, ""));
 }
 
 TEST_CASE("undecodable publisher keys fail at the key stage") {

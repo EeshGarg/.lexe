@@ -88,6 +88,31 @@ std::string printable(const std::string& raw) {
     return out;
 }
 
+/// Whether these bytes are something a host would execute.
+///
+/// Used to derive the executable bit at extraction instead of trusting the ZIP
+/// external attributes, which no hash and no signature covers. See the call
+/// site in extract_payload for why that matters.
+///
+/// Deliberately a content sniff and nothing more: it decides a permission bit,
+/// not what gets run. The manifest names the entrypoint, and the payload-role
+/// stage has already checked that the entrypoint really is the kind of image it
+/// claims to be -- so a false positive here grants +x to a file nothing
+/// executes, and a false negative costs an unusual helper its exec bit.
+bool is_executable_content(const std::vector<std::uint8_t>& data) {
+    if (data.size() >= 4 && data[0] == 0x7F && data[1] == 'E' &&
+        data[2] == 'L' && data[3] == 'F') {
+        return true; // ELF
+    }
+    if (data.size() >= 2 && data[0] == 'M' && data[1] == 'Z') {
+        return true; // PE/COFF, for a Windows payload run through a chain
+    }
+    if (data.size() >= 2 && data[0] == '#' && data[1] == '!') {
+        return true; // a script with an interpreter line
+    }
+    return false;
+}
+
 /// FORMAT-0.1 §2 entry-path rules. Returns the reason a path must be
 /// rejected, or nullopt when the path is acceptable. Applied to every entry
 /// (including directory entries, whose trailing '/' is stripped first).
@@ -201,6 +226,162 @@ std::string raw_entry_name(mz_zip_archive& zip, mz_uint index) {
     return std::string(buf.data(), needed - 1);
 }
 
+/// Cross-check every local file header against the central directory, and
+/// account for every byte before it (HARDENING.md §B.5).
+///
+/// A ZIP says everything twice: once in a local header beside the data, once in
+/// the central directory at the end. Readers pick one. This reader picks the
+/// central directory -- but until now it never checked that the other copy
+/// agreed, and "the two copies disagree" is the classic ZIP ambiguity: two
+/// conforming tools read the same file as two different archives. Only one of
+/// them is covered by the signature chain, so the other is free bytes.
+///
+/// Three things were demonstrated to pass before this existed, on validly
+/// signed packages:
+///
+///   a local header naming `payload/../../ev` while the central directory
+///   named `payload/data.txt` -- and the independent validator, which reads
+///   local names, disagreed with `lexe verify` about the very same file
+///
+///   a local header declaring a different uncompressed size
+///
+///   a complete extra local record spliced into the gap between the last
+///   entry's data and the central directory, with the EOCD's offset bumped
+///   past it. `archive_spans_whole_file` only checks the TAIL -- that the
+///   central directory ends where the EOCD begins -- so a gap in the middle
+///   was unaccounted space that anything could occupy
+///
+/// Returns the reason to reject, or nullopt.
+std::optional<std::string>
+local_header_problem(mz_zip_archive& zip, const std::vector<std::uint8_t>& b,
+                     mz_uint count) {
+    auto rd16 = [&](std::size_t o) -> std::uint32_t {
+        return static_cast<std::uint32_t>(b[o]) |
+               (static_cast<std::uint32_t>(b[o + 1]) << 8);
+    };
+    auto rd32 = [&](std::size_t o) -> std::uint64_t {
+        return static_cast<std::uint64_t>(b[o]) |
+               (static_cast<std::uint64_t>(b[o + 1]) << 8) |
+               (static_cast<std::uint64_t>(b[o + 2]) << 16) |
+               (static_cast<std::uint64_t>(b[o + 3]) << 24);
+    };
+
+    // Where the central directory begins, from the EOCD that
+    // archive_spans_whole_file has already validated.
+    const std::size_t eocd = b.size() - 22;
+    const std::uint64_t cd_offset = rd32(eocd + 16);
+
+    // Every byte from 0 to cd_offset must be accounted for by exactly the
+    // local records the central directory names, laid end to end.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> spans; // [begin, end)
+
+    for (mz_uint i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat st;
+        std::memset(&st, 0, sizeof(st));
+        if (!mz_zip_reader_file_stat(&zip, i, &st)) {
+            return "cannot read entry record #" + std::to_string(i);
+        }
+        const std::uint64_t lho = st.m_local_header_ofs;
+        if (lho + 30 > b.size()) {
+            return "local header for '" + std::string(st.m_filename) +
+                   "' lies outside the file";
+        }
+        if (!(b[lho] == 0x50 && b[lho + 1] == 0x4b && b[lho + 2] == 0x03 &&
+              b[lho + 3] == 0x04)) {
+            return "local header for '" + std::string(st.m_filename) +
+                   "' has a bad signature";
+        }
+
+        const std::uint32_t flags = rd16(lho + 6);
+        const std::uint32_t method = rd16(lho + 8);
+        const std::uint64_t lh_comp = rd32(lho + 18);
+        const std::uint64_t lh_uncomp = rd32(lho + 22);
+        const std::uint32_t name_len = rd16(lho + 26);
+        const std::uint32_t extra_len = rd16(lho + 28);
+
+        if (lho + 30 + name_len + extra_len > b.size()) {
+            return "local header for '" + std::string(st.m_filename) +
+                   "' is truncated";
+        }
+
+        // The NAME. This is the one that matters most: a disagreement here is
+        // two readers extracting to two different paths.
+        const std::string local_name(
+            reinterpret_cast<const char*>(b.data() + lho + 30), name_len);
+        const std::string central_name = raw_entry_name(zip, i);
+        if (local_name != central_name) {
+            return "local header and central directory disagree on an entry "
+                   "name ('" +
+                   printable(local_name) + "' vs '" + printable(central_name) +
+                   "')";
+        }
+        if (method != st.m_method) {
+            return "local header and central directory disagree on the "
+                   "compression method for '" +
+                   central_name + "'";
+        }
+
+        // Sizes. A data descriptor (flag bit 3) legitimately leaves the local
+        // sizes zero, with the real values following the data; the reference
+        // writer never emits one, but tolerating the zeros costs nothing and
+        // rejecting a legal construct for no security gain would be gratuitous.
+        const bool has_descriptor = (flags & 0x8u) != 0;
+        if (!has_descriptor) {
+            if (lh_comp != st.m_comp_size || lh_uncomp != st.m_uncomp_size) {
+                return "local header and central directory disagree on the "
+                       "size of '" +
+                       central_name + "'";
+            }
+        }
+
+        const std::uint64_t data_begin = lho + 30 + name_len + extra_len;
+        std::uint64_t data_end = data_begin + st.m_comp_size;
+        if (has_descriptor) {
+            // A data descriptor is 12 or 16 bytes: APPNOTE 4.3.9.3 makes its
+            // leading `PK\x07\x08` signature word OPTIONAL. Assuming 16
+            // unconditionally computed the record's end four bytes too far and
+            // rejected a conformant archive as overlapping -- fail-closed, so
+            // not a security defect, but a refusal of something legal.
+            //
+            // The length is derived rather than guessed: look for the signature
+            // word exactly where it would be. The compressed size comes from the
+            // central directory, which §2.2 has already made authoritative, so
+            // this is reading a known location and not scanning.
+            const std::uint64_t at = data_begin + st.m_comp_size;
+            const bool has_sig_word =
+                at + 4 <= b.size() && b[at] == 0x50 && b[at + 1] == 0x4b &&
+                b[at + 2] == 0x07 && b[at + 3] == 0x08;
+            data_end += has_sig_word ? 16 : 12;
+        }
+        if (data_end > cd_offset) {
+            return "entry '" + central_name +
+                   "' extends past the start of the central directory";
+        }
+        spans.emplace_back(lho, data_end);
+    }
+
+    // No gaps, no overlaps, nothing before the first record, and nothing
+    // between the last record and the central directory. This is what closes
+    // the "ghost local record" case: unaccounted space is space an attacker
+    // can use, and no signature covers it.
+    std::sort(spans.begin(), spans.end());
+    std::uint64_t cursor = 0;
+    for (const auto& [begin, end] : spans) {
+        if (begin != cursor) {
+            return begin < cursor
+                       ? std::string("entry data overlaps another entry")
+                       : std::string("unaccounted bytes between entries (a "
+                                     "record no central-directory entry names)");
+        }
+        cursor = end;
+    }
+    if (cursor != cd_offset) {
+        return "unaccounted bytes between the last entry and the central "
+               "directory";
+    }
+    return std::nullopt;
+}
+
 // ------------------------------------------------------------------ crypto
 
 /// SHA-256 lowercase hex (FORMAT-0.1 §3) via vendored PicoSHA2.
@@ -290,7 +471,7 @@ PackageReader::PackageReader(const fs::path& lexe_file)
                                     lexe_file.string() + ": " + ec.message());
         }
         if (on_disk > limits::kMaxPackageBytes) {
-            throw VerificationError(
+            throw ResourceLimitError(
                 "package: file is " + std::to_string(on_disk) +
                 " bytes, exceeds the " +
                 std::to_string(limits::kMaxPackageBytes) + "-byte limit");
@@ -315,9 +496,23 @@ PackageReader::PackageReader(const fs::path& lexe_file)
 
     // Bound the entry count before walking the central directory (§F).
     if (mz_zip_reader_get_num_files(&impl_->zip) > limits::kMaxEntryCount) {
-        throw VerificationError(
+        throw ResourceLimitError(
             "package: archive has more than " +
             std::to_string(limits::kMaxEntryCount) + " entries");
+    }
+
+    // Every local header must agree with the central directory, and every byte
+    // before the central directory must belong to a record it names
+    // (HARDENING.md §B.5). Run BEFORE the per-entry rules, because those rules
+    // read the central directory and this is what establishes that the central
+    // directory is the only view of the archive there is.
+    if (const std::optional<std::string> problem = local_header_problem(
+            impl_->zip, impl_->bytes, mz_zip_reader_get_num_files(&impl_->zip))) {
+        throw VerificationError(
+            "package: " + *problem,
+            "A ZIP records each entry twice, and these two records disagree. "
+            "Two conforming readers would see two different archives, and only "
+            "one of them is covered by the package's signatures.");
     }
 
     // FORMAT-0.1 §2 — validate every entry before anything is trusted.
@@ -363,7 +558,30 @@ PackageReader::PackageReader(const fs::path& lexe_file)
                 "package: entry path collides case-insensitively with another: " +
                 name);
         }
-        if (mz_zip_reader_is_file_a_directory(&impl_->zip, i)) continue;
+        // Directory entries are REJECTED, not skipped.
+        //
+        // They used to be skipped, on the reasoning that a directory record
+        // carries no content and so has nothing to smuggle. That reasoning is
+        // false, and was demonstrated to be: a ZIP directory record can carry
+        // data bytes perfectly well. Worse, because `impl_->files` excludes
+        // them, every later rule that walks that vector could not see them --
+        // including the `signatures/` exact allowlist, so `signatures/evil/`
+        // with a payload attached slipped straight past the check written
+        // specifically to stop content appearing there.
+        //
+        // A skipped entry is an entry no rule applies to, which is the shape of
+        // the original smuggling hole. Rejecting is also what HARDENING.md
+        // §B.11 already required; the reader simply never did it.
+        //
+        // The interoperability cost is small and bounded: a `.lexe` is produced
+        // by a `.lexe` writer, which never emits these, not by `zip -r`.
+        if (mz_zip_reader_is_file_a_directory(&impl_->zip, i)) {
+            throw VerificationError(
+                "package: rejected entry '" + name + "': directory entry",
+                "A .lexe archive stores files only. Directory records carry no "
+                "information this format uses, and an entry that no rule "
+                "applies to is how content gets in unchecked.");
+        }
 
         Impl::File f;
         f.entry.path = name;
@@ -410,7 +628,7 @@ PackageReader::PackageReader(const fs::path& lexe_file)
             declared_total += f.entry.uncompressed_size;
         }
         if (declared_total > limits::kMaxTotalUncompressedBytes) {
-            throw VerificationError(
+            throw ResourceLimitError(
                 "package: entries declare " + std::to_string(declared_total) +
                     " uncompressed bytes in total, exceeding the " +
                     std::to_string(limits::kMaxTotalUncompressedBytes) +
@@ -421,7 +639,7 @@ PackageReader::PackageReader(const fs::path& lexe_file)
         const std::uint64_t package_size = impl_->bytes.size();
         if (declared_total > limits::kRatioGraceBytes && package_size != 0 &&
             declared_total > package_size * limits::kMaxExpansionRatio) {
-            throw VerificationError(
+            throw ResourceLimitError(
                 "package: expands more than " +
                     std::to_string(limits::kMaxExpansionRatio) +
                     "x its packaged size (decompression-bomb guard)",
@@ -555,6 +773,33 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
     std::uint64_t total_emitted = 0;
     const std::uint64_t package_size = impl_->bytes.size();
 
+    // The publisher's signed list of executable members (§3.1.1), read once.
+    //
+    // Absent for a package written before the declaration existed, and that is
+    // not an error: nullopt means "fall back to the content sniff" rather than
+    // "nothing is executable", because the latter would silently break every
+    // existing package's helper binaries.
+    //
+    // Parsed leniently on purpose. This runs AFTER verification, so the bytes
+    // are authentic; the only question is whether this reader understands them.
+    // A malformed or unexpected shape falls back rather than failing an
+    // extraction that has already been authorised.
+    std::optional<std::set<std::string>> declared_executable;
+    try {
+        const nlohmann::json doc = nlohmann::json::parse(
+            read_entry("metadata/hashes.json"), nullptr, false);
+        if (doc.is_object() && doc.contains("executable") &&
+            doc["executable"].is_array()) {
+            std::set<std::string> names;
+            for (const nlohmann::json& item : doc["executable"]) {
+                if (item.is_string()) names.insert(item.get<std::string>());
+            }
+            declared_executable = std::move(names);
+        }
+    } catch (const std::exception&) {
+        // Fall back to the sniff.
+    }
+
     for (const Impl::File& f : impl_->files) {
         const std::string& path = f.entry.path;
         if (path.size() <= kPrefix.size() ||
@@ -584,7 +829,7 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
         // cannot approach UINT64_MAX.
         total_emitted += data.size();
         if (total_emitted > limits::kMaxTotalUncompressedBytes) {
-            throw VerificationError(
+            throw ResourceLimitError(
                 "package: total uncompressed size exceeds the " +
                 std::to_string(limits::kMaxTotalUncompressedBytes) +
                 "-byte limit");
@@ -594,7 +839,7 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
         // package_size * ratio cannot overflow (package_size <= 2 GiB).
         if (total_emitted > limits::kRatioGraceBytes && package_size != 0 &&
             total_emitted > package_size * limits::kMaxExpansionRatio) {
-            throw VerificationError(
+            throw ResourceLimitError(
                 "package: expands more than " +
                 std::to_string(limits::kMaxExpansionRatio) +
                 "× its packaged size (decompression-bomb guard)");
@@ -604,15 +849,58 @@ void PackageReader::extract_payload(const fs::path& dest_dir) const {
         util::spit(resolved, data);
 
 #ifndef _WIN32
-        // Preserve executable bits carried in Unix external attributes.
-        const mz_uint32 mode = f.ext_attr >> 16;
-        if ((mode & 0111u) != 0) {
-            fs::perms add = fs::perms::none;
-            if ((mode & 0100u) != 0) add |= fs::perms::owner_exec;
-            if ((mode & 0010u) != 0) add |= fs::perms::group_exec;
-            if ((mode & 0001u) != 0) add |= fs::perms::others_exec;
+        // The executable bit is derived from the CONTENT, never from the
+        // recorded mode. This is a security fix, not a simplification.
+        //
+        // A ZIP entry's Unix mode lives in the central directory's external
+        // attributes. Nothing covers it: hashes.json digests file CONTENT, and
+        // the two signatures cover lexe.json and hashes.json. So the mode was
+        // the one class of byte in a package that could be altered after
+        // signing and still verify. Demonstrated: flipping a data file's
+        // recorded mode to 04755 on a validly signed package left
+        // `lexe verify` reporting OK with every stage green, and `lexe install`
+        // then wrote that file to disk executable.
+        //
+        // Permissions are named explicitly in the integrity invariant
+        // (FORMAT-0.1 §3), so "it verified" has to mean the permissions are
+        // intact too. There were three ways to get there:
+        //
+        //   cover the mode in hashes.json   a format change, and hashes.json
+        //                                   values would stop being digests
+        //   reject any non-canonical mode   does not help: 0644 -> 0755 is a
+        //                                   flip WITHIN the allowed pair
+        //   derive it from covered bytes    no format change, and the answer
+        //                                   comes from data that IS signed
+        //
+        // The third is taken. Content is hash-covered, so a mode derived from
+        // content inherits that coverage, and the unsigned attribute stops
+        // being able to influence anything at all -- which is what puts it
+        // legitimately outside the envelope rather than sitting in a gap.
+        //
+        // The publisher's signed DECLARATION decides, when there is one.
+        //
+        // An earlier draft derived executability from content alone (ELF, PE,
+        // `#!`). That closed the hole but replaced a declaration with a
+        // heuristic at a security boundary, and the heuristic is lossy in both
+        // directions: a `.jar`, a .NET assembly, a WASM module and a
+        // shebang-less helper script are all legitimately executable and match
+        // none of the three magics, while a data file that happens to begin
+        // `MZ` or `#!` would gain +x it was never given.
+        //
+        // So `metadata/hashes.json` carries an `executable` list, inside the
+        // document payload.sig already covers. Publisher intent is preserved
+        // AND signed. The content sniff remains only as the fallback for a
+        // package that carries no declaration, where guessing beats refusing to
+        // run a helper the publisher marked executable.
+        const bool exec = declared_executable.has_value()
+                              ? declared_executable->count(path) != 0
+                              : is_executable_content(data);
+        if (exec) {
             std::error_code ec;
-            fs::permissions(resolved, add, fs::perm_options::add, ec);
+            fs::permissions(resolved,
+                            fs::perms::owner_exec | fs::perms::group_exec |
+                                fs::perms::others_exec,
+                            fs::perm_options::add, ec);
         }
 #endif
     }
@@ -813,12 +1101,47 @@ void PackageWriter::write(const Inputs& inputs, const crypto::KeyPair& key,
     // FORMAT-0.1 §3 — metadata/hashes.json covers every entry except
     // lexe.json, itself, and signatures/* (none of which exist yet).
     nlohmann::json files = nlohmann::json::object();
+    // The publisher's DECLARATION of which members are executable (§3.1.1).
+    //
+    // It lives here, inside the document payload.sig covers, because the ZIP
+    // external-attribute mode is covered by nothing and so cannot be trusted.
+    // A declaration that is signed keeps the publisher's intent authoritative
+    // -- `nlohmann::json`'s object keeps insertion order for `ordered_json`
+    // only, so this is sorted explicitly to stay deterministic (§1).
+    std::vector<std::string> executable;
     for (const WriteEntry& e : entries) {
         if (e.path == "lexe.json") continue;
         files[e.path] = sha256_hex_of(e.bytes);
+        // Only PAYLOAD entries can be declared executable, and the filter is
+        // load-bearing rather than tidiness.
+        //
+        // The declaration governs extraction, and only `payload/` is ever
+        // extracted -- so declaring `icons/128.png` executable states something
+        // that can never be honoured, and §3.6 rejects it. That is not
+        // hypothetical: on a filesystem without Unix permission bits (a
+        // Windows drive mounted under WSL reports every file as 0755) every
+        // icon came back executable, and the first package built on one was
+        // refused by its own verifier.
+        if (e.mode == kModeExec && e.path.rfind("payload/", 0) == 0) {
+            executable.push_back(e.path);
+        }
     }
-    const nlohmann::json hashes = {{"algorithm", "sha256"},
-                                   {"files", files}};
+    std::sort(executable.begin(), executable.end());
+    nlohmann::json hashes = {{"algorithm", "sha256"}, {"files", files}};
+    // ALWAYS emitted, including as an empty array.
+    //
+    // An earlier version omitted it when nothing was executable, to keep output
+    // byte-identical to a package written before the member existed. That made
+    // "nothing here is executable" inexpressible: absent means "fall back to the
+    // content sniff", so a package whose only oddity was a data file beginning
+    // `#!` or `MZ` got an executable bit its publisher never granted -- the
+    // false positive the declaration was introduced to remove, reintroduced for
+    // exactly the packages that needed it least.
+    //
+    // Determinism is unaffected: the same input tree still produces the same
+    // bytes. Only the comparison against older output changes, and a writer is
+    // allowed to improve.
+    hashes["executable"] = executable;
     const std::string hashes_text = hashes.dump(2);
     std::vector<std::uint8_t> hashes_bytes(hashes_text.begin(),
                                            hashes_text.end());

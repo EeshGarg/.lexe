@@ -371,7 +371,12 @@ TrustEvaluation TrustStore::evaluate(
             e.key_state = PublisherKeyState::TrustUnavailable;
             e.decision = TrustDecision::RejectCorruptTrust;
             e.detail = "trust record has no bound key";
-        } else if (r.public_key != presented_encoded) {
+        } else if (!crypto::same_public_key(r.public_key, presented_encoded)) {
+            // KEY MATERIAL, not text: this decides whether a package is signed
+            // by the publisher this App ID is bound to, and that is a question
+            // about the key. The canonical-encoding rule enforced above makes
+            // the two coincide today; the security decision should not depend
+            // on that rule continuing to hold somewhere else.
             e.key_state = PublisherKeyState::Changed;
             e.expected = key_fingerprint(r.public_key);
             e.decision = TrustDecision::RejectChangedKey;
@@ -422,7 +427,8 @@ void TrustStore::record_accept(const std::string& id,
             throw BlockedKeyError("cannot record trust: " + id +
                                   " is locally blocked");
         }
-        if (!r.public_key.empty() && r.public_key != enc) {
+        if (!r.public_key.empty() &&
+            !crypto::same_public_key(r.public_key, enc)) {
             throw ChangedKeyError("cannot record trust: " + id +
                                   " is bound to a different key");
         }

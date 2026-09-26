@@ -287,7 +287,23 @@ std::string encode_public_key(const PublicKey& key) {
            util::base64_encode(key.data(), key.size());
 }
 
-PublicKey decode_public_key(const std::string& encoded) {
+namespace {
+
+/// Decode the key MATERIAL, without the canonical-spelling rule.
+///
+/// Split out because two different questions are asked of an encoded key, and
+/// conflating them broke one of them:
+///
+///   "may this string appear in a package?"  -> canonical spelling required
+///   "is this the same key as that one?"     -> the 32 bytes, and nothing else
+///
+/// The second must not inherit the first. A recorded key in `installation.json`
+/// or a trust record may predate the canonical rule, or have been hand-edited;
+/// if identity comparison rejected it, the application could never be updated
+/// again -- every update from its own publisher would be refused as a changed
+/// key. That is precisely the failure the comparison exists to prevent, so
+/// making it stricter here would have caused the harm it was meant to stop.
+PublicKey decode_key_material(const std::string& encoded) {
     const std::string_view sv(encoded);
     if (sv.substr(0, kKeyPrefix.size()) != kKeyPrefix) {
         throw VerificationError(
@@ -305,6 +321,13 @@ PublicKey decode_public_key(const std::string& encoded) {
     }
     PublicKey key{};
     std::copy(raw.begin(), raw.end(), key.begin());
+    return key;
+}
+
+} // namespace
+
+PublicKey decode_public_key(const std::string& encoded) {
+    const PublicKey key = decode_key_material(encoded);
 
     // The encoding must be CANONICAL: re-encoding the decoded key must give
     // back exactly the string we were handed.
@@ -333,6 +356,21 @@ PublicKey decode_public_key(const std::string& encoded) {
             "output, or copy it from `lexe info`.");
     }
     return key;
+}
+
+bool same_public_key(const std::string& a, const std::string& b) {
+    try {
+        // Deliberately the LENIENT decode: this is the identity question, and
+        // it must survive a recorded key that was written before the canonical
+        // rule existed. Canonical spelling is enforced where a key ENTERS the
+        // system, by decode_public_key on the manifest.
+        return decode_key_material(a) == decode_key_material(b);
+    } catch (const std::exception&) {
+        // A key that cannot be read is not equal to anything, including another
+        // unreadable key. Returning true for two identically-broken strings
+        // would let a malformed record match a malformed manifest.
+        return false;
+    }
 }
 
 void write_keyfile(const std::filesystem::path& file, const KeyPair& key) {

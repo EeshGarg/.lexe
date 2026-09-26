@@ -89,6 +89,29 @@ public:
     using VerificationError::VerificationError;
 };
 
+/// The package is WELL-FORMED but exceeds a limit this runtime imposes on what
+/// it is willing to process: total uncompressed size, entry count, expansion
+/// ratio, per-entry size.
+///
+/// A distinct type because it is a distinct ANSWER. "This is not a .lexe" and
+/// "this is a .lexe I decline to expand" are different facts about a file, they
+/// have different remedies, and only one of them is a property of the package
+/// itself. The expansion-ratio guard in particular is reference-implementation
+/// RESOURCE POLICY, not format validity: another conforming implementation may
+/// set a different ratio, or none, and still read the same package correctly --
+/// so a package that trips it has not been shown to be invalid, and reporting
+/// it as malformed would be a lie about the format.
+///
+/// It stays a VerificationError so every existing catch site keeps failing
+/// closed, and keeps exit code 3: the file was not accepted, which is what a
+/// script needs to know first. What changes is that the REASON is now
+/// distinguishable -- `lexe verify --json` reports the category -- so a
+/// repository gate can tell "reject this package" from "raise my own limits".
+class ResourceLimitError : public VerificationError {
+public:
+    using VerificationError::VerificationError;
+};
+
 /// An App ID is busy: another exclusive mutation (install/update/rollback/
 /// remove/recovery) holds the per-app lock, or a launch lease blocks a
 /// destructive operation (runtime-trust WS9). CLI exit code 6.

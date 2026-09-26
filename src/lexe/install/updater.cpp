@@ -129,10 +129,18 @@ UpdateCheck Updater::check(const std::string& id) {
 
     // Fetch update.json and its detached signature at the same URL + ".sig"
     // (FORMAT-0.1 §7). file:// and plain paths are served by the http module.
-    const std::vector<std::uint8_t> update_bytes =
-        http::fetch_bytes(record.update_url);
+    //
+    // BOUNDED, because nothing here is authenticated yet. The 1 MiB budget used
+    // to be enforced only by the parser, several steps later -- so a hostile
+    // server could serve 256 MiB, have it read into memory in full, and the
+    // first complaint was about the signature length. A limit that fires after
+    // the allocation it was protecting against is decoration.
+    const std::vector<std::uint8_t> update_bytes = http::fetch_bytes(
+        record.update_url, {limits::kMaxUpdateJsonBytes});
+    // A detached Ed25519 signature is exactly 64 bytes. Allowing a kilobyte
+    // leaves room for a server to be wrong without being useful.
     const std::vector<std::uint8_t> sig_bytes =
-        http::fetch_bytes(record.update_url + ".sig");
+        http::fetch_bytes(record.update_url + ".sig", {1024});
 
     // ---- §7 check 1: signature with the INSTALLED publisher key ----------
     const crypto::PublicKey pinned =
@@ -241,7 +249,11 @@ InstallResult Updater::apply(const std::string& id,
     // from update.json never becomes a path component here.
     const fs::path package_path =
         paths_.cache_dir() / "updates" / id / "package.lexe";
-    http::fetch_to_file(chk.package_url, package_path);
+    // A package is bounded by the same cap the reader applies on disk
+    // (FORMAT-0.1 §10.1), so a source cannot make the runtime spend more than
+    // it would ever be willing to open.
+    http::fetch_to_file(chk.package_url, package_path,
+                        {limits::kMaxPackageBytes});
     const std::string actual_sha256 = crypto::sha256_file_hex(package_path);
     if (actual_sha256 != chk.package_sha256) {
         fail("downloaded package SHA-256 (check 4): update.json says " +

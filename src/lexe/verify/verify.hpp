@@ -18,6 +18,30 @@
 namespace lexe {
 
 /// Outcome of one pipeline stage. Stage names are listed above.
+/// WHY a stage failed, as opposed to WHERE.
+///
+/// The stage name says which check rejected the package; this says what kind of
+/// statement that rejection is, and the two are independent. It exists because
+/// "this is not a valid .lexe" and "this is a .lexe I decline to process" are
+/// different facts with different remedies, and only one of them is a property
+/// of the package.
+enum class FailureCategory {
+    /// The package violates Format 0.1. Any conforming implementation must
+    /// reject it. The package is at fault and cannot be made acceptable by
+    /// changing this runtime's settings.
+    FormatInvalid,
+    /// The package is well-formed but exceeds a limit THIS runtime imposes:
+    /// total uncompressed size, entry count, expansion ratio, entry size.
+    ///
+    /// Reference-implementation resource policy, not format validity. Another
+    /// conforming implementation may set a different limit, or none, and read
+    /// the same package correctly -- so this is not evidence that the package
+    /// is invalid, and a gate that reported it as malformed would be making a
+    /// claim about the format that the format does not support.
+    ResourceLimit,
+};
+const char* to_string(FailureCategory c);
+
 struct VerificationStage {
     std::string name;
     bool ok = false;
@@ -29,6 +53,10 @@ struct VerificationStage {
     /// failed to re-download it — wrong for a mistyped path or a project
     /// folder, neither of which is a bad download.
     std::string hint;
+    /// Meaningful only when `ok` is false. Appended rather than inserted so the
+    /// positional initialisers already in the tree keep compiling and keep
+    /// meaning what they meant.
+    FailureCategory category = FailureCategory::FormatInvalid;
 };
 
 /// Ordered stage results. Stages after the first failure are not run and are

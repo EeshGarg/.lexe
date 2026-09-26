@@ -38,6 +38,18 @@ namespace lexe {
 
 namespace {
 
+} // namespace
+
+const char* to_string(FailureCategory c) {
+    switch (c) {
+    case FailureCategory::FormatInvalid: return "format-invalid";
+    case FailureCategory::ResourceLimit: return "resource-limit";
+    }
+    return "format-invalid";
+}
+
+namespace {
+
 // Stage names (verify.hpp / FORMAT-0.1 §6).
 constexpr const char* kStructure = "structure";
 constexpr const char* kManifest = "manifest";
@@ -53,8 +65,23 @@ void pass(VerificationReport& report, const char* name, std::string detail) {
 }
 
 void fail(VerificationReport& report, const char* name, std::string detail,
-          std::string hint = {}) {
-    report.stages.push_back({name, false, std::move(detail), std::move(hint)});
+          std::string hint = {},
+          FailureCategory category = FailureCategory::FormatInvalid) {
+    report.stages.push_back(
+        {name, false, std::move(detail), std::move(hint), category});
+}
+
+/// The category an exception is making a claim about.
+///
+/// Derived from the exception TYPE rather than from the stage that caught it,
+/// because the same stage can reject a package for either reason: the structure
+/// stage refuses a truncated archive (the package is invalid) and an oversized
+/// one (this runtime declines to expand it), and a caller that had to tell those
+/// apart by reading the message would be parsing prose.
+FailureCategory category_of(const Error& e) {
+    return dynamic_cast<const ResourceLimitError*>(&e) != nullptr
+               ? FailureCategory::ResourceLimit
+               : FailureCategory::FormatInvalid;
 }
 
 std::string join(const std::vector<std::string>& parts, const char* separator) {
@@ -188,6 +215,67 @@ hash_problems(const PackageReader& reader,
             problems.push_back("SHA-256 mismatch for \"" + path +
                                "\": hashes.json says " + expected +
                                ", entry hashes to " + actual);
+        }
+    }
+
+    // The `executable` declaration (§3.1.1 / §3.6), validated HERE rather than
+    // where it is used.
+    //
+    // The extraction reader treats it leniently on purpose -- by then the bytes
+    // are authenticated, and the declared string is only ever compared against
+    // archive paths, never used to build a filesystem path, so a nonsense entry
+    // is inert. But lenient at extraction and lenient at VERIFICATION are
+    // different decisions, and being lenient here was wrong twice over:
+    //
+    //   a typo'd path was accepted, and then surfaced as "Permission denied"
+    //   at first launch, arbitrarily far from the cause, after verify said OK --
+    //   exactly what set-equality on `files` exists to prevent, for the same
+    //   reason
+    //
+    //   the failure mode was shape-dependent: a wrong TYPE ("executable" as a
+    //   string) fell back to the content sniff and the helper WAS executable,
+    //   while wrong CONTENTS (a misspelled path) was authoritative and the
+    //   helper was NOT. The same publisher mistake, opposite outcomes, neither
+    //   diagnosed.
+    //
+    // The writer generates this list itself from the source tree, so strictness
+    // costs a publisher nothing and catches a hand-edited document.
+    if (const auto declared = doc.find("executable");
+        declared != doc.end() && !declared->is_null()) {
+        if (!declared->is_array()) {
+            problems.push_back(
+                "metadata/hashes.json \"executable\" must be an array of entry "
+                "paths");
+        } else {
+            std::set<std::string> seen;
+            for (const auto& item : *declared) {
+                if (!item.is_string()) {
+                    problems.push_back(
+                        "metadata/hashes.json \"executable\" contains a "
+                        "non-string element");
+                    continue;
+                }
+                const std::string name = item.get<std::string>();
+                if (!seen.insert(name).second) {
+                    problems.push_back("\"executable\" lists \"" + name +
+                                       "\" more than once");
+                    continue;
+                }
+                if (covered.count(name) == 0) {
+                    // Not merely unknown: a path with no digest cannot be
+                    // declared executable, because the declaration would apply
+                    // to content nothing authenticates.
+                    problems.push_back(
+                        "\"executable\" names \"" + name +
+                        "\", which is not covered by \"files\"");
+                    continue;
+                }
+                if (name.rfind("payload/", 0) != 0) {
+                    problems.push_back("\"executable\" names \"" + name +
+                                       "\", which is not under payload/ (only "
+                                       "payload content is ever extracted)");
+                }
+            }
         }
     }
 
@@ -377,7 +465,7 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     // attached, so the specific advice reaches every surface that renders the
     // report rather than dying inside the pipeline.
     auto fail_from = [&report](const char* stage, const Error& e) {
-        fail(report, stage, e.what(), e.hint());
+        fail(report, stage, e.what(), e.hint(), category_of(e));
     };
 
     // ---- stage 1: structure (§2) --------------------------------------

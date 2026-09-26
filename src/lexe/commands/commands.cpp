@@ -21,6 +21,7 @@
 #include "lexe/runtime/launchref.hpp"
 #include "lexe/package/elf.hpp"
 #include "lexe/base/error.hpp"
+#include "lexe/base/http.hpp"
 #include "lexe/install/installer.hpp"
 #include "lexe/sandbox/isolation.hpp"
 #include "lexe/base/json_strict.hpp"
@@ -74,6 +75,7 @@ using nlohmann::ordered_json;
 
 constexpr const char* kInstallUsage =
     "usage: lexe install <file.lexe> [--yes] [--trust] [--accept-permissions] "
+    "[--allow-downgrade] "
     "[--approve-compile] [--channel <c>]";
 constexpr const char* kRunUsage =
     "usage: lexe run <id> [--chain <id>] [--detach | --wait] "
@@ -567,7 +569,9 @@ ordered_json manifest_json(const Manifest& manifest) {
 
 int cmd_install(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(
-        args, {"--yes", "--accept-permissions", "--trust", "--approve-compile"},
+        args,
+        {"--yes", "--accept-permissions", "--trust", "--approve-compile",
+         "--allow-downgrade"},
         {"--channel"}, false, kInstallUsage);
     require_positionals(parsed, 1, kInstallUsage);
     const fs::path package(parsed.positionals[0]);
@@ -636,6 +640,9 @@ int cmd_install(const std::vector<std::string>& args) {
     // (runtime-trust WS5) — never implied by --yes.
     opts.allow_permission_expansion =
         parsed.flags.count("--accept-permissions") != 0;
+    // Deliberately NOT implied by --yes: confirming an action is not the same
+    // as choosing a different one (FORMAT-0.1 §7.1).
+    opts.allow_downgrade = parsed.flags.count("--allow-downgrade") != 0;
     // Explicitly TRUSTING the signing key locally is a separate act from
     // consenting to this install (runtime-trust WS4) — also never implied by
     // --yes. A plain install still records the App-ID/key binding as accepted.
@@ -1720,11 +1727,25 @@ int cmd_verify(const std::vector<std::string>& args) {
         }
         ordered_json stages = ordered_json::array();
         for (const VerificationStage& stage : report.stages) {
-            stages.push_back({{"name", stage.name},
-                              {"ok", stage.ok},
-                              {"detail", stage.detail}});
+            ordered_json entry{{"name", stage.name},
+                               {"ok", stage.ok},
+                               {"detail", stage.detail}};
+            if (!stage.ok) {
+                // WHY, as distinct from WHERE. A gate needs to tell "this
+                // package is invalid, reject it" from "this package exceeds my
+                // limits, which is my policy and not a fact about the package".
+                entry["category"] = to_string(stage.category);
+            }
+            stages.push_back(std::move(entry));
         }
         j["stages"] = std::move(stages);
+        if (const VerificationStage* failure = report.first_failure();
+            failure != nullptr) {
+            j["failure"] = {{"stage", failure->name},
+                            {"category", to_string(failure->category)},
+                            {"detail", failure->detail},
+                            {"hint", failure->hint}};
+        }
         std::cout << j.dump(2) << "\n";
     } else {
         std::cout << "Verifying " << file << "\n";
@@ -1745,6 +1766,17 @@ int cmd_verify(const std::vector<std::string>& args) {
             std::cout << "verification: FAILED ("
                       << (failure != nullptr ? failure->name : "unknown")
                       << ")\n";
+            // Say which KIND of failure it was when it is not the usual one.
+            // "This package is malformed" and "this package is larger than I am
+            // willing to expand" send a reader to different places, and only
+            // the first is a statement about the format.
+            if (failure != nullptr &&
+                failure->category == FailureCategory::ResourceLimit) {
+                std::cout << "reason: a resource limit of THIS runtime, not a "
+                             "defect in the package\n"
+                             "        Format 0.1 does not fix these limits; "
+                             "another implementation may accept it.\n";
+            }
         }
         print_local_install_conflict(conflict);
     }
@@ -1765,6 +1797,12 @@ int cmd_source(const std::vector<std::string>& args) {
     require_positionals(parsed, 2, kSourceUsage);
     const std::string& id = parsed.positionals[0];
     const std::string& url = parsed.positionals[1];
+
+    // Refused HERE as well as at fetch time. The fetch is the authoritative
+    // check — a URL can also arrive from a manifest — but failing at the moment
+    // somebody types it is the difference between an actionable error and a
+    // mysterious update failure weeks later.
+    http::require_secure_url(url);
 
     Updater(Paths::detect()).set_source(id, url);
     std::cout << "Update source for " << id << " set to " << url << "\n";
@@ -2591,6 +2629,27 @@ int cmd_open(const std::vector<std::string>& args) {
 
     if (manifest.role == PackageRole::Launch) {
         const std::string target = manifest.launch_application_id;
+        // A launch reference must have been made on THIS machine.
+        //
+        // Its signature's only claim is local provenance -- launchref.hpp
+        // documents the machine-local key -- and nothing verified that claim, so
+        // a reference signed by any key at all verified OK and ran the
+        // application it named. See launch_reference_is_local for why this is
+        // enforced despite a small blast radius today.
+        {
+            const Paths key_paths = Paths::detect();
+            if (!launch_reference_is_local(key_paths, manifest,
+                                           manifest.publisher_public_key)) {
+                throw TrustError(
+                    "this launch reference was not created on this machine: it "
+                    "is signed with " + manifest.publisher_public_key +
+                        ", not this machine's launch key",
+                    "A launch reference is a local shortcut, not a distributable "
+                    "package -- its signature says only \"this machine made "
+                    "me\". Recreate it here with `lexe launch-ref " + target +
+                        "`, or install the application package itself.");
+            }
+        }
         if (as_json) {
             std::cout << ordered_json{{"role", "launch"},
                                       {"applicationId", target},

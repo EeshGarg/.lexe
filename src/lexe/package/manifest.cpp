@@ -221,10 +221,20 @@ void parse_install(const json& root, Manifest& m) {
     }
     m.install_mode = mode;
 
+    // FORMAT-0.1 §5.7: "user" is the only scope 0.1 defines. Any other value is
+    // RESERVED and rejected.
+    //
+    // This used to accept any non-empty string, which was an omission rather
+    // than an extension point: a package declaring `"scope": "machine-wide"`
+    // was installed per-user anyway, silently doing something other than what
+    // it said. Refusing is the honest answer -- a scope this runtime cannot
+    // provide is not a preference to ignore.
     m.install_scope = optional_string(install, "scope", "install.scope",
                                       "user");
-    if (m.install_scope.empty()) {
-        fail("\"install.scope\" must be a non-empty string");
+    if (m.install_scope != "user") {
+        fail("\"install.scope\" must be \"user\" (0.1 defines no other "
+             "scope; \"" +
+             m.install_scope + "\" is reserved)");
     }
 
     if (const json* size = find_member(install, "estimatedSize")) {

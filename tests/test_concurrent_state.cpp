@@ -15,6 +15,9 @@
 #include "lexe/state/lock.hpp"
 #include "lexe/state/registry.hpp"
 
+#include <atomic>
+#include <thread>
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -86,6 +89,86 @@ TEST_CASE("the installation record is written atomically") {
          "half-written records under names nothing reads");
     CHECK(stray.empty());
     CHECK(registry.read_record(record.id).version == "1.0.19");
+}
+
+TEST_CASE("concurrent atomic writes do not destroy each other") {
+    // REGRESSION, and the defect was introduced by the fix for the case above.
+    //
+    // `write_atomic` used one temporary name for every writer: `<file>.tmp`. Two
+    // processes writing the same file at once therefore collided -- the first
+    // renamed the shared temporary into place, the second found its own
+    // temporary gone and threw "cannot write file atomically".
+    //
+    // The throw was not the worst of it. On the way out, the loser removed the
+    // DESTINATION before retrying, so it deleted the record the winner had just
+    // written and only then reported failure. A function whose entire purpose is
+    // that a reader sees the whole old content or the whole new content could
+    // leave a reader seeing no file at all.
+    //
+    // Reproduced by the concurrency lane on `installation.json` during
+    // simultaneous launches -- which is precisely the case that write was made
+    // atomic for. The torn read it guarded against had never been observed once;
+    // the collision it introduced happened two runs in five.
+    //
+    // Threads rather than processes here: the collision is over a shared PATH,
+    // not over a file lock, so threads reproduce it and keep the test fast. The
+    // cross-process form is covered by tests/concurrency/02_launch.sh.
+    test::TempLexeHome home;
+    const fs::path target = home.path() / "contended.json";
+
+    constexpr int kWriters = 8;
+    constexpr int kRounds = 40;
+    std::atomic<int> failures{0};
+    std::atomic<int> vanished{0};
+    std::vector<std::thread> writers;
+    writers.reserve(kWriters);
+
+    for (int w = 0; w < kWriters; ++w) {
+        writers.emplace_back([&, w] {
+            for (int round = 0; round < kRounds; ++round) {
+                const std::string payload =
+                    "{\"writer\":" + std::to_string(w) + ",\"round\":" +
+                    std::to_string(round) + "}";
+                try {
+                    util::write_atomic(target, std::string_view(payload));
+                } catch (const std::exception&) {
+                    ++failures;
+                }
+                // The file must NEVER be absent after it has been written once.
+                // This is the assertion that would have caught the original
+                // defect: the loser's cleanup removed a file it could not
+                // replace, so a concurrent reader saw nothing there.
+                std::error_code ec;
+                if (!fs::exists(target, ec)) ++vanished;
+            }
+        });
+    }
+    for (std::thread& t : writers) t.join();
+
+    INFO("write_atomic threw " << failures.load() << " time(s)");
+    CHECK(failures.load() == 0);
+    INFO("the destination was absent " << vanished.load()
+                                       << " time(s) after being written");
+    CHECK(vanished.load() == 0);
+
+    // Whoever wrote last, the content must be ONE writer's payload in full --
+    // never a mixture, which is what atomicity is for.
+    const std::string final_text = util::slurp_text(target);
+    INFO("final content: " << final_text);
+    CHECK(final_text.front() == '{');
+    CHECK(final_text.back() == '}');
+    CHECK(std::count(final_text.begin(), final_text.end(), '{') == 1);
+
+    // And no temporaries survive: a unique name per writer must still be
+    // cleaned up, or the fix would trade a collision for unbounded litter.
+    std::vector<std::string> stray;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(home.path(), ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name != "contended.json") stray.push_back(name);
+    }
+    INFO("stray files: " << (stray.empty() ? std::string("none") : stray.front()));
+    CHECK(stray.empty());
 }
 
 // ------------------------------------------------------------------ lock files

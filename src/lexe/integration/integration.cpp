@@ -161,6 +161,106 @@ constexpr IconMapping kIconMappings[] = {
     {"scalable.svg", "scalable", ".svg"},
 };
 
+/// How large an icon this runtime is willing to install into a shared theme.
+///
+/// A 256x256 PNG is a few tens of kilobytes; a scalable SVG is smaller still.
+/// 4 MiB is generous for anything legitimate and small enough that a hostile
+/// file cannot become a resource problem for whatever parses it next.
+constexpr std::uintmax_t kMaxIconBytes = 4ull * 1024 * 1024;
+
+/// Whether these bytes plausibly ARE the image kind the filename claims.
+///
+/// This is the one place a package's publisher-controlled bytes are handed to a
+/// rich parser in a process that is NOT sandboxed. The application runs under
+/// bubblewrap; its icon is installed into the user's hicolor theme, where the
+/// desktop environment parses it -- gdk-pixbuf for PNG, librsvg for SVG -- in
+/// the session's own process. Nothing validated those bytes at all: whatever a
+/// package carried as `128.png` was written into the theme verbatim.
+///
+/// The bytes are hash-covered and signed, so this is a malicious-PUBLISHER
+/// surface rather than a tampering one, and exploiting it needs a bug in the
+/// desktop's image stack. That makes it cheap insurance rather than an
+/// emergency -- which is the reason to take the cheap version: a magic-byte
+/// check and a size cap, not an image decoder of our own. Adding a parser here
+/// would add the very class of attack surface this is guarding.
+///
+/// A rejected icon is skipped, not fatal: an application with a strange icon
+/// still installs and runs, and refusing the icon is strictly better than
+/// shipping unvalidated bytes into a directory the desktop reads.
+bool icon_content_is_plausible(const fs::path& file, bool is_svg) {
+    std::error_code ec;
+    const std::uintmax_t size = fs::file_size(file, ec);
+    if (ec || size == 0 || size > kMaxIconBytes) return false;
+
+    std::vector<std::uint8_t> head;
+    try {
+        head = util::slurp(file);
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (head.size() > 1024) head.resize(1024);
+
+    if (!is_svg) {
+        // The 8-byte PNG signature (RFC 2083 §3.1). Deliberately exact: a file
+        // that is not a PNG has no business being installed under a .png name,
+        // whatever else it might be.
+        static constexpr std::uint8_t kPng[8] = {0x89, 0x50, 0x4E, 0x47,
+                                                0x0D, 0x0A, 0x1A, 0x0A};
+        if (head.size() < sizeof(kPng)) return false;
+        return std::equal(std::begin(kPng), std::end(kPng), head.begin());
+    }
+
+    // SVG is XML, so there is no magic number -- only a shape. Require the
+    // first non-whitespace content to open an XML declaration, a comment, a
+    // doctype, or an <svg> element. This rejects an ELF, a script, or a PNG
+    // renamed to .svg, which is what the check is for; it is not an attempt to
+    // decide whether the XML is valid.
+    std::string text(head.begin(), head.end());
+    const std::size_t start = text.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return false;
+    text = text.substr(start);
+    // A UTF-8 BOM is legal before an XML declaration.
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        text = text.substr(3);
+        const std::size_t after = text.find_first_not_of(" \t\r\n");
+        if (after == std::string::npos) return false;
+        text = text.substr(after);
+    }
+    if (!(text.rfind("<?xml", 0) == 0 || text.rfind("<svg", 0) == 0 ||
+          text.rfind("<!--", 0) == 0 || text.rfind("<!DOCTYPE", 0) == 0)) {
+        return false;
+    }
+
+    // No internal DTD subset. This closes the gap the shape check above left,
+    // and it left it in the most embarrassing way possible: the list of
+    // acceptable openings included `<!DOCTYPE`, which is precisely the
+    // construct that both SVG attacks need.
+    //
+    //   billion laughs   nested entity definitions that expand to gigabytes
+    //   XXE              <!ENTITY x SYSTEM "file:///etc/passwd">
+    //
+    // librsvg is the consumer, in the session's own unsandboxed process, which
+    // is the whole reason this validation exists. Modern librsvg and libxml2
+    // cap entity expansion and refuse network entities, so this is a cheap
+    // closure rather than an emergency -- but "the desktop's parser probably
+    // defends itself" is not a reason for us to hand it the input.
+    //
+    // Searched over the whole file rather than the prefix: a DTD can follow
+    // comments, and an icon is small enough that reading it twice costs
+    // nothing. No legitimate SVG *icon* needs an internal DTD subset.
+    std::string whole;
+    try {
+        const std::vector<std::uint8_t> bytes = util::slurp(file);
+        whole.assign(bytes.begin(), bytes.end());
+    } catch (const std::exception&) {
+        return false;
+    }
+    return whole.find("<!DOCTYPE") == std::string::npos &&
+           whole.find("<!ENTITY") == std::string::npos;
+}
+
 std::string icon_name(const std::string& id) { return "lexe-" + id; }
 
 } // namespace
@@ -431,6 +531,19 @@ DesktopIntegration::install_app(const Manifest& manifest,
             const fs::path source = icons_source_dir / mapping.source_name;
             std::error_code ec;
             if (!fs::is_regular_file(source, ec)) continue;
+            // Validated before it is written where the desktop will parse it.
+            // See icon_content_is_plausible: the application is sandboxed, its
+            // icon is not.
+            if (!icon_content_is_plausible(
+                    source, std::string_view(mapping.dest_ext) == ".svg")) {
+                report.notes.push_back(
+                    std::string("skipped the icon ") + mapping.source_name +
+                    ": it is not a plausible " +
+                    (std::string_view(mapping.dest_ext) == ".svg" ? "SVG"
+                                                                  : "PNG") +
+                    ", or exceeds the size this runtime installs");
+                continue;
+            }
             const fs::path destination =
                 paths_.icons_dir() / mapping.theme_subdir / "apps" /
                 (icon_name(manifest.id) + mapping.dest_ext);

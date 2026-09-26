@@ -51,24 +51,59 @@ acc_launch_via_reference() {
     # Launch through run.lexe exactly as a double-click would. The payload
     # appends to its own launch log BEFORE it touches GTK, so this assertion
     # works on a headless host too.
-    local before after status
+    #
+    # WAITS for the log to grow rather than allowing a fixed number of seconds.
+    #
+    # It used to allow 3, and a GTK application starting inside a bubblewrap
+    # sandbox on this machine takes about 3.2 -- so the assertion failed while
+    # the launch it was testing worked perfectly, every time, both warm and
+    # cold. Measured rather than guessed: the log grew on every attempt, and a
+    # 30-second ceiling showed the same 3.2 seconds.
+    #
+    # A launch budget is the wrong shape for this check anyway. The claim is
+    # "run.lexe still launches the application", which is about whether it
+    # happens, not how fast; and the run that matters most -- on a loaded build
+    # machine -- is the one a tight budget is least able to survive. The ceiling
+    # below is a deadlock guard, not a performance assertion.
+    local before after waited=0
     before="$(acc_launch_count)"
     set +e
-    PATH="$ACC_PATH_DIR:$PATH" timeout 3 "$LEXE" open "$ref" >"$ACC_ROOT/work/open.out" 2>&1
-    status=$?
+    PATH="$ACC_PATH_DIR:$PATH" "$LEXE" open "$ref" >"$ACC_ROOT/work/open.out" 2>&1 &
+    local open_pid=$!
+    while (( waited < 30 )); do
+        after="$(acc_launch_count)"
+        [[ "$after" -gt "$before" ]] && break
+        # The launcher exiting without the log growing is a real failure, and
+        # waiting out the ceiling for it would just make the suite slow.
+        kill -0 "$open_pid" 2>/dev/null || { sleep 1; after="$(acc_launch_count)"; break; }
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    kill "$open_pid" 2>/dev/null
+    wait "$open_pid" 2>/dev/null
     set -e
     acc_kill_app
     sleep 0.3
     after="$(acc_launch_count)"
     if [[ "$after" -gt "$before" ]]; then
         pass "$1"
-        case "$status" in
-            124) note "the GUI stayed up until the 3s timeout (a window was open)" ;;
-            2)   note "no display on this host: the payload started and exited 2 (headless)" ;;
-            *)   note "payload exit status $status" ;;
-        esac
+        note "the payload recorded its start after ${waited}s"
+        # A SEPARATE, deliberately generous latency assertion.
+        #
+        # Replacing the 3-second budget with a poll fixed a false failure, but it
+        # also removed the only thing that would have noticed launch latency
+        # GROWING: a poll with a 30-second ceiling passes as happily at 29
+        # seconds as at 3. This keeps that signal without reintroducing the
+        # flakiness — 15s is about five times the measured cost, so it fires on a
+        # real regression and not on a busy machine.
+        if (( waited > 15 )); then
+            fail "$1 — launch latency" \
+                 "the launch took ${waited}s; it measures about 3s on this host" \
+                 "The launch WORKED, so this is not a functional failure — it is" \
+                 "a latency regression that should be explained, not absorbed."
+        fi
     else
-        fail "$1" "launch log did not grow ($before -> $after); exit status $status" \
+        fail "$1" "launch log did not grow ($before -> $after) within 30s" \
              "$(head -5 "$ACC_ROOT/work/open.out")"
     fi
 }

@@ -138,8 +138,8 @@
           "title": "Install scope",
           "description": "Where the application is installed; defaults to \"user\".",
           "type": ["string", "null"],
-          "minLength": 1,
-          "$comment": "manifest.cpp:224-228 — `optional_string` with fallback \"user\", then an explicit non-empty check. NOT an enum: the parser accepts ANY non-empty string here, so a schema restricting it to {\"user\", \"system\"} would reject manifests the parser accepts. docs/FORMAT-0.1.md:271 documents only the default. (`minLength` is vacuous for `null`, which the parser also treats as absent.)"
+          "enum": ["user", null],
+          "$comment": "FORMAT-0.1 §5.7: \"user\" is the only scope 0.1 defines; every other value is RESERVED and rejected. This was previously unconstrained, and that was an omission rather than an extension point -- a package declaring \"machine-wide\" was installed per-user anyway, silently doing something other than what it said. `null` is permitted because the parser treats it as absent (§5.0) and the default applies."
         },
         "estimatedSize": {
           "title": "Estimated installed size",

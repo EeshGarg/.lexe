@@ -809,10 +809,13 @@ fs::path make_package_with_icons(const fs::path& work,
         test::make_test_app_tree(work / ("tree-" + id), spec);
 
     const fs::path icons = work / ("icons-" + id);
-    util::spit(icons / "64.png", std::string_view("png-64-bytes"));
-    util::spit(icons / "128.png", std::string_view("png-128-bytes"));
-    util::spit(icons / "256.png", std::string_view("png-256-bytes"));
-    util::spit(icons / "scalable.svg", std::string_view("<svg/>"));
+    // Real signatures, not placeholders: icons are validated before being
+    // written into the hicolor theme, and "png-128-bytes" is precisely what
+    // that check refuses.
+    util::spit(icons / "64.png", test::minimal_png());
+    util::spit(icons / "128.png", test::minimal_png());
+    util::spit(icons / "256.png", test::minimal_png());
+    util::spit(icons / "scalable.svg", std::string_view(test::minimal_svg()));
 
     PackageWriter::Inputs inputs;
     inputs.payload_dir = tree.payload_dir;
@@ -879,7 +882,7 @@ TEST_CASE("repair restores a lost icon instead of de-registering the rest") {
     // The lost icon is BACK...
     CHECK(fs::is_regular_file(icon64));
     // ...with the right bytes, not an empty placeholder.
-    CHECK(util::slurp_text(icon64) == "png-64-bytes");
+    CHECK(util::slurp(icon64) == test::minimal_png());
     // ...and nothing was quietly de-registered.
     CHECK(registered_icons(paths, id) == 4);
     CHECK(integration.verify().ok);

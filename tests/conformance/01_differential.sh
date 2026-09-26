@@ -220,6 +220,39 @@ elif mode == "missing-hashes":
             if n == "metadata/hashes.json":
                 continue
             z.writestr(n, zin.read(n))
+elif mode == "direntry":
+    # A ZIP directory record CARRYING DATA. Rejected since FORMAT-0.1 §2.1:
+    # a skipped entry is an entry no later rule applies to, and one named
+    # `signatures/evil/` bypassed the exact allowlist written to stop content
+    # appearing there.
+    zin = zipfile.ZipFile(src)
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+        for n in zin.namelist():
+            z.writestr(n, zin.read(n))
+        info = zipfile.ZipInfo("payload/evil/")
+        info.external_attr = (0o40755 << 16) | 0x10
+        z.writestr(info, b"SMUGGLED")
+elif mode == "localname":
+    # The local header and the central directory naming different files.
+    # Two conforming readers would see two different archives, and only one
+    # view is the one the signatures were computed over (FORMAT-0.1 §2.2).
+    import struct
+    data = bytearray(open(src, "rb").read())
+    eocd = len(data) - 22
+    cd_off = struct.unpack_from("<I", data, eocd + 16)[0]
+    p_ = cd_off
+    while p_ < eocd and data[p_:p_+4] == b"PK":
+        nlen = struct.unpack_from("<H", data, p_ + 28)[0]
+        elen = struct.unpack_from("<H", data, p_ + 30)[0]
+        clen = struct.unpack_from("<H", data, p_ + 32)[0]
+        name = bytes(data[p_+46:p_+46+nlen])
+        lho = struct.unpack_from("<I", data, p_ + 42)[0]
+        if name.startswith(b"payload/"):
+            ln = struct.unpack_from("<H", data, lho + 26)[0]
+            data[lho+30:lho+30+ln] = b"payload/../../x".ljust(ln, b"y")[:ln]
+            break
+        p_ += 46 + nlen + elen + clen
+    open(dst, "wb").write(bytes(data))
 elif mode == "bomb":
     zin = zipfile.ZipFile(src)
     with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
@@ -247,7 +280,7 @@ for spec in \
     "duplicate:a duplicate entry path" \
     "bad-manifest:an unparseable lexe.json" \
     "missing-hashes:a missing metadata/hashes.json" \
-    "bomb:a decompression bomb"
+    "bomb:a decompression bomb"     "direntry:a directory entry carrying data"     "localname:a local header naming a different file"
 do
     tag="${spec%%:*}"; label="${spec#*:}"
     pkg="$(craft "$tag")"

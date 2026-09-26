@@ -437,7 +437,15 @@ InstallResult Installer::install(const fs::path& lexe_file,
         // installed id — this catches even the case where the local trust
         // record was forgotten while the app stayed installed. Reported as a
         // ChangedKey trust rejection (runtime-trust WS4).
-        if (record.publisher_key != manifest.publisher_public_key) {
+        // Compared as KEY MATERIAL, not as text. The recorded string and the
+        // manifest string are both canonical today -- decode_public_key
+        // enforces that -- but this is the check that decides whether a
+        // different publisher may take over an installed id, and it should not
+        // depend on an encoding rule enforced in another file. Base64 leaves
+        // the unused bits of its final group free, so "the same key" and "the
+        // same string" are not the same question.
+        if (!crypto::same_public_key(record.publisher_key,
+                                     manifest.publisher_public_key)) {
             throw ChangedKeyError(
                 "refusing: " + manifest.id +
                 " is installed under key " + record.publisher_key +
@@ -455,6 +463,26 @@ InstallResult Installer::install(const fs::path& lexe_file,
             throw Error(manifest.id + " " + manifest.version +
                         " is already installed and current; use `lexe repair " +
                         manifest.id + "` to reinstall its files");
+        }
+        // A direct install that moves BACKWARDS must be asked for (§7.1).
+        //
+        // `lexe update` refuses a lower version (§7 check 7); a direct install
+        // did not, because the package is authentic and nothing in verification
+        // objects to it. So `lexe install app-1.0.0.lexe` over 3.0.0 succeeded
+        // silently -- and an old, still-validly-signed package is precisely
+        // what an attacker who cannot forge a signature still possesses.
+        //
+        // Refused rather than warned, because a warning on a path that ends in
+        // success is a warning nobody reads. Downgrading remains available: it
+        // is legitimate when a new version is broken.
+        if (!opts.allow_downgrade && !previous_version.empty() &&
+            version_less(manifest.version, previous_version)) {
+            throw Error(
+                "refusing to move " + manifest.id + " backwards from " +
+                    previous_version + " to " + manifest.version,
+                "Installing an older version is possible, but it has to be "
+                "asked for: re-run with `--allow-downgrade`. An older release "
+                "may be missing fixes present in " + previous_version + ".");
         }
     }
 
@@ -1204,7 +1232,8 @@ RepairReport Installer::repair(const std::string& id,
             // same version, signed with the pinned publisher key.
             const Manifest m = verify_package_or_throw(*pkg, false);
             if (m.id != id || m.version != current ||
-                m.publisher_public_key != record.publisher_key) {
+                !crypto::same_public_key(m.publisher_public_key,
+                                         record.publisher_key)) {
                 throw Error("package " + pkg->string() + " is not " + id + " " +
                             current +
                             " signed with the pinned publisher key; cannot "
