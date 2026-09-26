@@ -736,6 +736,58 @@ inline std::string format_error_history_empty(const std::string& id) {
 
 // ------------------------------------------------------------ Uninstall
 
+/// What reclaiming old versions will and will not do.
+///
+/// The consumer frontend had no way to do this at all: `lexe gc` existed, the
+/// engine call was lease-aware and conservative, and the Apps view already showed
+/// per-application disk usage — so the only thing missing was a control, and a
+/// user without a terminal simply could not reclaim the space. Recorded as a gap
+/// in docs/CAPABILITY-MATRIX.md before it was closed.
+///
+/// The wording leads with what is KEPT. "Reclaim disk" beside an application is
+/// close enough to "delete the application" to be worth being explicit about.
+inline std::string reclaim_explanation(int keep) {
+    const std::string kept =
+        keep <= 0
+            ? std::string("only the version you are using now")
+            : "the version you are using now, plus the " +
+                  count_of(static_cast<std::size_t>(keep), "most recent older "
+                                                           "version",
+                           "most recent older versions");
+    return "Old versions are kept so that Roll back has somewhere to go. This "
+           "frees the space they use, keeping " + kept +
+           ". Your data and settings are never touched, and a version that is "
+           "currently running is always kept.";
+}
+
+/// The outcome of a reclaim, in the order a reader cares about it.
+inline std::string reclaim_result(const GcReport& report) {
+    std::vector<std::string> lines;
+    if (report.removed.empty()) {
+        lines.push_back("Nothing to reclaim: there were no old versions to "
+                        "remove.");
+    } else {
+        lines.push_back("Reclaimed " +
+                        count_of(report.removed.size(), "old version",
+                                 "old versions") +
+                        ".");
+    }
+    if (!report.skipped_in_use.empty()) {
+        // Not a failure, and worth saying rather than silently keeping: a
+        // version with a launch lease is in use, and removing it would pull the
+        // files out from under a running application.
+        lines.push_back(count_of(report.skipped_in_use.size(), "version was",
+                                 "versions were") +
+                        " kept because they are in use right now.");
+    }
+    if (!report.failed.empty()) {
+        lines.push_back(count_of(report.failed.size(), "version", "versions") +
+                        " could not be removed. The version you are using was "
+                        "not touched.");
+    }
+    return join_lines(lines);
+}
+
 inline std::string uninstall_mode_label(Installer::UninstallMode mode) {
     switch (mode) {
     case Installer::UninstallMode::AppOnly:
@@ -1733,6 +1785,31 @@ void start_uninstall(Ui* ui, const std::string& id,
         });
 }
 
+void start_reclaim(Ui* ui, const std::string& id, int keep) {
+    const lexe::Paths paths = ui->paths;
+    set_status(ui, "Reclaiming disk for " + id + "…");
+    auto failure = std::make_shared<std::string>();
+    auto report = std::make_shared<lexe::GcReport>();
+    run_task(
+        ui,
+        [paths, id, keep, failure, report] {
+            try {
+                *report = lexe::Installer(paths).garbage_collect(id, keep);
+            } catch (const std::exception& e) {
+                *failure = e.what();
+            }
+        },
+        [ui, id, failure, report] {
+            if (failure->empty()) {
+                set_status(ui, lexe::ui::reclaim_result(*report));
+            } else {
+                set_status(ui, "Could not reclaim disk for " + id + ": " +
+                                   *failure);
+            }
+            refresh(ui);
+        });
+}
+
 void start_install(Ui* ui) {
     ui->install_stage = "progress";
     refresh(ui);
@@ -2202,6 +2279,17 @@ void on_uninstall_clicked(GtkButton*, gpointer data) {
         return;
     }
     start_uninstall(ui, id, mode);
+}
+
+void on_reclaim_clicked(GtkButton*, gpointer data) {
+    Action* action = action_of(data);
+    Ui* ui = action->ui;
+    const std::string id = action->a;
+    const int keep = action->n;
+    // Confirmed, because "reclaim disk" sits on the same page as Uninstall and
+    // the two must not be one careless click apart.
+    if (!confirm(ui, lexe::ui::reclaim_explanation(keep), "_Reclaim")) return;
+    start_reclaim(ui, id, keep);
 }
 
 void on_setting_combo_changed(GtkComboBox* combo, gpointer data) {
@@ -3007,6 +3095,18 @@ void build_uninstall_section(Ui* ui, GtkWidget* box,
                                    record.id, name);
     style_class(remove, "destructive-action");
     add_button(row, "Cancel", G_CALLBACK(on_nav_clicked), ui, "apps");
+
+    // Reclaiming old versions is storage management, not removal, so it gets
+    // its own card BELOW the uninstall controls rather than sharing their row —
+    // and it keeps one older version by default, so Roll back still works
+    // afterwards. `lexe gc` has existed all along; this window had no way to
+    // reach it, which meant a user without a terminal could not reclaim the
+    // space at all.
+    GtkWidget* reclaim_card = add_card(box, "Reclaim disk from old versions");
+    add_body(reclaim_card, lexe::ui::reclaim_explanation(1));
+    GtkWidget* reclaim_row = add_button_row(reclaim_card);
+    add_button(reclaim_row, "Reclaim…", G_CALLBACK(on_reclaim_clicked), ui,
+               record.id, name, 1);
 }
 
 void build_app_page(Ui* ui) {

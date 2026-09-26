@@ -84,6 +84,92 @@ TEST_CASE("build_manifest_json produces a valid manifest that round-trips") {
           std::vector<std::string>{"network", "user-files-selected"});
 }
 
+// ---------------------------------------------------------------------------
+// Launch mode: DECLARED, never defaulted.
+//
+// REGRESSION. The builder emitted no `launch` block at all, and the manifest's
+// own default is `gui`. So every package it produced declared itself a desktop
+// application, and the sandbox bound the session display socket for it —
+// including for command-line tools with no use for one. Definitive Architecture
+// §14.4 is explicit that display access is DECLARED and never guessed, and a
+// declaration that nothing chose is not a declaration.
+//
+// It also meant a service could not be built with this tool at all: nothing in
+// the form could say `service`, so `lexe run` would never detach it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the builder always declares a launch mode") {
+    TempLexeHome home;
+    const BuilderForm form = valid_form();
+    const std::string json = lexe::gui::build_manifest_json(form, kZeroKey);
+
+    // Present in the emitted JSON, not merely correct after parsing: a package
+    // whose behaviour depends on a reader's default is a package that behaves
+    // differently under a reader with a different default.
+    INFO(json);
+    CHECK(json.find("\"launch\"") != std::string::npos);
+    CHECK(json.find("\"mode\"") != std::string::npos);
+
+    const lexe::Manifest m = lexe::Manifest::parse(json);
+    // Console is the least authority of the three, and is what a form the user
+    // has not touched must produce.
+    CHECK(m.launch_mode == lexe::LaunchMode::Console);
+}
+
+TEST_CASE("each launch mode round-trips through the manifest") {
+    TempLexeHome home;
+    struct Case {
+        lexe::LaunchMode mode;
+        bool single_instance;
+    };
+    for (const Case& c : {Case{lexe::LaunchMode::Console, false},
+                          Case{lexe::LaunchMode::Gui, true},
+                          Case{lexe::LaunchMode::Service, false},
+                          Case{lexe::LaunchMode::Gui, false}}) {
+        BuilderForm form = valid_form();
+        form.launch_mode = c.mode;
+        form.single_instance = c.single_instance;
+        const lexe::Manifest m =
+            lexe::Manifest::parse(lexe::gui::build_manifest_json(form, kZeroKey));
+        CHECK(m.launch_mode == c.mode);
+        CHECK(m.launch_single_instance == c.single_instance);
+    }
+}
+
+TEST_CASE("a command-line program is not handed the display") {
+    // The consequence the regression had, stated as the test: a console
+    // declaration must not result in a manifest the launcher treats as a GUI.
+    TempLexeHome home;
+    BuilderForm form = valid_form();
+    form.launch_mode = lexe::LaunchMode::Console;
+    const lexe::Manifest m =
+        lexe::Manifest::parse(lexe::gui::build_manifest_json(form, kZeroKey));
+    INFO("launcher.cpp sets IsolationRequest::gui from exactly this");
+    CHECK(m.launch_mode != lexe::LaunchMode::Gui);
+}
+
+TEST_CASE("the builder says what each launch mode costs") {
+    // The developer has to be told that a GUI declaration binds a display
+    // socket; it is a deliberate reduction of isolation, not a convenience.
+    const std::string gui =
+        lexe::gui::launch_mode_consequence(lexe::LaunchMode::Gui);
+    CHECK(gui.find("display") != std::string::npos);
+    CHECK(gui.find("isolation") != std::string::npos);
+
+    const std::string console =
+        lexe::gui::launch_mode_consequence(lexe::LaunchMode::Console);
+    CHECK(console.find("no display") != std::string::npos);
+
+    const std::string service =
+        lexe::gui::launch_mode_consequence(lexe::LaunchMode::Service);
+    CHECK(service.find("detached") != std::string::npos);
+
+    // Three distinct explanations, so none is a copy of another.
+    CHECK(gui != console);
+    CHECK(console != service);
+    CHECK(gui != service);
+}
+
 TEST_CASE("build_manifest_json honours single-arch / no-permission forms") {
     TempLexeHome home;
     BuilderForm form = valid_form();

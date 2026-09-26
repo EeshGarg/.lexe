@@ -5,6 +5,143 @@ Versioning follows [docs/ALPHA.md](docs/ALPHA.md): the **runtime** version is a
 distinct axis from the **package format** (`0.1`, FORMAT-0.1) and the **Tux32**
 baseline (`tux32-core-1`). Dates are UTC.
 
+## [Unreleased] — One engine, and claims that survive being checked
+
+A consolidation-and-validation wave. Nothing here adds a payload kind or a format
+feature; it makes the existing ones harder to doubt, and it fixed six defects
+found by trying.
+
+### Changed — one canonical implementation
+
+- **`src/core` and `src/cli` are now `src/lexe`.** There were never two things:
+  `core` was the implementation and `cli` a thin dispatch layer, and the split
+  invited the mistake it looked like it prevented. The static library is
+  `lexe_engine`; the `lexe` binary is its entry point rather than a peer.
+- The eleven subsystems were not chosen for symmetry. They were chosen by running
+  the include graph and looking for a grouping with no cycles in it, which took
+  two attempts: the first left six upward edges, the worst being a foundation
+  module reaching into installed state. `lock`, `registry` and `appconfig` turned
+  out to be about installed state rather than foundations, and moving them into
+  `state/` leaves the graph strictly layered with `base/` depending on nothing.
+- **`tests/test_architecture.cpp` enforces that**, by reading the tree: an upward
+  include fails, a subsystem on disk but not in the documented order fails, the
+  engine including a frontend fails, and a frontend including anything but engine
+  headers and `gui/*.hpp` fails.
+- **`lexe-installer` is gone.** The alpha's third frontend was already documented
+  as superseded and already being deleted on upgrade by `packaging/install.sh`,
+  yet still built — and `lexe-ui` was reusing its install/consent view model by
+  `#include`-ing its translation unit and defining a macro to suppress its
+  `main()`. That logic is now `src/gui/package_view.hpp`, which both frontends
+  include as a header and neither owns.
+
+### Added — tooling
+
+- **`scripts/test.sh`** — one entry point, nine lanes, `--list` to resolve
+  availability on the current host. It reports four outcomes: PASS, FAIL, SKIP
+  ("not applicable here") and **BLOCKED** ("this applies, it is expected to work,
+  and this machine cannot show it"). A blocked lane is never counted as success.
+- **`lexe runtime [list | show <id>]`** — the compatibility runtimes this host
+  has, where each was found, and for one runtime every location searched in order
+  with the winner marked.
+- **`lexe sandbox`** — the isolation backend and the state of every control,
+  reported per control rather than as one word, because a host can have a working
+  backend that cannot establish a network namespace.
+- **`docs/CAPABILITY-MATRIX.md`** — every capability, which tool reaches it, and
+  what proves it. Its last column is the point: a row with an engine
+  implementation, two frontends and an empty proof cell is a claim.
+- **`docs/TESTING.md`**, **`docs/ROADMAP.md`** — and `handoff/` is deleted. The
+  repository is its own source of truth now.
+- **`tests/lifecycle/`** — the ordinary sequence with state checked between every
+  step, the same operations killed halfway, and service behaviour. **83 checks.**
+- **`tests/security/run_all.sh`** — hostile packages through the CLI, each
+  rejection asked three things rather than one: that it failed, that the reason
+  names the problem, and that it left no residue (including a canary outside the
+  install root). **25 checks.**
+- **`tests/acceptance/00_repository.sh`**, **`07_proton.sh`**,
+  **`08_native_gui.sh`**, **`09_windows_gui.sh`**.
+- **`scripts/lib/private-display.sh`** — a display the test owns and the user
+  cannot see, which is what made the GUI suites possible.
+- **`examples/`** is grouped by payload kind, with a Windows GUI PE and a service.
+
+### Fixed
+
+- **The Proton chain could never have run anything.** Three faults, none visible
+  to a test that built a chain from a synthesized provider set: discovery was a
+  `$PATH` lookup for a binary named `proton` (it is never on `$PATH`, so a machine
+  with Proton installed reported "not installed on this host" and every Proton
+  chain resolved as unavailable); the chain invoked `proton <exe>`, and Proton's
+  entry point is a dispatcher that needs a VERB; and nothing set
+  `STEAM_COMPAT_DATA_PATH` or `STEAM_COMPAT_CLIENT_INSTALL_PATH`, without either
+  of which Proton exits 1.
+- **A version with a space in it made an application unlaunchable.**
+  `apps/<id>/current.txt` is read back through `trim_whitespace`, so a version of
+  `"1.0.0 "` was written faithfully and read back as `"1.0.0"` — and the runtime
+  then resolved a current version whose directory did not exist. The manifest and
+  the registry both called the version free-form; the file that stores it could
+  not represent it. One rule now, in `base/identity.hpp`.
+- **Repair could not repair a rolled-back application.** `installation.json` has
+  one `source` field, meaning "where the most recent install came from"; repair
+  needs "where the CURRENT version came from". After install 1.0.0 → 2.0.0 →
+  rollback, repair correctly refused the only package it knew about and reported
+  the files unrepairable while the right package sat on disk. The source is now
+  recorded per version.
+- **The portable example was never in the repository.**
+  `examples/.gitignore` said `*/payload/`, which was right when every payload was
+  a compiled binary — and for a `portable` package the payload IS the source. So
+  `05_portable_compile.sh`, the suite that proves the portable capability, could
+  not have run on a fresh clone. It passed anyway, everywhere, because the files
+  sat untracked in each working tree.
+- **`lexe-builder` never declared a launch mode**, so every package it built took
+  the manifest default of `gui` and was granted a display socket — including
+  command-line tools — and a service could not be built with it at all. There is
+  now an Application behaviour selector that states what each choice costs.
+- **Three CLI help defects**: a corrupted `completion` line printing two spliced
+  descriptions; five dispatched commands (`compat`, `doctor`, `errors`,
+  `launch-ref`, `open`) absent from the help map, so `lexe compat --help` answered
+  `unknown option "--help"` and `lexe help compat` answered
+  `unknown command "compat" — did you mean "compat"?`; and no worked examples.
+- **Both integration scripts had been failing since the `payload-role` stage
+  landed**, and nobody knew, because nothing ran them. They declared a shell
+  script as the entrypoint of a native package, and they ignored
+  `LEXE_BUILD_DIR`.
+
+### Added — capabilities newly demonstrated
+
+- **Proton runs a real Windows PE** — `tests/acceptance/07_proton.sh`, against a
+  real GE-Proton installation, with the execution report naming `proton` and the
+  prefix landing in the application's own private data root.
+- **A native GUI window maps under the sandbox** —
+  `tests/acceptance/08_native_gui.sh`, witnessed by `xwininfo` and `xlsclients`.
+  The previous session had recorded this as impossible on this machine, and the
+  reasoning was sound as far as it went; the conclusion was not.
+- **A Windows GUI window maps on Linux, through Wine and through Proton** —
+  `tests/acceptance/09_windows_gui.sh`.
+- **Service behaviour**: detach by declaration, a supervisor that outlives the
+  launcher, a version lease that makes uninstalling a running service refuse
+  rather than silently kill it, and a clean stop distinguishable from a kill.
+- **The transactional invariant under interruption**: install, update and
+  uninstall killed halfway, corrupted and deleted and unreadable payloads, an
+  update while the application runs, a lease whose holder was killed — each
+  leaving either the previous valid state or the new one.
+
+### Corrected
+
+One claim moved in the opposite direction. The notes said service behaviour could
+not be demonstrated here because WSL has no systemd user session. WSL2 with
+systemd enabled has a running one, and `grep -rl systemd src/lexe/` returns
+nothing — so the gap was never the environment. Calling it an environment
+limitation was comfortable and false.
+
+### Totals
+
+680 unit test cases / 8873 assertions, green and green again under ASan + UBSan.
+10 acceptance suites, 3 lifecycle scripts, the security lane and 2 integration
+scripts — all green. Zero first-party compiler warnings.
+
+Still unproven, and reported as BLOCKED rather than skipped: the portable type on
+a second ISA, ISA translation chains, the reboot boundary, and session-manager
+integration.
+
 ## [Unreleased] — Definitive Architecture convergence
 
 Moves the runtime from the alpha prototype onto the canonical

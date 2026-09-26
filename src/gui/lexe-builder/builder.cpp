@@ -146,6 +146,17 @@ struct BuilderForm {
 
     // --- what KIND of package this is (FORMAT-0.1 §5.3) ------------------
     ApplicationType application_type = ApplicationType::Native;
+    /// How the application presents itself, and therefore whether the sandbox
+    /// grants it the session display (Definitive Architecture §14.4).
+    ///
+    /// Console by default, which is the LEAST authority of the three. The
+    /// builder used to emit no `launch` block at all, and the manifest's own
+    /// default is `gui` — so every package it produced declared itself a desktop
+    /// application and was granted a display socket, including command-line
+    /// tools that had no use for one. It also meant a service could not be built
+    /// with this tool at all, because nothing could declare `service`.
+    LaunchMode launch_mode = LaunchMode::Console;
+    bool single_instance = false;
 
     // `portable` only. The wizard offers the two build systems the RUNTIME
     // drives itself (`make`, `cmake`) and deliberately not `command`: an argv
@@ -364,6 +375,31 @@ inline ValidationResult validate_form(const BuilderForm& form) {
 /// Build the FORMAT-0.1 §5 `lexe.json` text from the form and the resolved
 /// signing-key public key (publisher.publicKey is ALWAYS the signing key). The
 /// result is a valid 0.1 manifest and round-trips through Manifest::parse.
+/// What declaring this launch mode COSTS, in one sentence.
+///
+/// Display access is the part a developer needs told: it is a deliberate,
+/// declared reduction of isolation, not a convenience, and the difference
+/// between `console` and `gui` is the difference between an application that can
+/// reach the session display and one that cannot.
+inline std::string launch_mode_consequence(LaunchMode mode) {
+    switch (mode) {
+    case LaunchMode::Gui:
+        return "Desktop application: the sandbox will bind the session display "
+               "socket so it can open a window. That is a deliberate reduction "
+               "of isolation — choose it only if the program really shows a "
+               "window.";
+    case LaunchMode::Service:
+        return "Background service: it is detached whether or not the user asks, "
+               "supervised, and holds a lease on its version while it runs. No "
+               "display access, and no terminal.";
+    case LaunchMode::Console:
+    default:
+        return "Command-line program: no display access at all. If it is run "
+               "from a desktop entry with no terminal available, its output is "
+               "captured so it can be shown afterwards.";
+    }
+}
+
 inline std::string build_manifest_json(const BuilderForm& form,
                                        const std::string& public_key) {
     nlohmann::ordered_json doc;
@@ -395,6 +431,16 @@ inline std::string build_manifest_json(const BuilderForm& form,
         install["estimatedSize"] = form.payload_size_bytes;
     }
     doc["install"] = std::move(install);
+
+    // ALWAYS emitted, never left to the default. The manifest's default is
+    // `gui`, so omitting this block silently declared every package a desktop
+    // application and had the sandbox bind a display socket for it — including
+    // for command-line tools. §14.4 is explicit that display access is
+    // DECLARED, and a declaration nothing chose is not one.
+    nlohmann::ordered_json launch;
+    launch["mode"] = to_string(form.launch_mode);
+    launch["singleInstance"] = form.single_instance;
+    doc["launch"] = std::move(launch);
 
     // `build` is required for a portable package and forbidden for every other
     // type (FORMAT-0.1 §5.8), so it is emitted for exactly one of them.
@@ -1098,6 +1144,9 @@ struct BuilderState {
     /// `refresh_type_fields` shows only the ones that apply.
     GtkWidget* type_combo = nullptr;
     GtkWidget* type_note = nullptr;
+    GtkWidget* launch_combo = nullptr;
+    GtkWidget* launch_note = nullptr;
+    GtkWidget* single_instance_check = nullptr;
     GtkWidget* portable_box = nullptr;
     GtkWidget* build_system_combo = nullptr;
     GtkWidget* build_source_entry = nullptr;
@@ -1467,6 +1516,15 @@ lexe::ApplicationType selected_type(BuilderState* st) {
     }
 }
 
+lexe::LaunchMode selected_launch_mode(BuilderState* st) {
+    if (st->launch_combo == nullptr) return lexe::LaunchMode::Console;
+    switch (gtk_combo_box_get_active(GTK_COMBO_BOX(st->launch_combo))) {
+    case 1: return lexe::LaunchMode::Gui;
+    case 2: return lexe::LaunchMode::Service;
+    default: return lexe::LaunchMode::Console;
+    }
+}
+
 lexe::BuildSystem selected_build_system(BuilderState* st) {
     if (st->build_system_combo == nullptr) return lexe::BuildSystem::Make;
     return gtk_combo_box_get_active(GTK_COMBO_BOX(st->build_system_combo)) == 1
@@ -1517,6 +1575,17 @@ void on_type_changed(GtkComboBox*, gpointer user_data) {
     refresh_type_fields(static_cast<BuilderState*>(user_data));
 }
 
+// Restate what the chosen behaviour costs, every time it changes. The wording is
+// the view model's (launch_mode_consequence), so the CLI and this window cannot
+// end up describing display access differently.
+void on_launch_changed(GtkComboBox*, gpointer user_data) {
+    BuilderState* st = static_cast<BuilderState*>(user_data);
+    if (st->launch_note == nullptr) return;
+    gtk_label_set_text(
+        GTK_LABEL(st->launch_note),
+        lexe::gui::launch_mode_consequence(selected_launch_mode(st)).c_str());
+}
+
 std::vector<std::string> split_commas(const std::string& text) {
     std::vector<std::string> out;
     std::size_t start = 0;
@@ -1564,6 +1633,11 @@ lexe::gui::BuilderForm gather_form(BuilderState* st) {
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(st->perm_userfiles_check));
     form.available_entrypoints = st->detection.entrypoints;
     form.application_type = selected_type(st);
+    form.launch_mode = selected_launch_mode(st);
+    form.single_instance =
+        st->single_instance_check != nullptr &&
+        gtk_toggle_button_get_active(
+            GTK_TOGGLE_BUTTON(st->single_instance_check)) != FALSE;
     form.build_system = selected_build_system(st);
     form.build_source_dir = entry_text(st->build_source_entry);
     form.build_toolchain = entry_text(st->build_toolchain_entry);
@@ -2357,6 +2431,32 @@ GtkWidget* build_arch_page(BuilderState* st) {
     gtk_box_pack_start(GTK_BOX(box), st->type_combo, FALSE, FALSE, 0);
     st->type_note = body_label("");
     gtk_box_pack_start(GTK_BOX(box), st->type_note, FALSE, FALSE, 0);
+
+    // --- How it presents itself, and what that costs (§14.4) --------------
+    //
+    // This control did not exist, and its absence was not neutral: with no
+    // `launch` block emitted, every package took the manifest's default of
+    // `gui` and was granted the session display socket. A CLI tool got display
+    // access it had no use for, and a service could not be declared at all.
+    gtk_box_pack_start(GTK_BOX(box), section_heading("Application behaviour"),
+                       FALSE, FALSE, 0);
+    st->launch_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->launch_combo),
+                                   "Command-line program — no display access");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->launch_combo),
+                                   "Desktop application — opens a window");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(st->launch_combo),
+                                   "Background service — detached, no display");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(st->launch_combo), 0);
+    g_signal_connect(st->launch_combo, "changed", G_CALLBACK(on_launch_changed),
+                     st);
+    gtk_box_pack_start(GTK_BOX(box), st->launch_combo, FALSE, FALSE, 0);
+    st->launch_note = body_label(
+        lexe::gui::launch_mode_consequence(lexe::LaunchMode::Console).c_str());
+    gtk_box_pack_start(GTK_BOX(box), st->launch_note, FALSE, FALSE, 0);
+    st->single_instance_check = gtk_check_button_new_with_label(
+        "Only one copy at a time (opening it again focuses the running one)");
+    gtk_box_pack_start(GTK_BOX(box), st->single_instance_check, FALSE, FALSE, 0);
 
     // Portable: the build recipe the destination machine will run.
     st->portable_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);

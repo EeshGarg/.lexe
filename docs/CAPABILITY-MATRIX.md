@@ -54,7 +54,7 @@ Never `CLI logic <-> GUI logic <-> engine logic`.
 | Roll back | `install/installer` | `lexe rollback` | yes | n/a | lifecycle 01, `test_repair_after_rollback.cpp` |
 | Repair | `install/installer` | `lexe repair` | yes | n/a | lifecycle 01/02, `test_repair_after_rollback.cpp` |
 | Uninstall (3 modes) | `install/installer` | `lexe remove [--purge-data]` | yes — all three modes | n/a | `test_installer.cpp`, lifecycle 01 |
-| Reclaim old versions | `install/installer` | `lexe gc` | — a consumer has no way to reclaim disk without the CLI | n/a | `test_installer.cpp`, integration lane |
+| Reclaim old versions | `install/installer` | `lexe gc` | yes — Reclaim disk, on the Uninstall page, keeping one older version so Roll back still works | n/a | `test_installer.cpp`, `test_ui.cpp`, integration lane |
 | List installed applications | `state/registry` | `lexe apps`, `lexe list` | yes — Apps | n/a | `test_cli_apps.cpp`, `test_registry.cpp` |
 
 ## Trust and identity
@@ -85,7 +85,7 @@ the matching private key. It does **not** establish who they are. No surface say
 | ISA translation (FEX, Box64, qemu-user) | `runtime/execpolicy` | yes | yes | yes — declarable | `test_execution_architecture.cpp` only — **no runtime installed here** |
 | Layered chains (`proton+fex`) | `runtime/execpolicy` | yes | yes | yes | `test_execution_architecture.cpp` only — needs a host where the translation is real |
 | Mission-critical strict mode | `runtime/execpolicy`, `package/manifest` | yes — refuses every compatibility chain | yes — shown as strict, with no alternatives offered | yes — refuses a contradictory manifest at build time | `test_execution_architecture.cpp`, acceptance 07 |
-| Declared launch presentation (console/gui/service) | `runtime/launcher` | yes | yes | yes | `test_launcher.cpp`, acceptance 08 |
+| Declared launch presentation (console/gui/service) | `runtime/launcher` | yes | yes | yes — an Application behaviour selector that states what each choice costs. It emitted NO `launch` block until this wave, so every package it built took the manifest default of `gui` and was granted a display socket, including command-line tools | `test_launcher.cpp`, `test_builder.cpp`, acceptance 08 |
 
 ## Portable source
 
@@ -129,7 +129,7 @@ scattered through the tables.
 
 | Gap | Why it matters | Status |
 |---|---|---|
-| `lexe gc` has no graphical equivalent | a consumer cannot reclaim disk from old versions without the CLI | a real gap; the engine call is `Installer::garbage_collect` |
+| ~~`lexe gc` has no graphical equivalent~~ | | **closed.** `lexe-ui` has a Reclaim disk control on the Uninstall page. It keeps the active version plus one, leads with what is KEPT, and reports a version held by a launch lease as kept rather than silently skipping it |
 | ISA translation chains are unit-tested only | the layered-chain vocabulary is broader than anything demonstrated | needs a host where the translation is real; see [TESTING.md](TESTING.md) §6 |
 | Cross-ISA portable compilation is unproven | it is the central claim of the portable type | needs real AArch64 hardware; the decisive test is written down in [TESTING.md](TESTING.md) §7 |
 

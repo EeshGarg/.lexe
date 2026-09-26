@@ -937,4 +937,66 @@ TEST_CASE("the frontend never claims 'verified', 'trusted', 'safe' or 'secure' "
     CHECK(contains(trusted, "a local decision only"));
 }
 
+// ---------------------------------------------------------------------------
+// Reclaiming disk from old versions.
+//
+// `lexe gc` has existed all along, the engine call is lease-aware and
+// conservative, and the Apps view already showed per-application disk usage — so
+// the only thing missing was a control, and a user without a terminal could not
+// reclaim the space at all. It was recorded as a gap in
+// docs/CAPABILITY-MATRIX.md before it was closed, which is what that document is
+// for.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("reclaim explains what it keeps before what it frees") {
+    const std::string one = lexe::ui::reclaim_explanation(1);
+    // "Reclaim disk" sits on the same page as Uninstall, so what is KEPT has to
+    // come first and Roll back has to be named: the reason old versions exist is
+    // the reason a user would hesitate.
+    CHECK(one.find("kept") != std::string::npos);
+    CHECK(one.find("Roll back") != std::string::npos);
+    // And the two things a user fears must be ruled out explicitly.
+    CHECK(one.find("data") != std::string::npos);
+    CHECK(one.find("running") != std::string::npos);
+
+    // Keeping none is a different promise from keeping one, and must read
+    // differently.
+    CHECK(lexe::ui::reclaim_explanation(0) != one);
+    CHECK(lexe::ui::reclaim_explanation(0).find("only the version") !=
+          std::string::npos);
+}
+
+TEST_CASE("reclaim reports nothing-to-do as such, not as success") {
+    const lexe::GcReport empty;
+    const std::string text = lexe::ui::reclaim_result(empty);
+    CHECK(text.find("Nothing to reclaim") != std::string::npos);
+}
+
+TEST_CASE("reclaim reports what it removed") {
+    lexe::GcReport report;
+    report.removed = {"1.0.0", "1.1.0"};
+    const std::string text = lexe::ui::reclaim_result(report);
+    CHECK(text.find("2") != std::string::npos);
+    CHECK(text.find("old version") != std::string::npos);
+}
+
+TEST_CASE("a version in use is reported as kept, not silently skipped") {
+    // A version with a launch lease is in use; removing it would pull the files
+    // out from under a running application. Keeping it is correct — saying
+    // nothing about it is not, because the user asked for space and got less.
+    lexe::GcReport report;
+    report.removed = {"1.0.0"};
+    report.skipped_in_use = {"1.1.0"};
+    const std::string text = lexe::ui::reclaim_result(report);
+    CHECK(text.find("in use") != std::string::npos);
+}
+
+TEST_CASE("a failed removal says the active version was not touched") {
+    lexe::GcReport report;
+    report.failed = {"1.0.0"};
+    const std::string text = lexe::ui::reclaim_result(report);
+    CHECK(text.find("could not be removed") != std::string::npos);
+    CHECK(text.find("not touched") != std::string::npos);
+}
+
 } // TEST_SUITE("ui")
