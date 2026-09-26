@@ -134,7 +134,7 @@ limitation was comfortable and false.
 
 ### Totals
 
-680 unit test cases / 8873 assertions, green and green again under ASan + UBSan.
+692 unit test cases / 8924 assertions, green and green again under ASan + UBSan.
 10 acceptance suites, 3 lifecycle scripts, the security lane and 2 integration
 scripts — all green. Zero first-party compiler warnings.
 

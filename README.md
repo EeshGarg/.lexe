@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/EeshGarg/.lexe/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EeshGarg/.lexe/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599c" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-680%20%C2%B7%208873%20assertions-2d7d46" />
+  <img alt="tests" src="https://img.shields.io/badge/tests-692%20%C2%B7%208924%20assertions-2d7d46" />
   <img alt="suites" src="https://img.shields.io/badge/acceptance-10%20suites%20green-2d7d46" />
   <img alt="Status" src="https://img.shields.io/badge/status-Developer%20Alpha-b4622a" />
 </p>
@@ -114,7 +114,7 @@ test that demonstrates it.**
 
 | Lane | Proves |
 |---|---|
-| `--unit` | 680 test cases, 8873 assertions — every subsystem, both GUI view models, and the architecture's own dependency rules |
+| `--unit` | 692 test cases, 8924 assertions — every subsystem, both GUI view models, and the architecture's own dependency rules |
 | `--acceptance` | 10 end-to-end suites against a throwaway install root |
 | `--integration` | trust and lifecycle across process boundaries |
 | `--gui` | the frontends start, render and exit clean on a display created for the test |
