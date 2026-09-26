@@ -10,7 +10,7 @@
 
 #include "helpers.hpp"
 
-#include "core/verify.hpp"
+#include "lexe/verify/verify.hpp"
 
 #include <miniz/miniz.h>
 #include <nlohmann/json.hpp>

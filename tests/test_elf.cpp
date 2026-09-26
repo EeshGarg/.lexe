@@ -6,7 +6,7 @@
 
 #include "elf_builder.hpp"
 
-#include "core/elf.hpp"
+#include "lexe/package/elf.hpp"
 
 #include <algorithm>
 #include <string>

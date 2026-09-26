@@ -7,9 +7,9 @@
 #include "elf_builder.hpp"
 #include "helpers.hpp"
 
-#include "core/depengine.hpp"
-#include "core/tux32.hpp"
-#include "core/util.hpp"
+#include "lexe/analysis/depengine.hpp"
+#include "lexe/analysis/tux32.hpp"
+#include "lexe/base/util.hpp"
 
 #include <algorithm>
 #include <filesystem>

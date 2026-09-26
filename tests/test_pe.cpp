@@ -14,8 +14,8 @@
 #include "helpers.hpp"
 #include "pe_builder.hpp"
 
-#include "core/pe.hpp"
-#include "core/util.hpp"
+#include "lexe/package/pe.hpp"
+#include "lexe/base/util.hpp"
 
 #include <cstdint>
 #include <filesystem>

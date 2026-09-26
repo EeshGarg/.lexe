@@ -89,9 +89,9 @@ validation.
 ## Find your way around
 
 - [docs/README.md](docs/README.md) — the documentation index (start here).
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the module map. Every `src/core`
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the module map. Every `src/lexe`
   module has a one-line description and its proving test.
-- `src/core/` — the platform; `src/cli/` — the `lexe` command surface;
+- `src/lexe/` — the platform; `src/lexe/commands/` — the `lexe` command surface;
   `src/gui/` — the GTK apps (each has a GTK-free, unit-tested "view model").
 - `tests/` — one `test_<module>.cpp` per module.
 

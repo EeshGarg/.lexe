@@ -18,7 +18,7 @@
  *   - It prints its identity ($LEXE_APP_ID) and a libm-derived result.
  *
  * The runtime provides these via a sanitized environment (see docs/ISOLATION.md
- * and src/core/isolation.cpp). Outside the sandbox the variables may be unset,
+ * and src/lexe/sandbox/isolation.cpp). Outside the sandbox the variables may be unset,
  * so every one has a safe fallback and the program still runs for local testing.
  *
  * To be Core 1 conformant it MUST be built against a glibc no newer than the

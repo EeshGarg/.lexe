@@ -3,7 +3,7 @@
 
 #include <doctest/doctest.h>
 
-#include "core/util.hpp"
+#include "lexe/base/util.hpp"
 
 #include <filesystem>
 #include <string>

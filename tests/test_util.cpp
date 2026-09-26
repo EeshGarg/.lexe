@@ -2,8 +2,8 @@
 
 #include <doctest/doctest.h>
 
-#include "core/error.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/base/util.hpp"
 #include "helpers.hpp"
 
 #include <cctype>

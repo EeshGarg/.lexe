@@ -5,7 +5,7 @@
 // lexe::elf reader and the dependency engine to parse. PT_LOAD uses an identity
 // vaddr==offset mapping so string/verneed virtual addresses equal file offsets.
 
-#include "core/util.hpp"
+#include "lexe/base/util.hpp"
 
 #include <cstdint>
 #include <filesystem>

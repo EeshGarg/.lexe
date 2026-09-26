@@ -73,25 +73,35 @@ if(PKG_CONFIG_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# lexe_core — static library, all portable runtime logic.
+# lexe_engine — THE .LEXE implementation. One engine, one static library.
+#
+# There is no "core" library and no separate "cli" component: the command layer
+# under src/lexe/commands/ is part of this library, and `lexe` below is just its
+# entry point. Every frontend — the CLI, lexe-ui, lexe-builder — links this and
+# reimplements none of it (docs/ARCHITECTURE.md #Dependency-direction).
+#
+# Subsystems (src/lexe/<subsystem>/): base analysis package verify install
+# runtime sandbox integration diagnostics commands.
 # ---------------------------------------------------------------------------
-file(GLOB LEXE_CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp)
-add_library(lexe_core STATIC ${LEXE_CORE_SOURCES})
-target_include_directories(lexe_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# Single source of truth for the runtime version (src/core/version.hpp reads it).
-target_compile_definitions(lexe_core PUBLIC LEXE_VERSION="${PROJECT_VERSION}")
+file(GLOB LEXE_ENGINE_SOURCES CONFIGURE_DEPENDS src/lexe/*/*.cpp)
+# main.cpp is the CLI process entry point, not library code.
+list(REMOVE_ITEM LEXE_ENGINE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lexe/commands/main.cpp)
+add_library(lexe_engine STATIC ${LEXE_ENGINE_SOURCES})
+target_include_directories(lexe_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# Single source of truth for the runtime version (src/lexe/base/version.hpp).
+target_compile_definitions(lexe_engine PUBLIC LEXE_VERSION="${PROJECT_VERSION}")
 if(LEXE_HAVE_SODIUM)
-  target_link_libraries(lexe_core PUBLIC PkgConfig::SODIUM)
-  target_compile_definitions(lexe_core PUBLIC LEXE_HAVE_SODIUM=1)
+  target_link_libraries(lexe_engine PUBLIC PkgConfig::SODIUM)
+  target_compile_definitions(lexe_engine PUBLIC LEXE_HAVE_SODIUM=1)
 endif()
-target_link_libraries(lexe_core PUBLIC lexe_third_party lexe_settings)
+target_link_libraries(lexe_engine PUBLIC lexe_third_party lexe_settings)
 
 # ---------------------------------------------------------------------------
-# lexe — command-line interface.
+# lexe — the command-line interface: the engine's own entry point.
 # ---------------------------------------------------------------------------
-file(GLOB LEXE_CLI_SOURCES CONFIGURE_DEPENDS src/cli/*.cpp)
-add_executable(lexe ${LEXE_CLI_SOURCES})
-target_link_libraries(lexe PRIVATE lexe_core)
+add_executable(lexe src/lexe/commands/main.cpp)
+target_link_libraries(lexe PRIVATE lexe_engine)
 
 # ---------------------------------------------------------------------------
 # lexe_tests — doctest binary, registered with CTest as one test running all
@@ -101,7 +111,7 @@ enable_testing()
 file(GLOB LEXE_TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
 add_executable(lexe_tests ${LEXE_TEST_SOURCES})
 target_include_directories(lexe_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-target_link_libraries(lexe_tests PRIVATE lexe_core)
+target_link_libraries(lexe_tests PRIVATE lexe_engine)
 add_dependencies(lexe_tests lexe) # e2e suite drives the built CLI binary
 add_test(NAME lexe_tests COMMAND lexe_tests)
 # e2e tests locate the CLI via LEXE_TEST_BINARY / LEXE_CLI (fallbacks: a
@@ -113,8 +123,11 @@ target_compile_definitions(lexe_tests PRIVATE
   LEXE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ---------------------------------------------------------------------------
-# lexe-installer — GTK 3 GUI, Linux only (ARCHITECTURE.md #GUI). Built when
-# pkg-config finds gtk+-3.0, or forced with -DLEXE_BUILD_GUI=ON.
+# The two graphical frontends, Linux only (ARCHITECTURE.md #GUI). Built when
+# pkg-config finds gtk+-3.0, or forced with -DLEXE_BUILD_GUI=ON. Both link
+# lexe_engine and reimplement none of it; the alpha's third frontend,
+# `lexe-installer`, is gone — lexe-ui is the `.lexe` handler, and the install
+# view model they shared now lives in src/gui/package_view.hpp.
 # ---------------------------------------------------------------------------
 set(LEXE_GUI_ENABLED OFF)
 if(NOT WIN32)
@@ -132,13 +145,10 @@ if(LEXE_BUILD_GUI AND NOT GTK3_FOUND)
   set(LEXE_GUI_ENABLED ON)
 endif()
 if(LEXE_GUI_ENABLED)
-  add_executable(lexe-installer src/gui/main.cpp)
-  target_link_libraries(lexe-installer PRIVATE lexe_core PkgConfig::GTK3)
-
   # lexe-builder — GTK 3 developer app: point it at a project folder, fill in
   # the manifest, generate/choose a signing key, and build a signed .lexe.
-  add_executable(lexe-builder src/gui/builder.cpp)
-  target_link_libraries(lexe-builder PRIVATE lexe_core PkgConfig::GTK3)
+  add_executable(lexe-builder src/gui/lexe-builder/builder.cpp)
+  target_link_libraries(lexe-builder PRIVATE lexe_engine PkgConfig::GTK3)
 
   # lexe-ui — GTK 3 consumer/power-user frontend: Home, Install, Apps (Launch /
   # Compatibility / Runtime / Permissions / Diagnostics / Error History /
@@ -146,6 +156,6 @@ if(LEXE_GUI_ENABLED)
   # handler entry point: `lexe-ui --open <file>` dispatches on the SIGNED
   # manifest role. ".LEXE Menu" is `--app <id>`; ".LEXE Error" is
   # `--errors <id>`; both navigate this one window.
-  add_executable(lexe-ui src/gui/ui.cpp)
-  target_link_libraries(lexe-ui PRIVATE lexe_core PkgConfig::GTK3)
+  add_executable(lexe-ui src/gui/lexe-ui/ui.cpp)
+  target_link_libraries(lexe-ui PRIVATE lexe_engine PkgConfig::GTK3)
 endif()

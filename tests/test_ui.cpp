@@ -16,26 +16,26 @@
 // constructs lexe::test::TempLexeHome first.
 
 #define LEXE_GUI_VIEWMODEL_ONLY 1
-#include "gui/ui.cpp"
+#include "gui/lexe-ui/ui.cpp"
 
 #include <doctest/doctest.h>
 
 #include "helpers.hpp"
 
-#include "core/appconfig.hpp"
-#include "core/diagnostics.hpp"
-#include "core/execpolicy.hpp"
-#include "core/installer.hpp"
-#include "core/integration.hpp"
-#include "core/isolation.hpp"
-#include "core/launcher.hpp"
-#include "core/launchref.hpp"
-#include "core/manifest.hpp"
-#include "core/package.hpp"
-#include "core/paths.hpp"
-#include "core/presentation.hpp"
-#include "core/registry.hpp"
-#include "core/verify.hpp"
+#include "lexe/state/appconfig.hpp"
+#include "lexe/diagnostics/diagnostics.hpp"
+#include "lexe/runtime/execpolicy.hpp"
+#include "lexe/install/installer.hpp"
+#include "lexe/integration/integration.hpp"
+#include "lexe/sandbox/isolation.hpp"
+#include "lexe/runtime/launcher.hpp"
+#include "lexe/runtime/launchref.hpp"
+#include "lexe/package/manifest.hpp"
+#include "lexe/package/package.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/diagnostics/presentation.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/verify/verify.hpp"
 
 #include <optional>
 #include <string>

@@ -7,14 +7,14 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/installer.hpp"
-#include "core/launcher.hpp"
-#include "core/package.hpp"
-#include "core/paths.hpp"
-#include "core/registry.hpp"
-#include "core/trust.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/install/installer.hpp"
+#include "lexe/runtime/launcher.hpp"
+#include "lexe/package/package.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/verify/trust.hpp"
+#include "lexe/base/util.hpp"
 
 #include <filesystem>
 #include <string>

@@ -15,9 +15,9 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/lock.hpp"
-#include "core/paths.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/state/lock.hpp"
+#include "lexe/base/paths.hpp"
 
 #include <csignal>
 #include <functional>

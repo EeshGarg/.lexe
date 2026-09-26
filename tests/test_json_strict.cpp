@@ -9,13 +9,13 @@
 
 #include "helpers.hpp"
 
-#include "core/crypto.hpp"
-#include "core/error.hpp"
-#include "core/json_strict.hpp"
-#include "core/limits.hpp"
-#include "core/manifest.hpp"
-#include "core/registry.hpp"
-#include "core/util.hpp"
+#include "lexe/package/crypto.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/base/json_strict.hpp"
+#include "lexe/base/limits.hpp"
+#include "lexe/package/manifest.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/base/util.hpp"
 
 #include <filesystem>
 #include <string>

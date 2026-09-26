@@ -8,7 +8,7 @@
 
 #include "helpers.hpp"
 
-#include "core/crypto.hpp"
+#include "lexe/package/crypto.hpp"
 
 #include <ed25519/ed25519.h> // the PREVIOUS provider, for cross-provider fixtures
 

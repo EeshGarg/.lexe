@@ -39,7 +39,7 @@ coordination are Linux features.
 
 ## The locks
 
-All locks go through `OperationLockManager` (`src/core/lock.hpp`). The scopes are
+All locks go through `OperationLockManager` (`src/lexe/base/lock.hpp`). The scopes are
 distinct C++ types so a misuse is a compile error, not a runtime surprise.
 
 | Lock | Type | Mode | Scope | Held for |
@@ -103,7 +103,7 @@ close is between resolving which version is active and actually executing it: a
 concurrent update could flip `current`, and a GC could remove the resolved
 version.
 
-The launcher (`src/core/launcher.cpp`):
+The launcher (`src/lexe/runtime/launcher.cpp`):
 
 1. resolves the active version once,
 2. immediately takes a **shared launch lease** on that exact `(id, version)` and

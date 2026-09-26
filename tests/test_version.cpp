@@ -5,9 +5,9 @@
 
 #include <doctest/doctest.h>
 
-#include "core/tux32.hpp"
-#include "core/util.hpp"
-#include "core/version.hpp"
+#include "lexe/analysis/tux32.hpp"
+#include "lexe/base/util.hpp"
+#include "lexe/base/version.hpp"
 
 #include <nlohmann/json.hpp>
 

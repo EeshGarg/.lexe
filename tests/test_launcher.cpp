@@ -14,11 +14,11 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/launcher.hpp"
-#include "core/paths.hpp"
-#include "core/registry.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/runtime/launcher.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/base/util.hpp"
 
 #include <nlohmann/json.hpp>
 

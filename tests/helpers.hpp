@@ -13,13 +13,13 @@
 #include "elf_builder.hpp"
 #include "pe_builder.hpp"
 
-#include "core/crypto.hpp"
-#include "core/elf.hpp"
-#include "core/error.hpp"
-#include "core/package.hpp"
-#include "core/paths.hpp"
-#include "core/util.hpp"
-#include "core/verify.hpp"
+#include "lexe/package/crypto.hpp"
+#include "lexe/package/elf.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/package/package.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/base/util.hpp"
+#include "lexe/verify/verify.hpp"
 
 #include <ed25519/ed25519.h>
 #include <miniz/miniz.h>

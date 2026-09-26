@@ -5,8 +5,8 @@
 // platform. Single-threaded: a conflicting acquisition reports BusyError
 // immediately rather than waiting (no real holder can release mid-call).
 
-#include "core/error.hpp"
-#include "core/lock.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/state/lock.hpp"
 
 #include <functional>
 #include <map>

@@ -46,7 +46,7 @@ Not part of the contract; do not depend on their exact shape across versions:
 | **Trust record** file format (`<home>/trust/<id>.json`) | **Detail** | The trust *model* is a promise; the on-disk serialization is internal. |
 | **Settings** file (`<home>/settings.json`) | **Detail** | Preferences only; unknown fields are ignored, but the schema may grow. |
 | Registry/installation.json field set | **Detail** | Internal bookkeeping; read via `lexe apps`/`info`, not by hand. |
-| C++ APIs, module boundaries, and `src/core` types | **Detail** | ALPHA makes no API/ABI promise. |
+| C++ APIs, module boundaries, and `src/lexe` types | **Detail** | ALPHA makes no API/ABI promise. |
 | CLI `--json` **shapes** | **Informative** | Stable enough to script an Alpha, but may gain fields; treat additively. |
 | CLI **exit codes** (0 ok · 1 runtime · 2 usage · 3 verification · 4 not-found · 5 permission · 6 busy · 7 trust) | **Promise (this line)** | Documented and depended on by `lexe sdk verify` (0/3) and tests. |
 | **Builder defaults** (Core Portable default, x86-64, generated key path) | **Detail** | Convenience defaults; may change without affecting produced packages. |

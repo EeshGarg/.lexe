@@ -12,11 +12,11 @@
 
 #include "helpers.hpp"
 
-#include "core/crypto.hpp"
-#include "core/error.hpp"
-#include "core/package.hpp"
-#include "core/util.hpp"
-#include "core/verify.hpp"
+#include "lexe/package/crypto.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/package/package.hpp"
+#include "lexe/base/util.hpp"
+#include "lexe/verify/verify.hpp"
 
 #include <nlohmann/json.hpp>
 

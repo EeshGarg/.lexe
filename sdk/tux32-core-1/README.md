@@ -5,7 +5,7 @@ baseline. It is intentionally small: it is guidance plus a verifier, not a
 packaged toolchain, language runtime, or translation layer.
 
 `Tux32 Core 1` is the stable ABI contract a **Core Portable** package targets.
-Its full definition is compiled into the runtime ([../../src/core/tux32.cpp](../../src/core/tux32.cpp))
+Its full definition is compiled into the runtime ([../../src/lexe/analysis/tux32.cpp](../../src/lexe/analysis/tux32.cpp))
 and mirrored, byte-checked, in [profile.json](profile.json). The prose rationale
 is in [../../docs/TUX32.md](../../docs/TUX32.md). In brief, Core 1 is:
 

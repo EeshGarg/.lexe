@@ -9,7 +9,7 @@
 // wrong (a DLL, a foreign machine, a truncated header) on a machine that has no
 // Windows binaries to hand.
 
-#include "core/util.hpp"
+#include "lexe/base/util.hpp"
 
 #include <cstdint>
 #include <filesystem>

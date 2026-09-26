@@ -6,8 +6,8 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/manifest.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/package/manifest.hpp"
 
 #include <nlohmann/json.hpp>
 

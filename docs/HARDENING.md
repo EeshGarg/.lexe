@@ -133,8 +133,8 @@ Explicit tests beyond FORMAT §7's happy path:
 `src/gui/main.cpp` MAY include only the public headers the CLI uses
 (`manifest`, `verify`, `installer`, `updater`, `launcher`, `error`, `paths`) and
 MUST NOT contain installation logic — it renders reports and calls the same
-`lexe_core` entry points as the CLI. Replacing GTK3 with GTK4/Qt later must not
-touch a single line under `src/core/`. Enforced by review + an include audit in
+`lexe_engine` entry points as the CLI. Replacing GTK3 with GTK4/Qt later must not
+touch a single line under `src/lexe/`. Enforced by review + an include audit in
 the hardening pass.
 
 ## I. Evidence Bundle (definition of done for any "it works" claim)

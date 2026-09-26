@@ -15,13 +15,13 @@
 
 #include "helpers.hpp"
 
-#include "core/installer.hpp"
-#include "core/launcher.hpp"
-#include "core/package.hpp"
-#include "core/paths.hpp"
-#include "core/registry.hpp"
-#include "core/util.hpp"
-#include "core/verify.hpp"
+#include "lexe/install/installer.hpp"
+#include "lexe/runtime/launcher.hpp"
+#include "lexe/package/package.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/base/util.hpp"
+#include "lexe/verify/verify.hpp"
 
 #include <filesystem>
 #include <string>

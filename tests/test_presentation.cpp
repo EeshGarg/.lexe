@@ -5,10 +5,10 @@
 
 #include "helpers.hpp"
 
-#include "core/isolation.hpp"
-#include "core/permissions.hpp"
-#include "core/presentation.hpp"
-#include "core/trust.hpp"
+#include "lexe/sandbox/isolation.hpp"
+#include "lexe/sandbox/permissions.hpp"
+#include "lexe/diagnostics/presentation.hpp"
+#include "lexe/verify/trust.hpp"
 
 #include <string>
 

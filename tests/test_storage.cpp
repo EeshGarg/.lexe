@@ -7,14 +7,14 @@
 #include "helpers.hpp"
 #include "lock_fake.hpp"
 
-#include "core/error.hpp"
-#include "core/installer.hpp"
-#include "core/lock.hpp"
-#include "core/paths.hpp"
-#include "core/registry.hpp"
-#include "core/transaction.hpp"
-#include "core/trust.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/install/installer.hpp"
+#include "lexe/state/lock.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/install/transaction.hpp"
+#include "lexe/verify/trust.hpp"
+#include "lexe/base/util.hpp"
 
 #include <memory>
 #include <string>

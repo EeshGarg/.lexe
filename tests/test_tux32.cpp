@@ -4,9 +4,9 @@
 
 #include <doctest/doctest.h>
 
-#include "core/error.hpp"
-#include "core/tux32.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/analysis/tux32.hpp"
+#include "lexe/base/util.hpp"
 
 #include <filesystem>
 #include <string>

@@ -11,10 +11,10 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/limits.hpp"
-#include "core/package.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/base/limits.hpp"
+#include "lexe/package/package.hpp"
+#include "lexe/base/util.hpp"
 
 #include <filesystem>
 #include <string>

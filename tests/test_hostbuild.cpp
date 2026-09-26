@@ -20,17 +20,17 @@
 
 #include "helpers.hpp"
 
-#include "core/crypto.hpp"
-#include "core/error.hpp"
-#include "core/hostbuild.hpp"
-#include "core/installer.hpp"
-#include "core/isolation.hpp"
-#include "core/launcher.hpp"
-#include "core/manifest.hpp"
-#include "core/paths.hpp"
-#include "core/registry.hpp"
-#include "core/util.hpp"
-#include "core/verify.hpp"
+#include "lexe/package/crypto.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/runtime/hostbuild.hpp"
+#include "lexe/install/installer.hpp"
+#include "lexe/sandbox/isolation.hpp"
+#include "lexe/runtime/launcher.hpp"
+#include "lexe/package/manifest.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/state/registry.hpp"
+#include "lexe/base/util.hpp"
+#include "lexe/verify/verify.hpp"
 
 #include <filesystem>
 #include <string>

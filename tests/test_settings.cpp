@@ -6,10 +6,10 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/paths.hpp"
-#include "core/settings.hpp"
-#include "core/util.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/base/settings.hpp"
+#include "lexe/base/util.hpp"
 
 #include <nlohmann/json.hpp>
 

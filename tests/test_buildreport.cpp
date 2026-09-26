@@ -2,9 +2,9 @@
 
 #include <doctest/doctest.h>
 
-#include "core/buildreport.hpp"
-#include "core/depengine.hpp"
-#include "core/runtime_profile.hpp"
+#include "lexe/runtime/buildreport.hpp"
+#include "lexe/analysis/depengine.hpp"
+#include "lexe/runtime/runtime_profile.hpp"
 
 #include <string>
 

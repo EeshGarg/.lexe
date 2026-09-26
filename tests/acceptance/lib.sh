@@ -5,7 +5,7 @@
 # SCRATCH LEXE_HOME, and ends with `acc_summary`. Nothing here ever touches the
 # real ~/.local/share/lexe: LEXE_HOME is redirected, and with LEXE_HOME set the
 # paths module keeps applications/, icons/, mime/, state/, config/ and
-# config-home/mimeapps.list all underneath it (src/core/paths.cpp).
+# config-home/mimeapps.list all underneath it (src/lexe/base/paths.cpp).
 #
 # Sourcing this file does NOT create anything; call acc_scratch_home to do that.
 #

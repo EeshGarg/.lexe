@@ -3,9 +3,9 @@
 
 #include <doctest/doctest.h>
 
-#include "core/depengine.hpp"
-#include "core/error.hpp"
-#include "core/runtime_profile.hpp"
+#include "lexe/analysis/depengine.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/runtime/runtime_profile.hpp"
 
 #include <algorithm>
 #include <string>

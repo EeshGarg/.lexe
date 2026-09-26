@@ -24,7 +24,7 @@ The central invariant:
 ## Tux32 Core 1 — the frozen baseline
 
 Core 1 is deliberately narrow. It is defined once, authoritatively, in
-[`src/core/tux32.cpp`](../src/core/tux32.cpp) (`tux32_core_1()`), and mirrored in
+[`src/lexe/analysis/tux32.cpp`](../src/lexe/analysis/tux32.cpp) (`tux32_core_1()`), and mirrored in
 [`sdk/tux32-core-1/profile.json`](../sdk/tux32-core-1/profile.json). A test pins
 the two together so they can never drift.
 
@@ -51,7 +51,7 @@ hosts unchanged.
 ## Verification (implemented)
 
 `verify_against_profile(deps, profile)`
-([`src/core/tux32.hpp`](../src/core/tux32.hpp)) takes the dependency engine's
+([`src/lexe/analysis/tux32.hpp`](../src/lexe/analysis/tux32.hpp)) takes the dependency engine's
 already-computed graph — **it does not re-analyze** — and returns a typed
 `Core1VerifyResult`. It computes the *package's* glibc requirement from the
 executable plus every **bundled** library (host-interface libraries are supplied

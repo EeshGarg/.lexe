@@ -42,7 +42,7 @@ achievable.
 `lexe` owns every real operation: build, sign, verify, inspect, install, run,
 configure, diagnose and uninstall. It is usable on its own; neither GUI is
 required for anything. The GUIs **expose** `.LEXE` — they never reimplement it,
-and they link `lexe_core` directly rather than shelling out to a second engine.
+and they link `lexe_engine` directly rather than shelling out to a second engine.
 
 | Binary | Role |
 |---|---|

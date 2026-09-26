@@ -13,11 +13,11 @@
 
 #include "helpers.hpp"
 
-#include "core/desktop.hpp"
-#include "core/integration.hpp"
-#include "core/manifest.hpp"
-#include "core/paths.hpp"
-#include "core/util.hpp"
+#include "lexe/integration/desktop.hpp"
+#include "lexe/integration/integration.hpp"
+#include "lexe/package/manifest.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/base/util.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -217,7 +217,7 @@ TEST_CASE("mime xml text: XML-special characters are escaped") {
 //
 // Two of them used to exist. This module planned and wrote a handler entry and
 // a MIME document for `application/x-lexe`, packaging/install.sh hand-rolled a
-// third copy in shell, and `DesktopIntegration` (core/integration.hpp) wrote
+// third copy in shell, and `DesktopIntegration` (integration/integration.hpp) wrote
 // the canonical `application/vnd.usha.lexe` registration the runtime actually
 // claims. Which registration a machine ended up with depended on which of them
 // ran last — and `doctor --repair` could not put back something a different
@@ -232,7 +232,7 @@ TEST_CASE("this module generates documents and registers nothing") {
     // A grep with a compiler behind it: the header exposes content generation
     // and nothing that writes, plans, or registers.
     const std::string header =
-        lexe::util::slurp_text(fs::path(LEXE_SOURCE_DIR) / "src" / "core" /
+        lexe::util::slurp_text(fs::path(LEXE_SOURCE_DIR) / "src" / "lexe" / "integration" /
                                "desktop.hpp");
     for (const char* gone : {"integrate_app", "integrate_runtime",
                              "remove_integration", "runtime_desktop_entry_text",
@@ -242,7 +242,7 @@ TEST_CASE("this module generates documents and registers nothing") {
         CHECK(header.find(gone) == std::string::npos);
     }
     const std::string impl =
-        lexe::util::slurp_text(fs::path(LEXE_SOURCE_DIR) / "src" / "core" /
+        lexe::util::slurp_text(fs::path(LEXE_SOURCE_DIR) / "src" / "lexe" / "integration" /
                                "desktop.cpp");
     // Nothing in here touches the filesystem or spawns the freedesktop tools.
     for (const char* gone : {"util::spit", "write_atomic", "run_process",

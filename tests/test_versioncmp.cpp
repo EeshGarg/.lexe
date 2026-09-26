@@ -7,7 +7,7 @@
 
 #include "helpers.hpp"
 
-#include "core/versioncmp.hpp"
+#include "lexe/base/versioncmp.hpp"
 
 #include <algorithm>
 #include <cstddef>

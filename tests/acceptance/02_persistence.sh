@@ -100,7 +100,7 @@ if [[ -f "$icon" ]]; then
     pass "doctor --repair restores the missing icon"
 else
     fail "doctor --repair restores the missing icon" \
-        "PRODUCT DEFECT (src/core/integration.cpp DesktopIntegration::repair):" \
+        "PRODUCT DEFECT (src/lexe/integration/integration.cpp DesktopIntegration::repair):" \
         "repair() passes <version-dir>/icons as the icon source, but the installer" \
         "never writes the package's icons/ into the version directory, so the" \
         "directory never exists. install_app() then records ZERO app-icon" \

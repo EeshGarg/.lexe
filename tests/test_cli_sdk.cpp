@@ -8,7 +8,7 @@
 #include "elf_builder.hpp"
 #include "helpers.hpp"
 
-#include "core/util.hpp"
+#include "lexe/base/util.hpp"
 
 #include <nlohmann/json.hpp>
 

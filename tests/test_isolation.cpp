@@ -7,8 +7,8 @@
 
 #include "helpers.hpp"
 
-#include "core/error.hpp"
-#include "core/isolation.hpp"
+#include "lexe/base/error.hpp"
+#include "lexe/sandbox/isolation.hpp"
 
 #include <algorithm>
 #include <map>

@@ -2,8 +2,8 @@
 
 #include <doctest/doctest.h>
 
-#include "core/paths.hpp"
-#include "core/util.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/base/util.hpp"
 #include "helpers.hpp"
 
 #include <optional>

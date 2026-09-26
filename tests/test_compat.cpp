@@ -2,8 +2,8 @@
 
 #include <doctest/doctest.h>
 
-#include "core/compat.hpp"
-#include "core/depengine.hpp"
+#include "lexe/runtime/compat.hpp"
+#include "lexe/analysis/depengine.hpp"
 
 #include <algorithm>
 #include <string>

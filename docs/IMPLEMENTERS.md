@@ -6,17 +6,17 @@
 
 `.lexe` is a language-neutral format. You can implement a conforming **verifier**,
 **builder**, or **runtime** in any language by following the specifications below
-— the C++ reference implementation in `src/core/` is one implementation, not the
+— the C++ reference implementation in `src/lexe/` is one implementation, not the
 definition. Start with the product overview in [../SPEC.md](../SPEC.md).
 
 ## What you might build
 
 | You want to… | Read, in order | Reference code |
 |---|---|---|
-| **Verify** a package | FORMAT-0.1 §1–§6 | `src/core/{package,crypto,verify,manifest}.cpp` |
-| **Build & sign** a package | FORMAT-0.1 §1–§5, §8 | `src/core/{package,crypto}.cpp`, `src/cli` `build`/`pack` |
-| **Run** packages (a runtime) | all of FORMAT-0.1, [TRUST-MODEL.md](TRUST-MODEL.md), [ISOLATION.md](ISOLATION.md), [CONCURRENCY.md](CONCURRENCY.md) | `src/core/{installer,launcher,isolation,registry}.cpp` |
-| **Verify Tux32 Core 1 portability** | [TUX32.md](TUX32.md) + `sdk/tux32-core-1/profile.json` | `src/core/{elf,depengine,tux32}.cpp` |
+| **Verify** a package | FORMAT-0.1 §1–§6 | `src/lexe/package/package.cpp, src/lexe/package/crypto.cpp, src/lexe/verify/verify.cpp, src/lexe/package/manifest.cpp` |
+| **Build & sign** a package | FORMAT-0.1 §1–§5, §8 | `src/lexe/package/package.cpp, src/lexe/package/crypto.cpp`, `src/lexe/commands` `build`/`pack` |
+| **Run** packages (a runtime) | all of FORMAT-0.1, [TRUST-MODEL.md](TRUST-MODEL.md), [ISOLATION.md](ISOLATION.md), [CONCURRENCY.md](CONCURRENCY.md) | `src/lexe/install/installer.cpp, src/lexe/runtime/launcher.cpp, src/lexe/sandbox/isolation.cpp, src/lexe/install/registry.cpp` |
+| **Verify Tux32 Core 1 portability** | [TUX32.md](TUX32.md) + `sdk/tux32-core-1/profile.json` | `src/lexe/package/elf.cpp, src/lexe/analysis/depengine.cpp, src/lexe/analysis/tux32.cpp` |
 
 ## The container (FORMAT-0.1 §1–§3)
 

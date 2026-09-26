@@ -8,17 +8,17 @@
 // The GTK layer itself is compile-gated by the Linux `lexe-builder` target.
 
 #define LEXE_GUI_VIEWMODEL_ONLY 1
-#include "gui/builder.cpp"
+#include "gui/lexe-builder/builder.cpp"
 
 #include <doctest/doctest.h>
 
 #include "elf_builder.hpp"
 #include "helpers.hpp"
 
-#include "core/manifest.hpp"
-#include "core/paths.hpp"
-#include "core/settings.hpp"
-#include "core/util.hpp"
+#include "lexe/package/manifest.hpp"
+#include "lexe/base/paths.hpp"
+#include "lexe/base/settings.hpp"
+#include "lexe/base/util.hpp"
 
 #include <algorithm>
 #include <filesystem>

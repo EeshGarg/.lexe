@@ -7,8 +7,8 @@
 #include "elf_builder.hpp"
 #include "helpers.hpp"
 
-#include "core/depengine.hpp"
-#include "core/elf.hpp"
+#include "lexe/analysis/depengine.hpp"
+#include "lexe/package/elf.hpp"
 
 #include <algorithm>
 #include <filesystem>
