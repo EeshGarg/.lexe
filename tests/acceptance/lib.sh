@@ -52,14 +52,18 @@ ACC_ENTRYPOINT="bin/gui-hello"
 ACC_PASS=0
 ACC_FAIL=0
 ACC_SKIP=0
+ACC_BLOCKED=0
 ACC_TITLE=""
 ACC_FAILURES=()
+ACC_BLOCKERS=()
 
 if [[ -t 1 ]]; then
     ACC_GREEN=$'\033[32m'; ACC_RED=$'\033[31m'; ACC_YELLOW=$'\033[33m'
+    ACC_BLUE=$'\033[34m'
     ACC_BOLD=$'\033[1m'; ACC_OFF=$'\033[0m'
 else
-    ACC_GREEN=""; ACC_RED=""; ACC_YELLOW=""; ACC_BOLD=""; ACC_OFF=""
+    ACC_GREEN=""; ACC_RED=""; ACC_YELLOW=""; ACC_BLUE=""
+    ACC_BOLD=""; ACC_OFF=""
 fi
 
 acc_begin() {
@@ -81,11 +85,29 @@ fail() {
 
 skip() { ACC_SKIP=$((ACC_SKIP + 1)); printf '  %sSKIP%s %s\n' "$ACC_YELLOW" "$ACC_OFF" "$1"; }
 
+# BLOCKED is not SKIP. A skip says "this does not apply here"; a block says
+# "this applies, it is expected to work, and this machine cannot show it" --
+# missing hardware, no desktop session, no second ISA. Counted and reported
+# separately because that difference is the difference between a capability we
+# chose not to exercise and a claim that is still unproven.
+blocked() {
+    ACC_BLOCKED=$((ACC_BLOCKED + 1))
+    ACC_BLOCKERS+=("$1")
+    printf '  %sBLOCK%s %s\n' "$ACC_BLUE" "$ACC_OFF" "$1"
+    if [[ $# -gt 1 ]]; then printf '        %s\n' "${@:2}"; fi
+}
+
 note() { printf '       %s\n' "$@"; }
 
 acc_summary() {
-    printf '\n  %s: %d passed, %d failed, %d skipped\n' \
-        "$ACC_TITLE" "$ACC_PASS" "$ACC_FAIL" "$ACC_SKIP"
+    printf '\n  %s: %d passed, %d failed, %d skipped, %d blocked\n' \
+        "$ACC_TITLE" "$ACC_PASS" "$ACC_FAIL" "$ACC_SKIP" "$ACC_BLOCKED"
+    if [[ $ACC_BLOCKED -gt 0 ]]; then
+        printf '  %sblocked on this machine:%s\n' "$ACC_BLUE" "$ACC_OFF"
+        for acc_blocker in "${ACC_BLOCKERS[@]}"; do
+            printf '    %s\n' "$acc_blocker"
+        done
+    fi
     if [[ $ACC_FAIL -gt 0 ]]; then
         printf '  %sfailing checks:%s\n' "$ACC_RED" "$ACC_OFF"
         printf '    - %s\n' "${ACC_FAILURES[@]}"
@@ -250,6 +272,10 @@ d = json.load(sys.stdin if src == "-" else open(src))
 print(eval(sys.argv[2]))
 ' "$src" "$1"
 }
+
+# acc_json_str <json-text> <python-expression over `d`> — the same, for JSON a
+# command printed to stdout rather than wrote to a file.
+acc_json_str() { printf '%s' "$1" | acc_json - "$2"; }
 
 acc_have_display() {
     [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]
