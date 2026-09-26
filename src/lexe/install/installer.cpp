@@ -533,6 +533,18 @@ InstallResult Installer::install(const fs::path& lexe_file,
 #endif
         util::spit(txn.staging_meta_dir() / "lexe.json", manifest_bytes);
         util::spit(txn.staging_meta_dir() / "hashes.json", hashes_bytes);
+        // Where THIS version came from, beside this version's hashes.
+        //
+        // installation.json has a single `source` field, and it necessarily
+        // means "where the most recent install came from". Repair needs
+        // something else: where the CURRENT version came from. After an update
+        // and a rollback those are different packages, and repair was rejecting
+        // the only package it knew about because its version did not match the
+        // one being repaired -- so a rolled-back application could not be
+        // repaired at all, reporting "corrupt or missing file(s) that could not
+        // be repaired" while the right package sat on disk.
+        util::spit(txn.staging_meta_dir() / "source.txt",
+                   opts.source.value_or(lexe_file.string()));
 
         // (4b) HOST-ISA COMPILE (Definitive Architecture §5/§7). A portable
         // package's payload is source; the program does not exist yet. It is
@@ -1085,11 +1097,36 @@ RepairReport Installer::repair(const std::string& id,
         return report;
     }
 
-    // A package to re-extract from: the explicit argument, else the original
-    // package when record.source still points at a local file (e.g. the
-    // cached download an update installed from).
+    // A package to re-extract from, in order of how well it is known to be the
+    // right one:
+    //
+    //   1. the explicit argument;
+    //   2. the source recorded for THIS version in its own meta store;
+    //   3. installation.json's `source`, which is where the most recent install
+    //      came from.
+    //
+    // (2) exists because (3) is not version-specific. After install 1.0.0,
+    // update to 2.0.0, rollback to 1.0.0, `record.source` still named the 2.0.0
+    // package -- and the version check below (correctly) refused to repair 1.0.0
+    // from it, so repair failed on an application whose own package was present.
     std::optional<fs::path> pkg = package;
     const bool explicit_package = package.has_value();
+    if (!pkg.has_value()) {
+        const fs::path per_version = meta_dir(app_dir, current) / "source.txt";
+        if (fs::is_regular_file(per_version, ec)) {
+            std::string recorded = util::slurp_text(per_version);
+            while (!recorded.empty() &&
+                   (recorded.back() == '\n' ||
+                    recorded.back() == '\r' ||
+                    recorded.back() == ' ')) {
+                recorded.pop_back();
+            }
+            const fs::path candidate(recorded);
+            if (!recorded.empty() && fs::is_regular_file(candidate, ec)) {
+                pkg = candidate;
+            }
+        }
+    }
     if (!pkg.has_value() && !record.source.empty()) {
         const fs::path source(record.source);
         if (fs::is_regular_file(source, ec)) pkg = source;
