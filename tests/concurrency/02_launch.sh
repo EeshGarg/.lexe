@@ -54,9 +54,8 @@ note "exit codes seen: $(conc_codes "run-x4" 4)"
 # The uninstall must not delete files a running process is executing. Either it
 # refuses as busy, or it waits — never "succeeds" by removing them underneath.
 
-"$LEXE" run "$LC_APP_ID" --detach -- --sleep 15 >/dev/null 2>&1
-sleep 2
-live="$(pgrep -f "versions/1.0.0/$LC_ENTRY" | head -1 || true)"
+"$LEXE" run "$LC_APP_ID" --detach -- --sleep 40 >/dev/null 2>&1
+live="$(conc_wait_alive 1.0.0 || true)"
 if [[ -z "$live" ]]; then
     skip "could not keep the application alive long enough to race an uninstall"
 else
@@ -80,9 +79,8 @@ fi
 # An update while a launch is live is legitimate: it installs alongside. What it
 # must not do is remove the version the live process is running from.
 
-"$LEXE" run "$LC_APP_ID" --detach -- --sleep 15 >/dev/null 2>&1
-sleep 2
-live="$(pgrep -f "versions/1.0.0/$LC_ENTRY" | head -1 || true)"
+"$LEXE" run "$LC_APP_ID" --detach -- --sleep 40 >/dev/null 2>&1
+live="$(conc_wait_alive 1.0.0 || true)"
 if [[ -z "$live" ]]; then
     skip "could not keep the application alive long enough to race an update"
 else
@@ -109,14 +107,13 @@ fi
 "$LEXE" install "$v1" --yes >/dev/null 2>&1
 "$LEXE" install "$v2" --yes >/dev/null 2>&1
 # 2.0.0 is current; start it detached, then roll back and start 1.0.0.
-"$LEXE" run "$LC_APP_ID" --detach -- --sleep 12 >/dev/null 2>&1
-sleep 2
-if [[ -n "$(pgrep -f "versions/2.0.0/$LC_ENTRY" | head -1 || true)" ]]; then
+"$LEXE" run "$LC_APP_ID" --detach -- --sleep 40 >/dev/null 2>&1
+if conc_wait_alive 2.0.0 >/dev/null; then
     rb=$(timeout "$CONC_TIMEOUT" "$LEXE" rollback "$LC_APP_ID" >/dev/null 2>&1; echo $?)
     note "rollback while 2.0.0 runs exited $rb"
     if [[ "$rb" == "0" ]]; then
-        "$LEXE" run "$LC_APP_ID" --detach -- --sleep 8 >/dev/null 2>&1
-        sleep 2
+        "$LEXE" run "$LC_APP_ID" --detach -- --sleep 30 >/dev/null 2>&1
+        conc_wait_alive 1.0.0 >/dev/null || true
         both=0
         [[ -n "$(pgrep -f "versions/2.0.0/$LC_ENTRY" | head -1 || true)" ]] && both=$((both+1))
         [[ -n "$(pgrep -f "versions/1.0.0/$LC_ENTRY" | head -1 || true)" ]] && both=$((both+1))

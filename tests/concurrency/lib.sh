@@ -202,6 +202,36 @@ already done ($already did)"
     return 0
 }
 
+# conc_wait_alive <version> [seconds] -> prints the payload pid, or nothing
+#
+# Waits for a detached launch to actually be RUNNING, rather than sleeping a
+# fixed two seconds and hoping.
+#
+# This replaced a `sleep 2`, and the reason is worth recording: that two seconds
+# was enough on an idle machine and not enough on a busy one. Running this lane
+# beside a sanitizer build turned three passing checks into failures and two into
+# skips -- "could not keep the application alive long enough" -- with nothing
+# wrong in the engine at all. A concurrency suite that cries wolf under load is
+# worse than no suite, because the first thing anyone does with a flaky failure
+# is stop reading it.
+#
+# Polling is also strictly more correct than a longer sleep: it returns as soon
+# as the process is up, so the common case does not get slower to make the loaded
+# case pass.
+conc_wait_alive() {
+    local version="$1" deadline="${2:-20}" waited=0 pid
+    while (( waited < deadline )); do
+        pid="$(pgrep -f "versions/$version/$LC_ENTRY" | head -1 || true)"
+        if [[ -n "$pid" ]]; then
+            printf '%s' "$pid"
+            return 0
+        fi
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    return 1
+}
+
 conc_setup() {
     lc_setup
     CONC_DIR="$ACC_ROOT/work/conc"
