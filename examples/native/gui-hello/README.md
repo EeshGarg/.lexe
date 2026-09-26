@@ -59,9 +59,9 @@ GTK is initialised. `tests/acceptance/02_persistence.sh` uses that to assert
 ## Build, package, install, run
 
 ```sh
-make -C examples/gui-hello                       # -> payload/bin/gui-hello
+make -C examples/native/gui-hello                       # -> payload/bin/gui-hello
 lexe keygen /tmp/key.json
-lexe build examples/gui-hello -o /tmp/gui-hello.lexe --key /tmp/key.json
+lexe build examples/native/gui-hello -o /tmp/gui-hello.lexe --key /tmp/key.json
 lexe verify /tmp/gui-hello.lexe --json           # payload-role stage must pass
 lexe install /tmp/gui-hello.lexe --yes --trust
 lexe run com.usha.guihello -- --selftest         # headless: exits 0

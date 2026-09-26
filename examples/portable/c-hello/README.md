@@ -57,7 +57,7 @@ compiled, which is the alpha's source-packaged-as-native bug told backwards
 
 ```sh
 lexe keygen /tmp/key.json
-cp -r examples/portable-hello /tmp/portable-hello
+cp -r examples/portable/c-hello /tmp/portable-hello
 lexe build /tmp/portable-hello -o /tmp/portable-hello.lexe --key /tmp/key.json
 
 lexe verify /tmp/portable-hello.lexe      # payload-role: source, no prebuilt entrypoint
@@ -137,8 +137,8 @@ lexe run com.usha.portablehello          # works again
 The source is an ordinary C program; nothing about it requires the runtime.
 
 ```sh
-make -C examples/portable-hello/payload/src
-./examples/portable-hello/payload/bin/portable-hello --selftest
+make -C examples/portable/c-hello/payload/src
+./examples/portable/c-hello/payload/bin/portable-hello --selftest
 ```
 
 That is deliberate: a portable package's recipe must be a recipe a developer can

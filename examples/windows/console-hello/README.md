@@ -37,10 +37,10 @@ Linux-native, host-ISA-native realization, and a Windows payload has none.
 
 ```sh
 # Debian/Ubuntu: apt install gcc-mingw-w64-x86-64 wine64
-make -C examples/windows-hello
+make -C examples/windows/console-hello
 
 lexe keygen /tmp/key.json
-cp -r examples/windows-hello /tmp/windows-hello
+cp -r examples/windows/console-hello /tmp/windows-hello
 lexe build /tmp/windows-hello -o /tmp/windows-hello.lexe --key /tmp/key.json
 
 lexe verify /tmp/windows-hello.lexe    # payload-role: a runnable PE for a declared ISA

@@ -6,14 +6,22 @@
 #
 # Then the `portable` application type arrived, and for a portable package the
 # payload IS THE SOURCE — that is the entire point of the type. The old rule
-# therefore excluded examples/portable-hello/payload/src/ from the repository,
+# therefore excluded the portable example's `payload/src/` from the repository,
 # so a fresh clone had no portable example at all and
 # tests/acceptance/05_portable_compile.sh — the suite that proves the portable
 # capability — could not run. It passed only on machines where those files
 # happened to exist untracked in the working tree.
 #
-# So: ignore compiled output, by the directory compiled output goes in, and
-# never a whole payload tree. tests/acceptance/00_repository.sh asserts that
-# every example a test depends on is actually IN the repository.
-*/payload/bin/
-*/payload/lib/
+# So: ignore compiled output, by the directory compiled output goes in, and never
+# a whole payload tree.
+#
+# `**/` matters and is not decoration: a gitignore pattern that CONTAINS a slash
+# is anchored to this directory, so a bare `payload/bin/` would only match
+# `examples/payload/bin/` and nothing else. The examples are grouped by kind now,
+# so a payload is two levels down (`native/gui-hello/payload/bin/`) -- both
+# `payload/bin/` and `*/payload/bin/` silently match nothing there.
+#
+# tests/acceptance/00_repository.sh asserts both halves: that every example a test
+# depends on is IN the repository, and that no compiled payload is.
+**/payload/bin/
+**/payload/lib/
