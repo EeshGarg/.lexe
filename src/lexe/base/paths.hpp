@@ -87,6 +87,23 @@ public:
         return config_home_ / "mimeapps.list";
     }
 
+    /// Where systemd `--user` units belong: `$XDG_CONFIG_HOME/systemd/user`.
+    ///
+    /// Under `config_home_`, NOT `config_dir()`. `config_dir()` is
+    /// `$XDG_CONFIG_HOME/lexe` — .LEXE's own private corner — and a unit placed
+    /// there would never be seen: systemd reads exactly
+    /// `$XDG_CONFIG_HOME/systemd/user`, a directory .LEXE shares with the user and
+    /// their distribution. Same reasoning as mimeapps_file() above: a document
+    /// another program has to read goes where that program looks, not where it
+    /// would be tidiest for us.
+    ///
+    /// Respects LEXE_HOME redirection through `config_home_`, which is what lets
+    /// the test suites exercise unit generation without writing into the
+    /// developer's real session.
+    std::filesystem::path systemd_user_dir() const {
+        return config_home_ / "systemd" / "user";
+    }
+
     /// Structured execution-error records (Definitive Architecture §9):
     /// `<state>/errors/<application-id>/`.
     std::filesystem::path errors_dir() const { return state_ / "errors"; }

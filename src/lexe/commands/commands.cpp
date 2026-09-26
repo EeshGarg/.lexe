@@ -16,6 +16,8 @@
 #include "lexe/runtime/execpolicy.hpp"
 #include "lexe/runtime/hostbuild.hpp"
 #include "lexe/integration/integration.hpp"
+#include "lexe/integration/session.hpp"
+#include "lexe/integration/session_manager.hpp"
 #include "lexe/runtime/launchref.hpp"
 #include "lexe/package/elf.hpp"
 #include "lexe/base/error.hpp"
@@ -113,6 +115,9 @@ constexpr const char* kErrorsUsage =
 constexpr const char* kRuntimeUsage =
     "usage: lexe runtime [list | show <id>] [--json]";
 constexpr const char* kSandboxUsage = "usage: lexe sandbox [--json]";
+constexpr const char* kServiceUsage =
+    "usage: lexe service [status <id> | enable <id> [--now] | disable <id>] "
+    "[--json]";
 constexpr const char* kCompatUsage =
     "usage: lexe compat <id> [--set <chain> | --auto] [--json]";
 constexpr const char* kLaunchRefUsage =
@@ -1180,7 +1185,7 @@ const std::vector<std::string>& known_commands() {
         "build",    "analyze", "sdk",     "pack",     "keygen",   "sign-update",
         "verify",   "trust",   "source",  "config",   "integrate", "doctor",
         "errors",   "compat",  "launch-ref", "completion", "version", "help",
-        "runtime",  "sandbox"};
+        "runtime",  "sandbox", "service"};
     return k;
 }
 
@@ -2998,6 +3003,215 @@ int cmd_runtime(const std::vector<std::string>& args) {
 /// The wording comes from presentation::present_isolation, which is the same
 /// source both graphical frontends render. A second description of what the
 /// sandbox does is a second thing that can be wrong.
+// ---------------------------------------------------------------- service
+//
+// The session-manager boundary as a command (docs/SERVICES.md). Three
+// subcommands, and the shape of them is the design:
+//
+//   status    reports what BOTH supervisors believe, including when they
+//             disagree, because a disagreement is the thing worth being told
+//   enable    hands lifetime to the host's session manager
+//   disable   takes it back
+//
+// There is no `start` or `stop` here, and their absence is deliberate rather
+// than unfinished. Once a unit exists, `systemctl --user start` is the correct
+// way to start it: wrapping it would add a second name for an operation the host
+// already names, and the wrapper would be the thing that drifts. What .LEXE owns
+// is the BOUNDARY -- generating a correct unit, recording it, retracting it --
+// not the day-to-day verbs on the other side of it.
+int cmd_service(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json", "--now"}, {}, false, kServiceUsage);
+    const bool json = parsed.flags.count("--json") != 0;
+    const Paths paths = Paths::detect();
+    const std::unique_ptr<session::SessionManager> manager =
+        session::make_session_manager(paths);
+
+    // No arguments: report the HOST's capability, not an application's. "Can
+    // anything be a service here" precedes every per-application question, and
+    // it is the one a developer on an unfamiliar machine actually has.
+    if (parsed.positionals.empty()) {
+        const session::ManagerCapabilities caps = manager->capabilities();
+        if (json) {
+            std::cout << ordered_json{
+                             {"status", session::to_string(caps.status)},
+                             {"detail", caps.detail},
+                             {"managerVersion", caps.manager_version}}
+                             .dump(2)
+                      << "\n";
+        } else {
+            print_kv("Session manager:", session::to_string(caps.status));
+            if (!caps.manager_version.empty()) {
+                print_kv("  Version:", caps.manager_version);
+            }
+            print_kv("  Detail:", caps.detail);
+            if (caps.status != session::ManagerStatus::Available) {
+                std::cout << "\n.LEXE will supervise detached applications "
+                             "itself here; it cannot start them at login.\n";
+            }
+        }
+        return caps.status == session::ManagerStatus::Available ? 0 : 4;
+    }
+
+    const std::string mode = parsed.positionals[0];
+    if (mode != "status" && mode != "enable" && mode != "disable") {
+        throw UsageError("unknown subcommand \"" + mode +
+                         "\" - expected \"status\", \"enable\" or "
+                         "\"disable\"\n\n" +
+                         kServiceUsage);
+    }
+    if (parsed.positionals.size() < 2) {
+        throw UsageError(std::string("lexe service ") + mode +
+                         " needs an application id\n\n" + kServiceUsage);
+    }
+    const std::string id = parsed.positionals[1];
+    const Registry registry(paths);
+
+    if (mode == "status") {
+        const session::SessionState st = manager->state(id);
+        // The manifest is read for the manageability question but NOT required:
+        // a unit can outlive a broken installation, and that is precisely a
+        // state worth being able to inspect rather than one to refuse to look at.
+        std::string manageable_reason;
+        bool manageable = false;
+        try {
+            const Manifest manifest = registry.read_manifest(id);
+            manageable = session::is_session_manageable(manifest);
+            manageable_reason = session::session_unmanageable_reason(manifest);
+        } catch (const std::exception& e) {
+            manageable_reason =
+                std::string("the installed manifest could not be read: ") +
+                e.what();
+        }
+
+        if (json) {
+            std::cout << ordered_json{
+                             {"id", id},
+                             {"sessionManageable", manageable},
+                             {"reason", manageable_reason},
+                             {"unitName", st.unit_name},
+                             {"unitPath", st.unit_path},
+                             {"unitPresent", st.unit_present},
+                             {"unitRecorded", st.unit_recorded},
+                             {"enabled", st.enabled},
+                             {"active", st.active},
+                             {"lexeSupervisedRunning",
+                              st.lexe_supervised_running},
+                             {"supervisor",
+                              st.active
+                                  ? "session-manager"
+                                  : (st.lexe_supervised_running ? "lexe"
+                                                                : "none")},
+                             {"detail", st.detail}}
+                             .dump(2)
+                      << "\n";
+            return 0;
+        }
+
+        std::cout << id << "\n";
+        print_kv("  Session-manageable:",
+                 manageable ? std::string("yes")
+                            : std::string("no") +
+                                  (manageable_reason.empty()
+                                       ? ""
+                                       : " - " + manageable_reason));
+        // WHICH supervisor, named first and once. Two supervisors for one
+        // process is the failure this module exists to prevent, so the status
+        // says which one owns it instead of leaving a reader to infer it from
+        // four booleans.
+        print_kv("  Supervised by:",
+                 st.active ? "the session manager"
+                           : (st.lexe_supervised_running
+                                  ? "lexe (a detached run, not the unit)"
+                                  : "nothing - it is not running"));
+        print_kv("  Unit:", st.unit_name);
+        print_kv("  Unit file:",
+                 st.unit_present ? st.unit_path : st.unit_path + " (absent)");
+        if (st.unit_present && !st.unit_recorded) {
+            // Present but unrecorded: `lexe doctor` will not watch it and an
+            // uninstall will not retract it. Worth saying plainly.
+            std::cout << "  Note: this unit is not recorded in .LEXE "
+                         "integration state, so it will not be repaired or "
+                         "removed with the application.\n";
+        }
+        print_kv("  Starts at login:", st.enabled ? "yes" : "no");
+        print_kv("  Running now:", st.active ? "yes" : "no");
+        if (st.active && st.lexe_supervised_running) {
+            std::cout << "  Note: a lexe-supervised copy also appears to hold "
+                         "the version lease.\n";
+        }
+        if (!st.detail.empty()) print_kv("  systemd says:", st.detail);
+        return 0;
+    }
+
+    if (mode == "enable") {
+        const Manifest manifest = registry.read_manifest(id); // NotFoundError
+        // Refuse a non-service here, with the reason, rather than generating a
+        // unit that would fight the user: session.hpp explains why a GUI
+        // application restarted on exit is worse than no unit at all.
+        if (!session::is_session_manageable(manifest)) {
+            throw Error(id + " cannot be session-managed: " +
+                            session::session_unmanageable_reason(manifest),
+                        "Only an application declaring launch.mode \"service\" "
+                        "has a lifetime for a service manager to own. Run it "
+                        "with `lexe run " +
+                            id + "`.");
+        }
+        const std::optional<std::filesystem::path> self =
+            util::self_executable();
+        if (!self.has_value()) {
+            throw Error("cannot determine the path of the running lexe binary",
+                        "A systemd --user unit inherits no PATH, so the unit "
+                        "must name the runtime absolutely. A unit written "
+                        "without that path would fail to start with status "
+                        "203/EXEC.");
+        }
+        const bool now = parsed.flags.count("--now") != 0;
+        const std::string path = manager->enable(manifest, self->string(), now);
+        if (json) {
+            std::cout << ordered_json{{"id", id},
+                                      {"enabled", true},
+                                      {"started", now},
+                                      {"unitName", session::unit_name(id)},
+                                      {"unitPath", path}}
+                             .dump(2)
+                      << "\n";
+            return 0;
+        }
+        std::cout << id
+                  << " will start at login, supervised by the session "
+                     "manager.\n";
+        print_kv("  Unit:", path);
+        if (now) {
+            std::cout << "  It is running now.\n";
+        } else {
+            std::cout << "  It is not running yet. Start it with `systemctl "
+                         "--user start "
+                      << session::unit_name(id)
+                      << "`, or re-run this with --now.\n";
+        }
+        return 0;
+    }
+
+    // disable. Deliberately does NOT require the application to still be
+    // installed: retracting a unit left behind by a half-removed application is
+    // exactly when this is most needed.
+    manager->disable(id);
+    if (json) {
+        std::cout << ordered_json{{"id", id},
+                                  {"enabled", false},
+                                  {"unitName", session::unit_name(id)}}
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+    std::cout << id
+              << " is no longer session-managed: its unit has been stopped, "
+                 "disabled and removed.\n";
+    std::cout << "  Run it with `lexe run " << id << "` when you want it.\n";
+    return 0;
+}
+
 int cmd_sandbox(const std::vector<std::string>& args) {
     const Parsed parsed =
         parse_arguments(args, {"--json"}, {}, false, kSandboxUsage);
@@ -3427,6 +3641,15 @@ const std::map<std::string, CommandHelp>& command_help() {
           "  lexe runtime                 what this host can run, at a glance\n"
           "  lexe runtime show proton     every location searched, which won\n"
           "  lexe runtime list --json     the same, for a script"}},
+        {"service",
+         {"Hand an application's lifetime to the host session manager, or take "
+          "it back.",
+          kServiceUsage,
+          "  lexe service                          can this host supervise at "
+          "all\n"
+          "  lexe service status com.example.svc   which supervisor owns it\n"
+          "  lexe service enable com.example.svc --now\n"
+          "  lexe service disable com.example.svc"}},
         {"sandbox",
          {"Show the isolation backend and the state of every control it "
           "enforces.",
@@ -3527,6 +3750,7 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "compat") return cmd_compat(rest);
     if (command == "runtime") return cmd_runtime(rest);
     if (command == "sandbox") return cmd_sandbox(rest);
+    if (command == "service") return cmd_service(rest);
     if (command == "launch-ref") return cmd_launch_ref(rest);
     if (command == "config") return cmd_config(rest);
     if (command == "completion") return cmd_completion(rest);

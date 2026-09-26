@@ -4,6 +4,8 @@
 
 #include "lexe/package/crypto.hpp"
 #include "lexe/integration/desktop.hpp"
+#include "lexe/integration/session.hpp"
+#include "lexe/integration/session_manager.hpp"
 #include "lexe/base/error.hpp"
 #include "lexe/base/json_strict.hpp"
 #include "lexe/runtime/launchref.hpp"
@@ -171,6 +173,7 @@ const char* to_string(ArtifactKind k) {
     case ArtifactKind::AppIcon: return "app-icon";
     case ArtifactKind::AppMimeTypes: return "app-mime-types";
     case ArtifactKind::LaunchReference: return "launch-reference";
+    case ArtifactKind::SessionUnit: return "session-unit";
     }
     return "runtime-mime";
 }
@@ -186,6 +189,7 @@ bool artifact_kind_from_string(const std::string& text, ArtifactKind& out) {
         {"app-icon", ArtifactKind::AppIcon},
         {"app-mime-types", ArtifactKind::AppMimeTypes},
         {"launch-reference", ArtifactKind::LaunchReference},
+        {"session-unit", ArtifactKind::SessionUnit},
     };
     for (const auto& k : kKinds) {
         if (text == k.name) {
@@ -468,6 +472,64 @@ DesktopIntegration::install_app(const Manifest& manifest,
         const fs::path run_lexe = create_launch_reference(paths_, manifest);
         artifacts.push_back({ArtifactKind::LaunchReference, run_lexe.string(),
                              sha256_of_file(run_lexe), manifest.id});
+
+        // A systemd `--user` unit, if one was ever enabled for this application
+        // (docs/SERVICES.md). Carried forward here rather than created here,
+        // and the distinction is the whole design:
+        //
+        //   the unit FILE is regenerated when it has gone missing or drifted,
+        //   because that is an artifact .LEXE wrote and can write again
+        //
+        //   whether the unit is ENABLED is never touched, because that is a
+        //   decision the user made, and a repair that silently re-enabled what
+        //   somebody had deliberately disabled would be overruling them under
+        //   the name of fixing them
+        //
+        // So nothing below calls systemctl. `replace_scope` rewrites this
+        // application's whole scope, so an existing record must be carried
+        // forward explicitly or it would be DE-REGISTERED — the same hazard the
+        // icon branch above documents, and the reason uninstall would then leave
+        // a unit behind for a service that no longer exists.
+        for (const IntegrationArtifact& existing : state.scope(manifest.id)) {
+            if (existing.kind != ArtifactKind::SessionUnit) continue;
+            IntegrationArtifact carried = existing;
+            const fs::path unit(existing.path);
+            std::error_code unit_ec;
+            if (!fs::is_regular_file(unit, unit_ec) ||
+                sha256_of_file(unit) != existing.sha256) {
+                // Regenerate it. The unit must name the runtime absolutely
+                // (a systemd --user unit inherits no PATH), and if this process
+                // cannot say where it lives, the honest outcome is a reported
+                // failure rather than a unit written with a guess.
+                const std::optional<fs::path> self = util::self_executable();
+                if (!self.has_value()) {
+                    report.unrepaired.push_back(
+                        "cannot regenerate the service unit " + existing.path +
+                        ": the path of the running lexe binary is unknown");
+                } else {
+                    try {
+                        session::UnitInputs inputs;
+                        inputs.manifest = manifest;
+                        inputs.runtime_path = self->string();
+                        if (const std::optional<std::string> home =
+                                util::get_env("LEXE_HOME");
+                            home.has_value() && !home->empty()) {
+                            inputs.lexe_home = *home;
+                        }
+                        util::write_atomic(
+                            unit, std::string_view(session::unit_text(inputs)));
+                        carried.sha256 = sha256_of_file(unit);
+                        report.notes.push_back("regenerated the service unit " +
+                                               existing.path);
+                    } catch (const std::exception& e) {
+                        report.unrepaired.push_back(
+                            "cannot regenerate the service unit " +
+                            existing.path + ": " + e.what());
+                    }
+                }
+            }
+            artifacts.push_back(carried);
+        }
     } catch (const std::exception& e) {
         report.unrepaired.push_back(std::string("integration for ") +
                                     manifest.id + ": " + e.what());
@@ -518,6 +580,34 @@ void DesktopIntegration::remove_runtime_handler() {
 
 void DesktopIntegration::remove_app(const std::string& id) {
     IntegrationState state = IntegrationState::load(paths_);
+
+    // A service unit is RETRACTED, not merely deleted, and it goes first.
+    //
+    // Every other artifact here is a file that means nothing once it is gone.
+    // A unit is also a registration inside systemd: `enable` left a symlink in
+    // `default.target.wants`, and unlinking the unit alone leaves systemd
+    // wanting a service whose file no longer exists — it logs a failure at every
+    // login and `systemctl --user status` reports "not-found" for an application
+    // that was uninstalled cleanly. So this asks the session manager to stop,
+    // disable and remove it, which is the only code that knows the full
+    // retraction, and it runs BEFORE the state file is rewritten because that is
+    // where it reads the unit's recorded path from.
+    for (const IntegrationArtifact& artifact : state.scope(id)) {
+        if (artifact.kind != ArtifactKind::SessionUnit) continue;
+        try {
+            session::make_session_manager(paths_)->disable(id);
+        } catch (const std::exception&) {
+            // Deliberately swallowed: this is the removal path, and a session
+            // manager that cannot be reached must not be able to block an
+            // uninstall. The file removal below is the fallback, and what it
+            // cannot clean up -- the enablement symlink -- `lexe doctor`
+            // reports, because the unit will then be recorded nowhere and
+            // present nowhere while systemd still wants it.
+        }
+        break;
+    }
+
+    state = IntegrationState::load(paths_); // disable() may have rewritten it
     std::error_code ec;
     for (const IntegrationArtifact& artifact : state.scope(id)) {
         fs::remove(fs::path(artifact.path), ec); // missing is fine

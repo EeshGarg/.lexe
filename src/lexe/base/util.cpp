@@ -311,6 +311,42 @@ void remove_recursive(const fs::path& p) {
     }
 }
 
+// ------------------------------------------------------ this program
+
+std::optional<fs::path> self_executable() {
+#ifdef _WIN32
+    // GetModuleFileNameW with a null module is this executable. It truncates
+    // rather than failing when the buffer is short, so grow until it fits.
+    std::vector<wchar_t> buffer(MAX_PATH);
+    for (;;) {
+        const DWORD n = ::GetModuleFileNameW(nullptr, buffer.data(),
+                                             static_cast<DWORD>(buffer.size()));
+        if (n == 0) return std::nullopt;
+        if (n < buffer.size() - 1) return fs::path(std::wstring(buffer.data(), n));
+        if (buffer.size() >= 65536) return std::nullopt;
+        buffer.resize(buffer.size() * 2);
+    }
+#else
+    // read_symlink, not realpath: the target may be a path that no longer
+    // exists (a replaced binary reads as "/usr/bin/lexe (deleted)"), and a
+    // resolver that refuses that would make the caller lose a usable answer.
+    std::error_code ec;
+    fs::path target = fs::read_symlink("/proc/self/exe", ec);
+    if (ec || target.empty()) return std::nullopt;
+    // A deleted-and-replaced binary: the kernel appends this marker, and the
+    // path with it attached names nothing. Strip it and keep the path, which is
+    // still where the runtime is expected to be found again.
+    const std::string text = target.string();
+    static constexpr std::string_view kDeleted = " (deleted)";
+    if (text.size() > kDeleted.size() &&
+        text.compare(text.size() - kDeleted.size(), kDeleted.size(), kDeleted) == 0) {
+        target = fs::path(text.substr(0, text.size() - kDeleted.size()));
+    }
+    if (!target.is_absolute()) return std::nullopt;
+    return target;
+#endif
+}
+
 // ---------------------------------------------------------------- env
 
 #ifdef _WIN32

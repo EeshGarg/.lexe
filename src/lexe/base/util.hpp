@@ -46,6 +46,22 @@ void copy_recursive(const std::filesystem::path& from, const std::filesystem::pa
 /// Recursively delete; missing paths are not an error.
 void remove_recursive(const std::filesystem::path& p);
 
+// --- this program ---
+/// The absolute path of the currently running executable.
+///
+/// Needed wherever a generated artifact must INVOKE the runtime rather than
+/// merely name it. A `.desktop` entry can say bare `lexe` because a desktop
+/// session runs it with the user's PATH; a `systemd --user` unit cannot, because
+/// it does not inherit one -- an `ExecStart=lexe` unit fails with status 203
+/// (EXEC) on a host where the runtime is anywhere but a default PATH entry.
+///
+/// Read from the kernel (`/proc/self/exe`, `GetModuleFileNameW`) rather than
+/// from `argv[0]`, which a caller controls and which is a bare word for anything
+/// found on PATH. Returns nullopt when the kernel cannot say -- a container
+/// without /proc, most plausibly -- so callers can report the reason instead of
+/// generating a unit that cannot start.
+std::optional<std::filesystem::path> self_executable();
+
 // --- environment ---
 std::optional<std::string> get_env(const std::string& name);
 void set_env(const std::string& name, const std::string& value);

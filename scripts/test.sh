@@ -65,7 +65,7 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 # "blocked" instead of "skip" when the obstacle is the environment rather than
 # applicability), and a `<lane>_run`.
 
-ALL_LANES=(unit acceptance integration gui lifecycle concurrency security windows proton sanitizers)
+ALL_LANES=(unit acceptance integration gui lifecycle concurrency session security windows proton sanitizers)
 
 lane_desc() {
     case "$1" in
@@ -75,6 +75,7 @@ lane_desc() {
     gui)        echo "the frontends start, render and exit clean on a private display" ;;
     lifecycle)  echo "install -> run -> update -> rollback -> repair -> uninstall, and the same interrupted" ;;
     concurrency) echo "the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection" ;;
+    session) echo "the session-manager boundary, against the real systemd --user of this session" ;;
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;
@@ -109,6 +110,27 @@ concurrency_check() {
     acceptance_check || return 1
     have bwrap || { echo "blocked: bubblewrap is not installed, so nothing can be sandboxed"; return 1; }
     have flock || { echo "blocked: flock(1) is not available, and the lease tests hold locks with it"; return 1; }
+}
+
+# Deliberately SKIP, not BLOCK. A host with no user session manager is a host
+# where this feature does not apply -- `lexe service` reports that, and the
+# input-determined half of the behaviour is covered by the unit lane. BLOCKED
+# would claim an expected capability could not be shown, which is a different
+# and stronger statement.
+session_check() {
+    acceptance_check || return 1
+    have systemctl || { echo "skip: systemctl is not installed"; return 1; }
+    systemctl --user is-system-running >/dev/null 2>&1 && return 0
+    # Non-zero is not the question: "degraded" exits 1 whenever any unit in the
+    # session has ever failed, and says nothing about whether the bus is
+    # reachable. What settles it is whether it could connect at all.
+    local err
+    err="$(systemctl --user is-system-running 2>&1)"
+    case "$err" in
+        *"Failed to connect"*|*"No medium found"*|*"DBUS_SESSION_BUS_ADDRESS"*|*"XDG_RUNTIME_DIR"*)
+            echo "skip: no systemd --user session here ($err)"; return 1 ;;
+    esac
+    return 0
 }
 
 windows_check() {
@@ -167,6 +189,10 @@ lifecycle_run() {
 
 concurrency_run() {
     LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/concurrency/run_all.sh"
+}
+
+session_run() {
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/session/run_all.sh"
 }
 
 security_run() {

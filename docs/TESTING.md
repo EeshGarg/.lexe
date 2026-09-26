@@ -49,6 +49,8 @@ as SYSTEM includes precisely so that stays true.
 | `--integration` | `tests/integration/*.sh` — trust and lifecycle across process boundaries | a built CLI |
 | `--gui` | `scripts/gui-smoke.sh` — the frontends start, render and exit under a private display | GTK 3, Xvfb |
 | `--lifecycle` | install → run → update → rollback → repair → uninstall, then the same with operations interrupted | bubblewrap |
+| `--concurrency` | the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection (every participant is hard-timed out, so a deadlock FAILS the suite rather than hanging it) | bubblewrap, `flock(1)` |
+| `--session` | the session-manager boundary, against the REAL `systemd --user` of the invoking session: enable, status, start, stop, repair, retraction on uninstall | a running `systemd --user` session (SKIPs without one) |
 | `--security` | hostile packages: traversal, symlink escape, tampered hashes, architecture lies, injection | nothing |
 | `--windows` | a purpose-built Windows PE, run through Wine | Wine, MinGW |
 | `--proton` | the same payload through the Proton chain | a Proton installation |
@@ -71,6 +73,36 @@ instead of appearing on screen.
 
 Anything that genuinely must render brings **its own** display. It never borrows
 the developer's.
+
+### The one deliberate exception: `--session`
+
+The session lane **does** talk to the invoking user's real `systemd --user`, and
+that is a departure worth stating rather than burying.
+
+There is no way around it. The feature under test is a contract with a program
+`.LEXE` does not control, so the only test that means anything is one where
+systemd is the other party. A stub would have agreed with every assumption that
+turned out to be wrong — including the one that cost a `203/EXEC`: that
+`ExecStart=` may contain an unquoted path. That defect was invisible to every
+check except systemd's own, and a mock would have shipped it.
+
+What bounds the exception:
+
+- It **starts no window** — a service has no UI, so the headless rule above is
+  untouched.
+- The installation still lives in a throwaway `LEXE_HOME`; only the unit
+  registration reaches the real session, because a unit systemd cannot see is a
+  unit that proves nothing.
+- Every unit it creates is the example's own
+  `lexe-org.lexe.examples.heartbeat.service`, cleaned up on `EXIT` — including on
+  an interrupt — and the last assertion of the lane is that the real profile has
+  nothing of the lane left in it. A leftover enabled unit pointing into a deleted
+  scratch root would fail at the developer's next login, so that cleanup is
+  correctness, not tidiness.
+- It **SKIPs**, not BLOCKs, where there is no user session: a host without a
+  session manager is one where the feature does not apply, and
+  `tests/test_session.cpp` still covers everything that is a function of its
+  inputs.
 
 ### Rendering without touching the real desktop
 

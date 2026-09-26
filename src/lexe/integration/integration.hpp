@@ -46,6 +46,20 @@ enum class ArtifactKind {
     AppIcon,         // an installed application's hicolor icon
     AppMimeTypes,    // MIME XML for an application's file associations
     LaunchReference, // the generated run.lexe launch artifact (§15.1)
+    /// A generated systemd `--user` unit for a `launch.mode: "service"`
+    /// application (docs/SERVICES.md).
+    ///
+    /// Recorded here, with the other durable registrations, because it is the
+    /// same KIND of thing: installed system state outside .LEXE's own tree, whose
+    /// absence or modification a user needs told about, and which an uninstall
+    /// must remove. Recording it buys `doctor` reporting and `doctor --repair`
+    /// restoration from machinery that already exists.
+    ///
+    /// With one deliberate asymmetry, enforced in repair(): the unit FILE is
+    /// repairable, and whether it is ENABLED is not. Enablement is a decision the
+    /// user made, and a repair that re-enabled something they had disabled would
+    /// be overruling them under the name of fixing them.
+    SessionUnit,
 };
 const char* to_string(ArtifactKind k);
 bool artifact_kind_from_string(const std::string& text, ArtifactKind& out);

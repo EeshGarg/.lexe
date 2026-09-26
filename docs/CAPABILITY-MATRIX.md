@@ -118,9 +118,21 @@ the matching private key. It does **not** establish who they are. No surface say
 | Durable desktop integration | `integration/integration` | `lexe integrate`, `lexe doctor` | yes — integration state, repair | n/a | `test_desktop.cpp`, acceptance 02, lifecycle 02 |
 | Health check and repair of integration | `integration/integration` | `lexe doctor --repair` | yes | n/a | acceptance 02, lifecycle 02 |
 | Launch references (`run.lexe`) | `runtime/launchref` | `lexe launch-ref` | yes — opening one navigates and launches | n/a | acceptance 01, `test_payload_role.cpp` |
+| Session-managed services | `integration/session`, `integration/session_manager` | `lexe service [status\|enable\|disable]` | n/a — see note | n/a | `test_session.cpp`, session 01 (against real `systemd --user`) |
 | Runtime settings | `base/settings` | `lexe config` | yes — Settings | yes — theme | `test_settings.cpp` |
 | Dependency and portability analysis | `analysis/depengine`, `analysis/tux32` | `lexe analyze`, `lexe sdk verify` | n/a — developer-only | yes — dependency review, profile gate | `test_depengine.cpp`, `test_tux32*.cpp`, `test_cli_sdk.cpp` |
 | Shell completion | `commands` | `lexe completion bash\|zsh` | n/a | n/a | `test_cli_ux.cpp` |
+
+**Why `lexe service` is `n/a` in `lexe-ui` rather than a gap.** Enabling a
+service is a change to the user's *session policy*, not to an application: it
+grants something the right to start without anybody asking, at every login. A
+consumer frontend that offered it beside "Launch" would make that a one-click
+decision indistinguishable from running a program. The engine exposes
+`is_session_manageable()` and `session_unmanageable_reason()` precisely so a
+frontend can *explain* the state without acting on it, and a later Services view
+that shows which supervisor owns an application — without an enable button — is
+the shape to add. A `—` would claim a missing control; this is a withheld one.
+See [SERVICES.md](SERVICES.md) §4.
 
 ## Known gaps in this table
 
