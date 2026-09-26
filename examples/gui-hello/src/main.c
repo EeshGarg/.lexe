@@ -218,9 +218,31 @@ static GtkWidget *field_row(const char *caption, const char *value) {
     return row;
 }
 
+/* --window-for: close the window and leave the main loop after n seconds.
+ *
+ * This exists so an automated run can prove BOTH halves of a GUI launch at once:
+ * that a real top-level window mapped (witnessed from outside by xwininfo), and
+ * that the application then exited on its own with a real exit code. Before it,
+ * a test could have one or the other and not both -- --selftest never touches
+ * GTK, --sleep deliberately opens no window, and a windowed run had to be killed,
+ * which makes the result a signal rather than an exit. */
+static gboolean quit_now(gpointer unused) {
+    (void)unused;
+    gtk_main_quit();
+    return G_SOURCE_REMOVE;
+}
+
 int main(int argc, char **argv) {
+    long window_for = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) return run_selftest();
+        if (strcmp(argv[i], "--window-for") == 0 && i + 1 < argc) {
+            window_for = strtol(argv[i + 1], NULL, 10);
+            if (window_for < 1) window_for = 1;
+            if (window_for > 120) window_for = 120;
+            i++;
+            continue;
+        }
         if (strcmp(argv[i], "--sleep") == 0 && i + 1 < argc) {
             /* Stay alive, headlessly, for N seconds. This exists so an
              * acceptance run can inspect the LIVE process tree — "is the
@@ -237,14 +259,19 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("usage: gui-hello [--selftest] [--sleep <seconds>]\n"
-                   "  --selftest        report the .LEXE launch environment, "
+            printf("usage: gui-hello [--selftest] [--sleep <seconds>] "
+                   "[--window-for <seconds>]\n"
+                   "  --selftest          report the .LEXE launch environment, "
                    "verify $LEXE_APP_DATA\n"
-                   "                    is writable, and exit without opening "
+                   "                      is writable, and exit without opening "
                    "a window\n"
-                   "  --sleep <n>       stay alive for n seconds without a "
+                   "  --sleep <n>         stay alive for n seconds without a "
                    "window, so a test can\n"
-                   "                    inspect the live process\n");
+                   "                      inspect the live process\n"
+                   "  --window-for <n>    open the window, then close it and "
+                   "exit 0 after n seconds,\n"
+                   "                      so a test can witness the window AND "
+                   "a real exit code\n");
             return 0;
         }
     }
@@ -334,6 +361,13 @@ int main(int argc, char **argv) {
 
     tick(ui);
     g_timeout_add_seconds(1, tick, ui);
+
+    if (window_for > 0) {
+        printf("gui-hello: window open for %ld second(s) as pid %ld\n",
+               window_for, (long)getpid());
+        fflush(stdout);
+        g_timeout_add_seconds((guint)window_for, quit_now, NULL);
+    }
 
     gtk_widget_show_all(window);
     gtk_main();
