@@ -397,7 +397,7 @@ A compiled portable package resolves to the `native` chain with no argv prefix
 accepts it for the same reason: compiled here, for this ISA, checked before
 promotion is Linux-native, host-ISA-native and verified.
 
-`examples/portable-hello/` is the worked example, and
+`examples/portable/c-hello/` is the worked example, and
 `tests/acceptance/05_portable_compile.sh` is the end-to-end evidence.
 
 ---
@@ -758,7 +758,7 @@ explicitly manual and are the one place a window is expected on screen.
 ```sh
 export LEXE_HOME=/tmp/lexe-scratch
 ./build/lexe keygen /tmp/key.json
-./build/lexe build examples/gui-hello -o /tmp/App.lexe --key /tmp/key.json
+./build/lexe build examples/native/gui-hello -o /tmp/App.lexe --key /tmp/key.json
 ./build/lexe verify /tmp/App.lexe           # all 8 stages, incl. payload-role
 ./build/lexe install /tmp/App.lexe --yes
 ./build/lexe doctor                         # integration healthy

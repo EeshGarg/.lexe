@@ -126,7 +126,7 @@ Stated plainly so the documentation never overreaches:
   dynamically linked x86-64 contract; other shapes get a non-portable verdict.
 - **`dlopen`-ed / runtime plugin dependencies** are not discoverable from static
   ELF metadata and must be declared/bundled by the developer (the
-  [`gtk-app` example](../examples/gtk-app/) illustrates this).
+  [`gtk-app` example](../examples/native/gtk-portability/) illustrates this).
 - **libsodium is the preferred crypto provider** on Linux (found via
   `pkg-config`); the MSVC dev host uses the vendored `orlp/ed25519` fallback with
   the runtime's own strict canonical checks.
@@ -176,7 +176,7 @@ The operator's step-by-step runbook (tag, notes, checksums, pre-tag checklist) i
 Every limitation above was re-reviewed for this release candidate and remains
 **accurate** — none is obsolete, and none was quietly implemented. The
 `dlopen`-not-discoverable limitation now has a worked illustration
-([`gtk-app`](../examples/gtk-app/)); the rest stand as written. The regression
+([`gtk-app`](../examples/native/gtk-portability/)); the rest stand as written. The regression
 totals and evidence checklist below reflect the current suite.
 
 ## Evidence-linked Alpha checklist

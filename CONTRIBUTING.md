@@ -68,23 +68,49 @@ libsodium), and there is no runtime isolation — it is a development host.
 
 ## Run the tests
 
-The test binary is `lexe_tests` (doctest). `scripts/build.sh` runs it via `ctest`.
+One entry point, and it needs no tribal knowledge:
 
 ```sh
-./build/lexe_tests                       # the whole suite
-./build/lexe_tests --list-test-suites    # what's available
-./build/lexe_tests --test-suite=trust    # one suite
+./scripts/test.sh --list      # every lane, with availability resolved for THIS host
+./scripts/test.sh --unit      # just the doctest binary
+./scripts/test.sh --all       # the executable definition of a releasable build here
 ```
 
-Real-binary integration scripts live in `tests/integration/*.sh` (Linux; they
-drive the actual `lexe` CLI end to end). The GitHub Actions CI
-([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds and tests on both
-Linux (GCC, GUIs) and Windows (MSVC) on every push.
+`--all` reports four outcomes, and the last two are not the same: **SKIP** means
+"deliberately not applicable here", **BLOCKED** means "this applies, it is
+expected to work, and this machine cannot show it". A blocked lane is never
+counted as a pass. [docs/TESTING.md](docs/TESTING.md) is the full account,
+including the lane table, the headless rule, and what this machine cannot prove.
+
+To run one suite of the unit binary directly:
+
+```sh
+./build/lexe_tests --list-test-suites
+./build/lexe_tests -ts=trust
+```
+
+The GitHub Actions CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+builds and tests on both Linux (GCC, GUIs) and Windows (MSVC) on every push.
 
 **The bar: a change must keep the full suite green on both platforms**, and any
 security-relevant change needs the evidence bundle in
 [docs/HARDENING.md](docs/HARDENING.md) §I — MSVC-green alone is not Linux
 validation.
+
+### A defect is not fixed until a test reproduces it
+
+The loop, in this order:
+
+1. understand the root cause — not the symptom;
+2. correct the implementation;
+3. write a test that FAILS against the old behaviour;
+4. watch it pass against the new one;
+5. confirm the broader suite is still green.
+
+A fix without step 3 is an assertion. And "it worked once" is not done: the alpha
+installed and launched perfectly and then did not survive a reboot, which is why
+persistence, repair and uninstall are treated as part of correctness and why
+`tests/lifecycle/` interrupts operations on purpose.
 
 ## Find your way around
 
@@ -110,6 +136,43 @@ validation.
   [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md).
 - **Terminology:** `.lexe` (the platform/format), the **Runtime** (`lexe`), the
   **Builder** (`lexe-builder` / `lexe build`), and a **Runtime Profile**.
+
+## Decisions that are settled
+
+These read as over-cautious until you remember what the alternative was. Each one
+exists because the other way round was tried, or nearly shipped.
+
+- **Truthful wording.** Nothing says "verified", "trusted" (unqualified), "safe"
+  or "secure" on its own authority. An unavailable capability is shown as
+  unavailable WITH a reason rather than omitted. The alternative is lying to a
+  user about what a signature proves. `diagnostics/presentation` is the single
+  source of that wording for every frontend.
+- **The headless test rule.** No automated test may put a window on the user's
+  screen. `tests/acceptance/lib.sh` severs the display for the whole harness;
+  anything that must render brings its own via
+  `scripts/lib/private-display.sh`, which cannot reach the real session even by
+  mistake. See [docs/TESTING.md](docs/TESTING.md) §3.
+- **One implementation of desktop registration.** `packaging/install.sh` calls
+  `lexe integrate`; it must never hand-roll MIME XML again.
+  `integration/desktop` is content generation only. There were once three copies
+  and which registration a machine ended up with depended on which ran last —
+  `tests/test_desktop.cpp` pins that the extra ones stay gone.
+- **Fail-closed isolation.** A backend that should work but does not never
+  degrades to an unconfined launch, and since the portable work, never to an
+  unconfined *build* either.
+- **Approval is not consent to everything.** `--approve-compile` is separate from
+  `--yes`, from `--accept-permissions` and from `--trust`, for the same reason
+  those three are separate from each other: each authorizes exactly one thing.
+  Do not collapse them into a single "yes". In particular, **`--yes` must never
+  imply compile approval.**
+- **Mission-critical mode does not get broader.** Normal compatibility mode may
+  grow all it likes. Mission-critical stays Linux-native, host-ISA-native, no
+  Wine, no Proton, no ISA translation, no fallback. A contradictory manifest is
+  refused at build time.
+- **The dependency direction is one-way.** `lexe_engine` <- CLI, lexe-ui,
+  lexe-builder, and never between frontends. `tests/test_architecture.cpp`
+  enforces it by reading the tree, and [docs/CAPABILITY-MATRIX.md](docs/CAPABILITY-MATRIX.md)
+  makes a second copy of a behaviour visible if one appears.
 
 ## Commits and pull requests
 
