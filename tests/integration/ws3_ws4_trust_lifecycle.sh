@@ -8,7 +8,13 @@
 # Usage:  tests/integration/ws3_ws4_trust_lifecycle.sh /path/to/lexe
 
 set -uo pipefail
-LEXE="${1:-./build/lexe}"
+# The binary to drive: an explicit first argument, else LEXE_BUILD_DIR (what
+# scripts/test.sh and the acceptance harness use), else ./build/lexe.
+#
+# LEXE_BUILD_DIR was the missing case: every other suite honours it, so a
+# checkout that builds anywhere but ./build ran everything EXCEPT these two,
+# which failed with "lexe not found at ./build/lexe" inside the runner.
+LEXE="${1:-${LEXE_BUILD_DIR:-./build}/lexe}"
 [[ -x "$LEXE" ]] || { echo "FATAL: lexe not found at $LEXE" >&2; exit 2; }
 LEXE="$(readlink -f "$LEXE")"
 
@@ -36,14 +42,35 @@ pubkey() { grep -o '"publicKey": *"[^"]*"' "$1" | sed 's/.*"\([^"]*\)".*/\1/'; }
 make_pkg() { # <version> <keyfile> <out> [perm]
   local ver="$1" key="$2" out="$3" perm="${4:-}"
   local p="$WORK/proj-$ver-$RANDOM"; mkdir -p "$p/payload/bin"
-  printf '#!/bin/sh\necho hi %s\nexit 0\n' "$ver" > "$p/payload/bin/app.sh"
-  chmod +x "$p/payload/bin/app.sh"
+  # A COMPILED payload, not a shell script.
+  #
+  # These suites used to write `payload/bin/app.sh` and declare it as the entrypoint
+  # of an `applicationType: "native"` package. The `payload-role` verification stage
+  # refuses that, correctly and by design:
+  #
+  #     applicationType "native" declares "bin/app.sh" as the entrypoint, but those
+  #     bytes are not an ELF object (a native package must contain a COMPILED
+  #     executable — source files belong in a portable-code package)
+  #
+  # So both suites had been failing at the first install since that stage landed,
+  # and nobody knew, because nothing ran them: there was no single test entry point,
+  # and they were not in the acceptance runner. `scripts/test.sh --integration` is
+  # what surfaced it.
+  #
+  # The payload prints its own version, so "which version is installed" can be
+  # answered by the running program rather than only by the registry.
+  printf '#include <stdio.h>\nint main(void){puts("hi %s");return 0;}\n' \
+      "$ver" > "$p/app.c"
+  cc -O2 -o "$p/payload/bin/app" "$p/app.c" || {
+      printf 'FATAL: no C compiler; cannot build a native payload\n' >&2
+      exit 2
+  }
   local perms="[]"; [[ -n "$perm" ]] && perms="[\"$perm\"]"
   cat > "$p/lexe.json" <<EOF
 { "lexeVersion":"0.1", "id":"$ID", "name":"Trust Demo", "version":"$ver",
   "publisher":{"name":"Same Publisher Name","publicKey":"$(pubkey "$key")"},
   "applicationType":"native", "architectures":["x86_64","aarch64"],
-  "entrypoint":{"executable":"bin/app.sh","arguments":[]},
+  "entrypoint":{"executable":"bin/app","arguments":[]},
   "install":{"scope":"user","mode":"bundled"}, "permissions":$perms }
 EOF
   "$LEXE" build "$p" -o "$out" --key "$key" >/dev/null

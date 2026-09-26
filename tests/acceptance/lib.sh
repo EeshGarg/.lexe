@@ -40,9 +40,9 @@ export XDG_SESSION_TYPE=tty
 ACC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ACC_REPO="$(cd -- "$ACC_DIR/../.." && pwd)"
 ACC_BUILD="${LEXE_BUILD_DIR:-$ACC_REPO/build}"
-ACC_EXAMPLE="$ACC_REPO/examples/gui-hello"
+ACC_EXAMPLE="$ACC_REPO/examples/native/gui-hello"
 
-# The application under test (examples/gui-hello/lexe.json).
+# The application under test (examples/native/gui-hello/lexe.json).
 ACC_APP_ID="com.usha.guihello"
 ACC_APP_VERSION="1.0.0"
 ACC_ENTRYPOINT="bin/gui-hello"
@@ -120,6 +120,16 @@ acc_summary() {
 
 # acc_assert <condition-result 0/1> <description>
 acc_true() { if [[ "$1" == "0" ]]; then pass "$2"; else fail "$2" "${@:3}"; fi; }
+
+# For a directory. acc_file_exists uses -f, so pointing it at a version
+# directory reports "missing" for something that is present.
+acc_dir_exists() {
+    if [[ -d "$1" ]]; then pass "$2"; else fail "$2" "missing directory: $1"; fi
+}
+
+acc_dir_absent() {
+    if [[ ! -d "$1" ]]; then pass "$2"; else fail "$2" "still present: $1"; fi
+}
 
 acc_file_exists() {
     if [[ -f "$1" ]]; then pass "$2"; else fail "$2" "missing: $1"; fi
@@ -211,7 +221,7 @@ acc_kill_app() {
 
 # --------------------------------------------------------------- packaging
 
-# Copies examples/gui-hello into the scratch tree (so `lexe build`'s
+# Copies examples/native/gui-hello into the scratch tree (so `lexe build`'s
 # publisher.publicKey "AUTO" fill-in never dirties the repository), builds the
 # payload if needed, and packages it. Sets ACC_PACKAGE and ACC_KEY.
 acc_build_package() {

@@ -1,0 +1,42 @@
+{
+  "lexeVersion": "0.1",
+  "id": "com.usha.windowsgui",
+  "name": "Lexe Windows GUI",
+  "version": "1.0.0",
+  "publisher": {
+    "name": "Usha",
+    "publicKey": "AUTO",
+    "website": "https://example.invalid/lexe"
+  },
+  "role": "application",
+  "applicationType": "windows",
+  "architectures": [
+    "x86_64"
+  ],
+  "entrypoint": {
+    "executable": "bin/windows-gui.exe",
+    "arguments": []
+  },
+  "execution": {
+    "missionCritical": false,
+    "allowedChains": [
+      "wine",
+      "proton"
+    ]
+  },
+  "launch": {
+    "mode": "gui",
+    "singleInstance": true
+  },
+  "install": {
+    "scope": "user",
+    "mode": "bundled"
+  },
+  "integration": {
+    "desktopEntry": true,
+    "categories": [
+      "Utility"
+    ]
+  },
+  "permissions": []
+}

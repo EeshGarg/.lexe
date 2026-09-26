@@ -1,0 +1,38 @@
+# UndefinedBehaviorSanitizer suppressions.
+#
+# Suppressed BY NAME, never by turning a check off, so a NEW finding in the same
+# category is still reported. An empty UBSan run is only meaningful if the things
+# it is not looking at are listed somewhere a reader can see them.
+#
+# Everything here is vendored third-party code (third_party/README.md pins the
+# exact upstream revisions and licences). First-party code has no suppressions
+# and is expected to have none: if one is ever needed, the finding goes in
+# docs/HARDENING.md with the reason, rather than quietly here.
+
+# third_party/ed25519 (orlp/ed25519, zlib licence) performs left shifts on
+# signed integers throughout its field arithmetic, e.g.
+#
+#     fe.c: carry0 = (h0 + (int64_t)(1 << 25)) >> 26;
+#
+# This is implementation-defined rather than a correctness bug — the reference
+# implementation relies on two's-complement behaviour that every compiler this
+# project supports provides — but it is formally UB and UBSan reports it.
+#
+# It is suppressed rather than patched because third_party/ is pinned and never
+# modified (docs/ARCHITECTURE.md #Third-party); patching it locally would make
+# the vendored snapshot no longer match its upstream revision, which is the one
+# property that makes auditing it possible. The long-term fix is libsodium,
+# which the build already prefers where pkg-config finds it — on such a host
+# these paths are not compiled at all.
+signed-integer-overflow:third_party/ed25519/fe.c
+signed-integer-overflow:third_party/ed25519/ge.c
+signed-integer-overflow:third_party/ed25519/sc.c
+shift-base:third_party/ed25519/fe.c
+shift-base:third_party/ed25519/ge.c
+shift-base:third_party/ed25519/sc.c
+
+# third_party/miniz (3.0.2 amalgamated, MIT) reads multi-byte little-endian
+# fields through casts that are not always naturally aligned on the platforms it
+# supports. Same reasoning: pinned, unmodified, and the behaviour is what every
+# supported compiler produces.
+alignment:third_party/miniz/miniz.c
