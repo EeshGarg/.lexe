@@ -470,13 +470,10 @@ Manifest Manifest::parse(const std::vector<std::uint8_t>& bytes) {
 }
 
 Manifest Manifest::parse(std::string_view json_text) {
-    // FORMAT-0.1 §5: UTF-8 JSON, no BOM.
-    if (json_text.size() >= 3 &&
-        static_cast<unsigned char>(json_text[0]) == 0xEF &&
-        static_cast<unsigned char>(json_text[1]) == 0xBB &&
-        static_cast<unsigned char>(json_text[2]) == 0xBF) {
-        fail("UTF-8 BOM is not allowed");
-    }
+    // FORMAT-0.1 §5.0: UTF-8 JSON, no BOM. The BOM check itself now lives in
+    // json_strict (below), so it applies to every document this format defines
+    // rather than only to this one -- `metadata/hashes.json` was accepting a BOM
+    // while this function rejected it.
 
     // Strict parse (HARDENING.md §E/§F): rejects duplicate keys, invalid UTF-8,
     // and an over-budget document before the DOM is built. A duplicate

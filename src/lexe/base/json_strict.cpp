@@ -72,6 +72,31 @@ void check_budget(std::string_view text, std::string_view context,
     }
 }
 
+/// Reject a UTF-8 byte-order mark before the top-level value.
+///
+/// FORMAT-0.1 §5.0 applies to EVERY JSON document the format defines --
+/// `lexe.json`, `metadata/hashes.json` and `update.json` -- and this check used
+/// to live in `Manifest::parse` instead, which meant it applied to exactly one
+/// of the three. A package whose stored `hashes.json` began `ef bb bf` reported
+/// `verification: OK (signature valid, Ed25519)`, while the same three bytes on
+/// `lexe.json` were correctly refused.
+///
+/// The lesson is about WHERE a rule lives rather than about the rule. A
+/// requirement written once per document is a requirement that will hold for the
+/// documents somebody remembered; a requirement enforced in the one function
+/// every document goes through holds for all of them, including the next one
+/// this format defines. Every other §5.0 obligation -- duplicate keys, UTF-8
+/// validity, trailing data, the byte budget -- was already here, and the BOM was
+/// the odd one out.
+void reject_bom(std::string_view text, std::string_view context) {
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF) {
+        throw VerificationError(std::string(context) +
+                                ": UTF-8 BOM is not allowed");
+    }
+}
+
 void reject_duplicates(std::string_view text, std::string_view context) {
     DuplicateKeyDetector detector;
     // strict=true validates trailing data and UTF-8; the DETECTOR aborts on the
@@ -92,6 +117,7 @@ void reject_duplicates(std::string_view text, std::string_view context) {
 nlohmann::json parse(std::string_view text, std::string_view context,
                      std::size_t max_bytes) {
     check_budget(text, context, max_bytes);
+    reject_bom(text, context);
     reject_duplicates(text, context);
     // The SAX pass already proved the text is well-formed, duplicate-free UTF-8
     // JSON; this DOM parse cannot fail, but stay defensive.
@@ -107,6 +133,7 @@ nlohmann::ordered_json parse_ordered(std::string_view text,
                                      std::string_view context,
                                      std::size_t max_bytes) {
     check_budget(text, context, max_bytes);
+    reject_bom(text, context);
     reject_duplicates(text, context);
     nlohmann::ordered_json doc = nlohmann::ordered_json::parse(
         text, nullptr, /*allow_exceptions=*/false);

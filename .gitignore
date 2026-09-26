@@ -11,3 +11,9 @@
 
 # CMake user presets
 CMakeUserPresets.json
+
+# Python bytecode from the conformance tooling. The validator and the corpus
+# generator are run as scripts, and their caches are per-interpreter build
+# artifacts that must never enter the repository.
+__pycache__/
+*.pyc

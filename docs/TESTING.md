@@ -51,7 +51,7 @@ as SYSTEM includes precisely so that stays true.
 | `--lifecycle` | install → run → update → rollback → repair → uninstall, then the same with operations interrupted | bubblewrap |
 | `--concurrency` | the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection (every participant is hard-timed out, so a deadlock FAILS the suite rather than hanging it) | bubblewrap, `flock(1)` |
 | `--session` | the session-manager boundary, against the REAL `systemd --user` of the invoking session: enable, status, start, stop, repair, retraction on uninstall | a running `systemd --user` session (SKIPs without one) |
-| `--conformance` | `lexe verify` against the independent validator in `tools/lexe-conformance` over the same packages; a DISAGREEMENT fails the lane rather than being resolved in favour of the C++ | python3 |
+| `--conformance` | `lexe verify` against the independent validator in `tools/lexe-conformance`: a **181-case corpus generated from `docs/FORMAT-0.1.md`** (37 of them valid packages, deliberately on the bounds), plus a lane asserting that `verify` passing is never followed by `install` rejecting the package as invalid. Checks each verdict against the SPEC *and* the two implementations against each other — neither subsumes the other, since a shared misreading would pass the first and an identically-wrong pair would pass the second. A disagreement fails the lane rather than being resolved in favour of the C++ | python3 |
 | `--security` | hostile packages: traversal, symlink escape, tampered hashes, architecture lies, injection | nothing |
 | `--windows` | a purpose-built Windows PE, run through Wine | Wine, MinGW |
 | `--proton` | the same payload through the Proton chain | a Proton installation |

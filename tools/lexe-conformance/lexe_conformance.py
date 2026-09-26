@@ -49,6 +49,12 @@ MAX_MANIFEST_BYTES = 1024 * 1024                         # 1 MiB
 MAX_HASHES_BYTES = 16 * 1024 * 1024                      # 16 MiB
 MAX_ID_BYTES = 255
 MAX_VERSION_CHARS = 64
+# §10.1 field budgets, counted in BYTES. They were absent, so three rules had no
+# second opinion at all: a reader and this validator could disagree about a
+# 2000-byte `name` and nothing would have noticed.
+MAX_NAME_BYTES = 1024
+MAX_CHAIN_ID_BYTES = 1024
+MAX_BUILD_COMMAND_ELEMENT_BYTES = 1024
 ED25519_SIGNATURE_BYTES = 64
 ED25519_PUBLIC_KEY_BYTES = 32
 
@@ -70,6 +76,8 @@ ARCHITECTURES = ("x86_64", "aarch64")
 LAUNCH_MODES = ("gui", "console", "service")
 INSTALL_MODES = ("bundled",)
 BUILD_SYSTEMS = ("make", "cmake", "command")
+# §5.7.1 — closed and complete for 0.1.
+PERMISSION_VOCABULARY = ("network", "user-files-selected")
 
 HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
 ID_SEGMENT = re.compile(r"\A[a-zA-Z0-9-]+\Z")
@@ -165,6 +173,7 @@ class RawEntry:
     __slots__ = (
         "index", "name_bytes", "name", "name_decodable", "flags",
         "method", "comp_size", "uncomp_size", "external_attr", "is_directory",
+        "local_header_off",
     )
 
 
@@ -257,6 +266,7 @@ class Container:
             comp_size, uncomp_size = struct.unpack_from("<II", b, off + 20)
             name_len, extra_len, comment_len = struct.unpack_from("<HHH", b, off + 28)
             (external_attr,) = struct.unpack_from("<I", b, off + 38)
+            (local_header_off,) = struct.unpack_from("<I", b, off + 42)
             name_bytes = bytes(b[off + 46: off + 46 + name_len])
             e = RawEntry()
             e.index = index
@@ -266,13 +276,21 @@ class Container:
             e.comp_size = comp_size
             e.uncomp_size = uncomp_size
             e.external_attr = external_attr
+            e.local_header_off = local_header_off
             try:
                 e.name = name_bytes.decode("utf-8")
                 e.name_decodable = True
             except UnicodeDecodeError:
                 e.name = name_bytes.decode("utf-8", "replace")
                 e.name_decodable = False
-            e.is_directory = name_bytes.endswith(b"/")
+            # Two spellings, and the second one mattered: a trailing slash,
+            # OR the DOS directory attribute bit. The reference reader keys its
+            # rejection on the attribute bit, and a record with an
+            # ordinary-looking name plus that bit set is exactly what bypassed
+            # the `signatures/` allowlist before FORMAT-0.1 §2.1 required
+            # directory entries to be rejected.
+            e.is_directory = (name_bytes.endswith(b"/") or
+                              bool(external_attr & 0x10))
             self.entries.append(e)
             off += 46 + name_len + extra_len + comment_len
             index += 1
@@ -434,6 +452,98 @@ def _ascii_alpha(byte):
     return 65 <= byte <= 90 or 97 <= byte <= 122
 
 
+LOCAL_SIG = b"PK\x03\x04"
+DATA_DESCRIPTOR_SIG = b"PK\x07\x08"
+
+
+def check_local_headers(c, rep):
+    """FORMAT-0.1 §2.2 — one archive, not two.
+
+    A ZIP records every entry twice: once in a local header beside the data, once
+    in the central directory. §2.2 makes the central directory authoritative and
+    requires the two to AGREE, because when they disagree two conforming readers
+    see two different archives -- and only one of those views is the one the
+    package's hashes and signatures were computed over.
+
+    It further requires that the bytes before the central directory are exactly
+    the local records it names, laid end to end: no leading bytes, no gaps, no
+    overlaps, nothing between the last record and the directory. Without that, a
+    complete extra local record can be spliced into a gap with the directory's
+    offset advanced past it, and checking only that the archive ENDS cleanly
+    (§1) says nothing about holes before the end.
+    """
+    if c.zip64:
+        return  # already reported as a skip: the 32-bit parser cannot see it
+    b = c.blob
+    spans = []  # (begin, end) of each local record including its data
+
+    for e in c.entries:
+        lho = e.local_header_off
+        where = "entry %d (%s)" % (e.index, e.name)
+        if lho + 30 > len(b) or bytes(b[lho:lho + 4]) != LOCAL_SIG:
+            rep.add("LOCAL_HEADER_MISSING", where,
+                    "a local file header at the offset the central directory "
+                    "gives", "no local header signature at offset %d" % lho,
+                    "§2.2")
+            return
+        flags, method = struct.unpack_from("<HH", b, lho + 6)
+        lh_comp, lh_uncomp = struct.unpack_from("<II", b, lho + 18)
+        name_len, extra_len = struct.unpack_from("<HH", b, lho + 26)
+        local_name = bytes(b[lho + 30: lho + 30 + name_len])
+
+        if local_name != e.name_bytes:
+            rep.add("LOCAL_HEADER_NAME_MISMATCH", where,
+                    "the local header and the central directory name the same "
+                    "entry",
+                    "local %r vs central %r" % (local_name[:80], e.name_bytes[:80]),
+                    "§2.2")
+        if method != e.method:
+            rep.add("LOCAL_HEADER_METHOD_MISMATCH", where,
+                    "the same compression method in both records",
+                    "local %d vs central %d" % (method, e.method), "§2.2")
+
+        # A data descriptor (general-purpose bit 3) legitimately leaves the local
+        # sizes zero, with the real values after the data. Its signature word is
+        # OPTIONAL (APPNOTE 4.3.9.3), so the record's extent is derived from
+        # whether that word is present rather than assumed -- assuming 16 bytes
+        # rejects a conformant archive, which is a defect the reference
+        # implementation shipped briefly and had to fix.
+        has_descriptor = bool(flags & 0x8)
+        if not has_descriptor and (lh_comp != e.comp_size or
+                                   lh_uncomp != e.uncomp_size):
+            rep.add("LOCAL_HEADER_SIZE_MISMATCH", where,
+                    "the same compressed and uncompressed sizes in both records",
+                    "local (%d, %d) vs central (%d, %d)"
+                    % (lh_comp, lh_uncomp, e.comp_size, e.uncomp_size), "§2.2")
+
+        data_begin = lho + 30 + name_len + extra_len
+        data_end = data_begin + e.comp_size
+        if has_descriptor:
+            at = data_end
+            has_word = bytes(b[at:at + 4]) == DATA_DESCRIPTOR_SIG
+            data_end += 16 if has_word else 12
+        spans.append((lho, data_end))
+
+    spans.sort()
+    cursor = 0
+    for begin, end in spans:
+        if begin != cursor:
+            rep.add("CONTAINER_UNACCOUNTED_BYTES", "archive framing",
+                    "every byte before the central directory belongs to a local "
+                    "record the directory names",
+                    ("entry data overlaps another entry" if begin < cursor else
+                     "%d unaccounted byte(s) at offset %d -- a record no "
+                     "central-directory entry names" % (begin - cursor, cursor)),
+                    "§2.2")
+            return
+        cursor = end
+    if cursor != c.cd_off:
+        rep.add("CONTAINER_UNACCOUNTED_BYTES", "archive framing",
+                "the central directory begins where the last entry's data ends",
+                "%d unaccounted byte(s) between the last entry and the central "
+                "directory" % (c.cd_off - cursor), "§2.2")
+
+
 def check_container(c, rep):
     if c.oversized:
         rep.add("CONTAINER_PACKAGE_TOO_LARGE", str(c.path),
@@ -464,6 +574,26 @@ def check_container(c, rep):
                  "validator parses only the 32-bit EOCD, so the whole-file-span "
                  "check and the raw central-directory checks were not performed",
                  "§1")
+
+    check_local_headers(c, rep)
+
+    # FORMAT-0.1 §3.2 — `signatures/` is an EXACT set.
+    #
+    # §3 excludes the whole prefix from hash coverage, so anything else under it
+    # is covered by no hash and no signature. That combination -- two individually
+    # correct rules meeting in the middle -- is how a package carrying
+    # `signatures/smuggled.bin` reported `verification: OK`. An exact set rather
+    # than a pattern: a later signature scheme gets a specified name AND a
+    # coverage rule, not the benefit of looking plausible.
+    for e in c.entries:
+        if not e.name.startswith("signatures/"):
+            continue
+        if e.name in ("signatures/manifest.sig", "signatures/payload.sig"):
+            continue
+        rep.add("SIGNATURES_UNEXPECTED_MEMBER", e.name,
+                "signatures/ contains exactly manifest.sig and payload.sig",
+                "an additional member under signatures/, which no hash and no "
+                "signature covers", "§3.2")
 
     if len(c.entries) > MAX_ENTRY_COUNT:
         rep.add("CONTAINER_ENTRY_COUNT_EXCEEDED", "central directory",
@@ -714,6 +844,11 @@ def check_hashes(c, rep, hashes_raw):
             rep.add("HASH_MISMATCH", key, "SHA-256 %s" % digest,
                     "SHA-256 %s over %d bytes" % (actual, size), "§3")
 
+    # §3.6 — the `executable` declaration, checked against the coverage set that
+    # was just established. It has to come after `covered` is complete: the rule
+    # is that every declared path is also a key of `files`.
+    check_executable_declaration(doc, covered, rep)
+
 
 # ==========================================================================
 # §5 manifest
@@ -738,6 +873,7 @@ def _get(obj, key):
 
 
 def require_string(obj, key, where, rep, spec="§5", max_len=None):
+    """Read a required non-empty string, optionally bounded in BYTES (§10.1)."""
     value = _get(obj, key)
     if value is None:
         rep.add("MANIFEST_FIELD_MISSING", where, "%s is present" % where,
@@ -804,6 +940,59 @@ def _id_shape_ok(value):
     return len(segments) >= 2 and all(ID_SEGMENT.match(s) for s in segments)
 
 
+def check_executable_declaration(doc, covered, rep):
+    """FORMAT-0.1 §3.6 — the `executable` declaration.
+
+    The newest rule in the format, added BECAUSE of a finding: the ZIP mode field
+    is covered by nothing, so publisher intent about executability had to move
+    inside the signed document. It had no independent verification at all until
+    now, which is the least comfortable place for a new security-relevant rule to
+    sit.
+
+    Validated here rather than where it would be USED, matching the spec's own
+    split: by use time the bytes are authenticated and a nonsense entry is inert,
+    but a typo accepted at verification surfaces as "Permission denied" at first
+    launch, arbitrarily far from its cause, after a verifier said the package was
+    fine.
+    """
+    if "executable" not in doc or doc["executable"] is None:
+        return
+    declared = doc["executable"]
+    if not isinstance(declared, list):
+        rep.add("HASH_EXECUTABLE_NOT_ARRAY", "metadata/hashes.json: executable",
+                "an array of entry paths", type(declared).__name__, "§3.6")
+        return
+    seen = set()
+    for item in declared:
+        if not isinstance(item, str):
+            rep.add("HASH_EXECUTABLE_ELEMENT_TYPE",
+                    "metadata/hashes.json: executable",
+                    "every element a string", type(item).__name__, "§3.6")
+            continue
+        if item in seen:
+            rep.add("HASH_EXECUTABLE_DUPLICATE",
+                    "metadata/hashes.json: executable",
+                    "no path listed more than once",
+                    "%r appears more than once" % item, "§3.6")
+            continue
+        seen.add(item)
+        if item not in covered:
+            rep.add("HASH_EXECUTABLE_NOT_COVERED",
+                    "metadata/hashes.json: executable",
+                    "every element is also a key of \"files\": a path with no "
+                    "digest cannot be declared executable, because the "
+                    "declaration would apply to content nothing authenticates",
+                    "%r is not covered by \"files\"" % item, "§3.6")
+            continue
+        if not item.startswith("payload/"):
+            rep.add("HASH_EXECUTABLE_OUTSIDE_PAYLOAD",
+                    "metadata/hashes.json: executable",
+                    "every element is under payload/ (only payload content is "
+                    "ever extracted, so a declaration elsewhere can never be "
+                    "honoured)",
+                    "%r is not under payload/" % item, "§3.6")
+
+
 def check_manifest(c, rep, manifest_raw):
     facts = ManifestFacts()
     if manifest_raw is None:
@@ -829,7 +1018,10 @@ def check_manifest(c, rep, manifest_raw):
                 "reverse-DNS: 2+ dot-separated segments of [a-zA-Z0-9-]+",
                 json.dumps(app_id), "§5.2")
 
-    require_string(doc, "name", "name", rep, "§5.2")
+    # §10.1 budgets are counted in BYTES, not characters -- so a 1024-character
+    # non-ASCII name exceeds a 1024-byte bound, and a validator comparing
+    # len(str) would disagree with any reader that counts bytes.
+    require_string(doc, "name", "name", rep, "§5.2", max_len=MAX_NAME_BYTES)
 
     version = require_string(doc, "version", "version", rep, "§5.2")
     if version is not None:
@@ -847,9 +1039,66 @@ def check_manifest(c, rep, manifest_raw):
         rep.add("MANIFEST_FIELD_TYPE", "publisher",
                 "publisher is a JSON object", type(publisher).__name__, "§5.2")
     else:
-        require_string(publisher, "name", "publisher.name", rep, "§5.2")
+        require_string(publisher, "name", "publisher.name", rep, "§5.2",
+                       max_len=MAX_NAME_BYTES)
         facts.public_key_field = require_string(
             publisher, "publicKey", "publisher.publicKey", rep, "§4")
+
+    # §5.0 + §5.7: `install.estimatedSize` is the one field 0.1 declares as an
+    # integer, so it is the one field the integer-TOKEN rule applies to. `1.0`
+    # and `1e6` denote integral values and are not integer tokens.
+    #
+    # Python's json parser is what makes this checkable at all: it yields `int`
+    # for an integer token and `float` for `1.0`, preserving the distinction the
+    # JSON text made. A validator that normalised numbers could not see it.
+    install_block = _get(doc, "install")
+    if isinstance(install_block, dict):
+        size = _get(install_block, "estimatedSize")
+        if size is not None:
+            if isinstance(size, bool) or not isinstance(size, int):
+                rep.add("MANIFEST_INTEGER_TOKEN", "install.estimatedSize",
+                        "an integer token (1048576), not a float or exponent "
+                        "form denoting an integral value",
+                        "a JSON %s" % type(size).__name__, "§5.0")
+            elif size < 0:
+                rep.add("MANIFEST_FIELD_RANGE", "install.estimatedSize",
+                        "a non-negative integer", str(size), "§5.7")
+
+    # §5.7.1 — the closed 0.1 permission vocabulary.
+    #
+    # This was unimplementable until the spec named the members: §5.7 said only
+    # "informational in 0.1" and the document listed no valid permission
+    # anywhere, so a validator written from the prose correctly accepted
+    # ["telepathy"] while the reference runtime refused it. The vocabulary is now
+    # normative (§5.7.1) and this is the second opinion on it.
+    permissions = _get(doc, "permissions")
+    if permissions is not None:
+        if not isinstance(permissions, list):
+            rep.add("MANIFEST_FIELD_TYPE", "permissions",
+                    "an array of permission ids", type(permissions).__name__,
+                    "§5.7.1")
+        else:
+            seen_perms = set()
+            for perm in permissions:
+                if not isinstance(perm, str):
+                    rep.add("MANIFEST_FIELD_TYPE", "permissions[]",
+                            "every element a string", type(perm).__name__,
+                            "§5.7.1")
+                    continue
+                if perm not in PERMISSION_VOCABULARY:
+                    rep.add("MANIFEST_PERMISSION_UNKNOWN", "permissions[]",
+                            "one of %s" % ", ".join(sorted(PERMISSION_VOCABULARY)),
+                            json.dumps(perm), "§5.7.1")
+                    continue
+                if perm in seen_perms:
+                    # Not cosmetic: the approved set is recorded with a digest,
+                    # so two spellings of one request produce two digests for the
+                    # same authority.
+                    rep.add("MANIFEST_PERMISSION_DUPLICATE", "permissions[]",
+                            "no permission id listed more than once",
+                            "%s appears more than once" % json.dumps(perm),
+                            "§5.7.1")
+                seen_perms.add(perm)
 
     # --- §5.1 role ---
     role = doc.get("role", "application")
@@ -1008,6 +1257,14 @@ def check_manifest(c, rep, manifest_raw):
                     rep.add("MANIFEST_BUILD_COMMAND_REQUIRED", "build.command",
                             'build.system "command" declares a non-empty argv '
                             "of non-empty strings", json.dumps(command), "§5.8")
+                else:
+                    for arg in command:
+                        if len(arg.encode("utf-8")) > MAX_BUILD_COMMAND_ELEMENT_BYTES:
+                            rep.add("MANIFEST_FIELD_TOO_LONG", "build.command[]",
+                                    "each argument at most %d bytes"
+                                    % MAX_BUILD_COMMAND_ELEMENT_BYTES,
+                                    "%d bytes" % len(arg.encode("utf-8")),
+                                    "§10.1")
             elif command is not None:
                 rep.add("MANIFEST_BUILD_COMMAND_FORBIDDEN", "build.command",
                         'build.command only with build.system "command"',
@@ -1046,19 +1303,33 @@ def check_manifest(c, rep, manifest_raw):
             mission_critical = mc
         declared = execution.get("allowedChains")
         if declared is not None:
-            if (not isinstance(declared, list) or not declared
+            if (not isinstance(declared, list)
                     or any(not isinstance(x, str) for x in declared)):
                 rep.add("MANIFEST_FIELD_TYPE", "execution.allowedChains",
-                        "a non-empty array of chain-id strings",
+                        "an array of chain-id strings",
                         json.dumps(declared), "§5.5")
             else:
-                chains = declared
+                # An EMPTY array is VALID and means ["native"] (§5.5).
+                #
+                # This validator used to require non-empty, because the spec's
+                # table said so while a paragraph three screens later said the
+                # opposite — a self-contradiction in the frozen document, found
+                # by a corpus built from that document. The table was the wrong
+                # half: the reference reader substitutes ["native"], the package
+                # launches natively, and the table has been corrected.
+                chains = declared if declared else ["native"]
                 for chain in declared:
                     if not CHAIN_ID.match(chain):
                         rep.add("MANIFEST_CHAIN_ID_SHAPE",
                                 "execution.allowedChains[]",
                                 "a chain id matching [a-zA-Z0-9-+_]+",
                                 json.dumps(chain), "§5.5")
+                    if len(chain.encode("utf-8")) > MAX_CHAIN_ID_BYTES:
+                        rep.add("MANIFEST_FIELD_TOO_LONG",
+                                "execution.allowedChains[]",
+                                "each chain id at most %d bytes"
+                                % MAX_CHAIN_ID_BYTES,
+                                "%d bytes" % len(chain.encode("utf-8")), "§10.1")
     if mission_critical and any(ch != "native" for ch in chains):
         rep.add("MANIFEST_MISSION_CRITICAL_CONTRADICTION", "execution",
                 'missionCritical true permits only the "native" chain',

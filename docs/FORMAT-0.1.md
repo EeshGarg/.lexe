@@ -85,7 +85,15 @@ Writers (i.e. `lexe pack`) MUST produce **deterministic** archives:
   setgid and sticky bits are never recorded. On filesystems without Unix
   permission bits (e.g. Windows) every collected file is recorded as 0644, so
   helper executables must be packed on a POSIX filesystem;
-* no ZIP64 unless the archive requires it; no encryption; no archive comment;
+* no ZIP64 unless the archive requires it — and under §10.1's limits it never
+  can be, since 2 GiB and 65535 entries both sit inside the classic format, so a
+  conforming 0.1 writer emits no ZIP64 structures at all. A **reader** MAY reject
+  an archive carrying a ZIP64 end-of-central-directory record, and the reference
+  implementation does: it requires the classic 22-byte EOCD as the final bytes of
+  the file (§2.2), which a ZIP64 archive does not have. This is stated because the
+  asymmetry was previously implicit — a writer obligation with no reader
+  consequence written down;
+* no encryption; no archive comment;
   no per-entry extra fields or comments beyond what the amalgamated miniz writer
   emits with the settings above.
 
@@ -512,6 +520,11 @@ Numbers that this format declares as integers MUST be written as integer
 **tokens**. `1048576` is an integer; `1.0` and `1e6` are not, even though they
 denote integral values.
 
+0.1 declares exactly one such field: **`install.estimatedSize`**, a non-negative
+integer number of bytes. (This was previously unstated, which left the
+integer-token rule with nothing to apply to — a rule with no subject, found by
+building a conformance corpus from this document.)
+
 **Unknown object members MUST be ignored** (forward compatibility). This applies
 at every level: the top-level object and every nested object alike. A reader
 MUST NOT reject a manifest for carrying a member this version does not define.
@@ -626,7 +639,7 @@ key. This implementation uses the fixed id `org.lexe.launch`.
 | Field | Default | Constraint |
 |---|---|---|
 | `execution.missionCritical` | `false` | boolean |
-| `execution.allowedChains` | `["native"]` | non-empty array of chain ids `[a-zA-Z0-9-+_]+` |
+| `execution.allowedChains` | `["native"]` | array of chain ids `[a-zA-Z0-9-+_]+`, each ≤ 1024 bytes; **an absent or empty array means `["native"]`** |
 
 `missionCritical` is an EXECUTION RESTRICTION, not a safety certification. When
 it is `true` the runtime MUST require a Linux-native, host-ISA-native
@@ -709,6 +722,39 @@ substitute a default. Reading an absent or unknown declaration as
 `"core-portable"` makes a package deliberately built as `"native-capture"` —
 host-locked by definition — report as a portability failure.
 
+
+### 5.7.1 `permissions` — the closed 0.1 vocabulary
+
+This section previously said only that `permissions` is "informational in 0.1",
+and the document named no valid permission anywhere. That was a real defect in
+this specification, found by building a conformance corpus from the prose: an
+implementer could not write this check at all, and an independent validator
+written from the document correctly accepted `["telepathy"]` while the reference
+runtime refused it. A rule that exists only in a freeze record is not a rule.
+
+**The 0.1 vocabulary is closed and complete.** These are the only permissions a
+package may request:
+
+| Id | Means | Enforcement in 0.1 |
+|---|---|---|
+| `network` | outbound and inbound network sockets | **enforced** — the sandbox denies network without it |
+| `user-files-selected` | files the user explicitly selects at runtime | advisory — no ambient file access is granted either way |
+
+A reader MUST reject a manifest whose `permissions` array contains:
+
+* any id not in the table above — an unrecognised permission is refused, never
+  ignored. A package asking for authority this version cannot express must not be
+  installed as though it had asked for nothing;
+* the same id more than once. Duplicates are rejected because the approved set is
+  recorded with a digest, so two spellings of one request would produce two
+  different digests for the same authority.
+
+The array may be absent or empty, and both mean "no permissions requested".
+
+"Informational" applied to `user-files-selected` and was never true of the
+vocabulary itself. A later version may add ids; it will add them to this table,
+and a 0.1 reader will correctly refuse a package that uses them, which is the
+behaviour a closed vocabulary exists to produce.
 
 **`install.scope`** MUST be `"user"` in 0.1. Other values are reserved and a
 reader MUST reject them. The reference implementation accepted any non-empty
@@ -1432,6 +1478,11 @@ reader to assume otherwise.
 | 54 | **Icons were never validated as images.** Whatever a package carried as `128.png` was written into the user's hicolor theme, where the desktop parses it unsandboxed | **FIXED** — §9.9. Magic-byte check and a size cap; a rejected icon is skipped rather than failing the install |
 | 55 | **The `executable` declaration was accepted with paths not covered by `files`, outside `payload/`, duplicated, or of the wrong type** — each silently doing nothing, and wrong-type vs wrong-contents produced opposite outcomes for the same publisher mistake | **FIXED** — §3.6. Validated at verification, lenient at extraction, and the asymmetry is gone |
 | 56 | **A launch reference was accepted with any signing key at all**, and `lexe verify` printed the signer's fingerprint as though it established something | **FIXED** — §9.8.1. Small blast radius today (a reference carries no arguments), specified because reporting an artifact as verified when its signature's only claim was never checked is untrue, and because a reference that ever carries arguments makes it a delivery mechanism |
+| 58 | **A UTF-8 BOM was rejected in `lexe.json` and accepted in `metadata/hashes.json`.** §5.0 binds all three documents the format defines; the check lived in `Manifest::parse` instead of in the strict-JSON reader every document goes through | **FIXED** — the check moved into `json_strict`, so it now applies to `update.json` too and to whatever document a later version adds. The lesson is about WHERE a rule lives: written once per document it holds for the documents somebody remembered; enforced in the one function they all pass through it holds for all of them |
+| 59 | **§5.5's table said `allowedChains` must be non-empty while a paragraph below it said an absent or empty array means `["native"]`.** A self-contradiction introduced by this very freeze | **FIXED (spec)** — the table was the wrong half. The reader substitutes `["native"]` and the package launches natively, which was verified rather than assumed: the reported consequence, that such a package "can never be launched", did not hold |
+| 60 | **The `permissions` vocabulary existed only in this appendix.** Row 8 claimed it was "closed and checked at stage 2" and row 38 that duplicates are rejected, but §5.7 said only "informational in 0.1" and the document **named no valid permission anywhere** | **FIXED** — §5.7.1 states the closed vocabulary, lists both members, and gives the reason duplicates are refused. This was the sharpest test of the claim that the document is implementable without reading the implementation, and it failed it: a validator written from the prose correctly accepted `["telepathy"]`. A rule that exists only in a freeze record is not a rule |
+| 61 | **§5.0 required integer TOKENS while 0.1 declared no field as an integer** — a rule with no subject | **FIXED** — `install.estimatedSize` is now declared a non-negative integer |
+| 62 | **§1 forbade a writer emitting an unnecessary ZIP64 record and said nothing about what a reader does with one** | **FIXED** — stated as a reader MAY, with the reference implementation's answer named. It remains the one corpus case the spec deliberately does not determine |
 | 57 | **`write_atomic` used one temporary name for every writer**, so two concurrent writers of the same file collided — and the loser removed the DESTINATION before retrying, deleting the record the winner had just written | **FIXED** — a unique temporary per writer, and the destination is never removed unless our own temporary is still there to replace it. Introduced by the fix for an *unobserved* torn read, and caught by the concurrency lane added in the same tranche, on `installation.json` during simultaneous launches. A reminder that "strictly better, and free" is a claim to test rather than assert |
 
 ### A.7 Still open
