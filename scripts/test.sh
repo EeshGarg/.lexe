@@ -65,7 +65,7 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 # "blocked" instead of "skip" when the obstacle is the environment rather than
 # applicability), and a `<lane>_run`.
 
-ALL_LANES=(unit acceptance integration gui lifecycle security windows proton sanitizers)
+ALL_LANES=(unit acceptance integration gui lifecycle concurrency security windows proton sanitizers)
 
 lane_desc() {
     case "$1" in
@@ -74,6 +74,7 @@ lane_desc() {
     integration) echo "trust and lifecycle across process boundaries" ;;
     gui)        echo "the frontends start, render and exit clean on a private display" ;;
     lifecycle)  echo "install -> run -> update -> rollback -> repair -> uninstall, and the same interrupted" ;;
+    concurrency) echo "the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection" ;;
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;
@@ -102,6 +103,12 @@ gui_check() {
 lifecycle_check() {
     acceptance_check || return 1
     have bwrap || { echo "blocked: bubblewrap is not installed, so nothing can be sandboxed"; return 1; }
+}
+
+concurrency_check() {
+    acceptance_check || return 1
+    have bwrap || { echo "blocked: bubblewrap is not installed, so nothing can be sandboxed"; return 1; }
+    have flock || { echo "blocked: flock(1) is not available, and the lease tests hold locks with it"; return 1; }
 }
 
 windows_check() {
@@ -156,6 +163,10 @@ gui_run() { bash "$REPO/scripts/gui-smoke.sh" "$BUILD_DIR"; }
 
 lifecycle_run() {
     LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/lifecycle/run_all.sh"
+}
+
+concurrency_run() {
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/concurrency/run_all.sh"
 }
 
 security_run() {

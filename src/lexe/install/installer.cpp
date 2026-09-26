@@ -864,7 +864,11 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     // exclusive locks across the removal also prevents a launch from STARTING
     // mid-uninstall (its shared lease would block on our exclusive hold).
     std::vector<LaunchLease> version_locks;
+    // Remembered for the lease-file cleanup at the end: by then the app directory
+    // is gone, so installed_versions() would answer nothing.
+    std::vector<std::string> lease_versions;
     for (const std::string& v : registry.installed_versions(id)) {
+        lease_versions.push_back(v);
         std::optional<LaunchLease> vlock = locks_->try_lock_version_for_gc(id, v);
         if (!vlock.has_value()) {
             throw BusyError("cannot remove " + id +
@@ -886,6 +890,39 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
         util::remove_recursive(fs::path(file));
     }
     util::remove_recursive(registry.app_dir(id));
+
+    // The per-version LEASE files, which used to outlive the application.
+    //
+    // `locks/` accumulated one `<id>.v.<version>.lease` for every version of every
+    // application ever installed, and nothing deleted them -- not even
+    // `remove --purge-data`, the mode whose entire promise is that nothing is
+    // left. That is the unbounded part: versions accumulate without limit, while
+    // applications are bounded by the applications someone installs.
+    //
+    // Safe HERE specifically because of what has already happened above: this
+    // process holds an exclusive lock on every one of these versions (the in-use
+    // check), and the application directory is gone. A launch that was blocked on
+    // one of these leases will acquire it against a fresh inode, find no version
+    // to run, and fail honestly -- there is nothing left for the lease to protect.
+    //
+    // The per-app MUTATION lock is deliberately NOT deleted, and that asymmetry is
+    // the whole point of this comment.
+    //
+    // `flock` is per-inode, not per-path. Unlinking a lock file therefore does not
+    // release it -- it makes the NEXT opener create a different inode and acquire a
+    // lock that excludes nobody. For the mutation lock that is mutual exclusion
+    // silently breaking: this uninstall holds inode A while a concurrent install
+    // creates inode B, locks it successfully, and starts extracting into the
+    // directory tree this function is in the middle of deleting.
+    //
+    // So it stays. One file per application is bounded state, and correctness costs
+    // more than tidiness is worth. A first draft of this deleted it and reasoned
+    // that "the worst case is a lock file that reappears"; the worst case is two
+    // writers.
+    std::error_code lock_ec;
+    for (const std::string& version : lease_versions) {
+        fs::remove(registry.version_lease_file(id, version), lock_ec);
+    }
 
     // Cache is removed by AppAndCache and PurgeData; independently of data.
     if (mode == UninstallMode::AppAndCache || mode == UninstallMode::PurgeData) {
@@ -1095,6 +1132,34 @@ RepairReport Installer::repair(const std::string& id,
     if (corrupt.empty()) {
         report.ok = true;
         return report;
+    }
+
+    // Refuse to REWRITE a version something is running.
+    //
+    // `uninstall` and `garbage_collect` both take an exclusive lock on a version
+    // before touching it, precisely because mutating the files of a live
+    // application is unsafe. Repair did not, and it restores files by overwriting
+    // them in place -- so a running application saw a data file or a library
+    // change underneath it, with the same inode, mid-session.
+    //
+    // The kernel already refuses the worst case: overwriting the ENTRYPOINT of a
+    // running process fails with ETXTBSY. Everything else in the payload has no
+    // such protection, and that is the reachable hazard: an application that
+    // dlopen()s a library or re-reads a data file after repair has replaced it.
+    //
+    // Checked HERE rather than at the top of the function on purpose. Repair also
+    // re-resolves the runtime contract and re-establishes desktop integration,
+    // and both are harmless while the application runs -- a blanket refusal would
+    // make repair unusable for the case it is most often wanted in. The refusal
+    // applies only when there are actually files to restore.
+    if (const std::optional<LaunchLease> exclusive =
+            locks_->try_lock_version_for_gc(id, current);
+        !exclusive.has_value()) {
+        throw BusyError(
+            "cannot repair " + id + ": version " + current +
+                " is currently running, and repairing it means rewriting files "
+                "it is using; close it and try again",
+            "Stop the application, then re-run `lexe repair " + id + "`.");
     }
 
     // A package to re-extract from, in order of how well it is known to be the
