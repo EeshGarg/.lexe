@@ -138,8 +138,33 @@ else
     acc_contains "$compat_out" "none available" \
         "with no layer installed, no chain is claimed"
 fi
-acc_contains "$compat_out" "Proton is not installed on this host" \
-    "a permitted-but-absent chain is reported with a reason, not hidden"
+# The property under test is that a chain the package PERMITS but the host
+# cannot provide is reported with a reason rather than quietly omitted. It used
+# to be asserted by looking for "Proton is not installed on this host", which
+# made the check depend on this machine not having Proton — so it broke the day
+# Proton was installed to test the Proton chain, while the behaviour was fine.
+#
+# Ask the question the test actually means instead: every chain the package
+# permits must be accounted for, either as the selected one or with a stated
+# reason.
+for permitted in $(acc_json_str "$("$LEXE" compat "$WIN_ID" --json 2>/dev/null)" \
+        '" ".join(d.get("allowedByPackage", []))'); do
+    acc_contains "$compat_out" "$permitted" \
+        "the permitted chain \"$permitted\" is accounted for, not hidden"
+done
+
+# And specifically: a permitted chain that is NOT the selected one must carry a
+# reason, which is the half that would regress silently.
+unavailable="$(acc_json_str "$("$LEXE" compat "$WIN_ID" --json 2>/dev/null)" \
+    'next((c["id"] for c in d.get("rejected", [])), "")')"
+if [[ -n "$unavailable" ]]; then
+    reason="$(acc_json_str "$("$LEXE" compat "$WIN_ID" --json 2>/dev/null)" \
+        'next((c["reason"] for c in d.get("rejected", [])), "")')"
+    acc_true "$([[ -n "$reason" ]] && echo 0 || echo 1)" \
+        "the unusable chain \"$unavailable\" states why: $reason"
+else
+    note "every chain this package permits is available on this host"
+fi
 
 # ------------------------------------------------------------- 4/5. it RUNS
 

@@ -136,6 +136,11 @@ struct IsolationRequest {
     /// which is what the pure tests use, so a plan stays independent of the
     /// uid the suite happens to run as.
     std::string private_runtime_dir;
+    /// Environment the resolved execution chain REQUIRES, as name -> value.
+    /// Merged into the allowlisted environment below. A chain cannot reach the
+    /// caller environment this way — it can only ADD names it declares, with
+    /// values it chose, which are sandbox paths.
+    std::map<std::string, std::string> chain_env;
     std::map<std::string, std::string> inherited_env; // caller env (to sanitize)
 };
 
@@ -194,6 +199,25 @@ inline constexpr const char* kSandboxTemp = "/tmp";
 /// application is granted display access. The host's real XDG_RUNTIME_DIR is
 /// never exposed — only the individual display socket is bound in here.
 inline constexpr const char* kSandboxRuntime = "/run/lexe/session";
+/// Where a Proton chain keeps its compatibility prefix, inside the sandbox.
+///
+/// Under the application own private data root, deliberately: Wine prefix
+/// already lands there because HOME is redirected to it, and Proton state is
+/// the application state for exactly the same reason. It also means uninstalling
+/// the application with --purge-data removes the prefix, and that nothing of the
+/// user real Steam installation is bound, named, or reachable from inside.
+///
+/// Proton does NOT create this directory: with it missing, wine fails with
+/// "chdir to <path>/pfx : No such file or directory" and exits 1. It is
+/// established from ExecutionChain::required_data_dirs before launch.
+inline constexpr const char* kSandboxProtonPrefix = "/run/lexe/data/.proton";
+/// STEAM_COMPAT_CLIENT_INSTALL_PATH. Proton requires the variable to be SET —
+/// it dies with a Python KeyError otherwise — but does not require the path to
+/// exist, and nothing in the launch path needs a real Steam client. So this
+/// names a location inside the private prefix rather than the user Steam
+/// installation.
+inline constexpr const char* kSandboxProtonSteam =
+    "/run/lexe/data/.proton/steam";
 
 /// The conventional per-user runtime directory (`/run/user/<uid>`) as the
 /// sandbox should see it: a PRIVATE, empty tmpfs, never the host's.

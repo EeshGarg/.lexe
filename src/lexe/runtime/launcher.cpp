@@ -574,6 +574,27 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     req.compatibility_paths = resolution.chain.argv_prefix;
     req.private_runtime_dir = sandbox_runtime_dir_for_current_user();
     req.inherited_env = caller_environment();
+    // Environment the chain declared it needs (sandbox paths it chose), added
+    // to the sandbox allowlist. Nothing of the caller's environment reaches the
+    // application this way.
+    req.chain_env = resolution.chain.env;
+    // Directories the chain needs to already exist, under the application's own
+    // private data root. Proton is the case that requires this: it wants
+    // STEAM_COMPAT_DATA_PATH to name an existing directory and does not create
+    // one. Expressed as chain data so this loop needs no per-provider knowledge.
+    for (const std::string& relative : resolution.chain.required_data_dirs) {
+        // Chain-supplied, but never trusted to be relative: a chain that named
+        // an absolute path or climbed out with .. would establish a directory
+        // outside the application's data root.
+        const fs::path candidate(relative);
+        if (candidate.is_absolute()) continue;
+        bool climbs = false;
+        for (const fs::path& part : candidate) {
+            if (part == "..") climbs = true;
+        }
+        if (climbs) continue;
+        fs::create_directories(data_root / candidate, mkec);
+    }
 
     const std::unique_ptr<IsolationBackend> backend =
         make_isolation_backend(paths);

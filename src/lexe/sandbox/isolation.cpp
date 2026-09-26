@@ -81,6 +81,16 @@ sanitize_environment(const IsolationRequest& req) {
     env["LEXE_APP_DATA"] = kSandboxData;
     env["LEXE_APP_CACHE"] = kSandboxCache;
 
+    // What the resolved chain declared it needs. Added to the allowlist rather
+    // than read from the caller: Proton will not start without
+    // STEAM_COMPAT_DATA_PATH and STEAM_COMPAT_CLIENT_INSTALL_PATH, and
+    // inheriting whatever the user happened to have set would hand the
+    // application the host real Steam paths. These values come from the chain
+    // and point inside the sandbox.
+    for (const auto& [name, value] : req.chain_env) {
+        env[name] = value;
+    }
+
     if (req.build) {
         // A build gets a stable, minimal environment and nothing of the
         // session. LC_ALL/LANG are pinned to C so compiler diagnostics that

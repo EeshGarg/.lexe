@@ -3,6 +3,7 @@
 #include "lexe/runtime/execpolicy.hpp"
 
 #include "lexe/base/util.hpp"
+#include "lexe/sandbox/isolation.hpp"
 #include "lexe/verify/verify.hpp"
 
 #include <algorithm>
@@ -35,10 +36,93 @@ const std::vector<ProviderSpec>& provider_specs() {
         {"qemu-user", "QEMU user-mode", "x86_64",
          {"qemu-x86_64", "qemu-x86_64-static"}},
         {"wine", "Wine", "", {"wine", "wine64"}},
+        // Proton is in this table for completeness only: it is not a
+        // distribution package and is never on $PATH. It is found by
+        // provider_search_paths() below, which is the whole reason that
+        // function exists.
         {"proton", "Proton", "", {"proton"}},
     };
     return kSpecs;
 }
+
+/// Directories that hold Proton builds, in the order they are searched.
+///
+/// These are the real locations, ordered the way a user would expect them to
+/// win: third-party builds (GE-Proton and friends live in
+/// compatibilitytools.d), then Valve's own under steamapps/common, then a
+/// system-wide install. Within one directory the entries are sorted by name so
+/// the choice is reproducible across runs instead of depending on readdir order.
+///
+/// Deliberately NOT version-aware. Ordering "GE-Proton11-7" against
+/// "GE-Proton9-1" correctly needs a version parser for a vocabulary nobody
+/// controls, and a wrong guess silently runs a different Proton than the user
+/// thinks. A documented stable first-match plus LEXE_PROTON for anything else
+/// is a rule that fits in someone head; `lexe runtime` prints which build was
+/// chosen and what else was seen.
+std::vector<std::string> proton_roots() {
+    std::vector<std::string> roots;
+    const std::string home = util::get_env("HOME").value_or("");
+    if (home.empty()) return roots;
+    for (const char* relative : {
+             "/.steam/root/compatibilitytools.d",
+             "/.steam/steam/compatibilitytools.d",
+             "/.local/share/Steam/compatibilitytools.d",
+             "/.var/app/com.valvesoftware.Steam/data/Steam/compatibilitytools.d",
+             "/.steam/root/steamapps/common",
+             "/.steam/steam/steamapps/common",
+             "/.local/share/Steam/steamapps/common",
+         }) {
+        roots.push_back(home + relative);
+    }
+    roots.push_back("/usr/share/steam/compatibilitytools.d");
+    return roots;
+}
+
+} // namespace
+
+std::vector<std::string> provider_search_roots(const std::string& id) {
+    if (id == "proton") return proton_roots();
+    return {};
+}
+
+std::vector<std::string> provider_search_paths(const std::string& id) {
+    std::vector<std::string> paths;
+    if (id == "proton") {
+        // An explicit override always wins, and is how an unusual layout — or a
+        // test — names one specific build.
+        const std::string override_path =
+            util::get_env("LEXE_PROTON").value_or("");
+        if (!override_path.empty()) paths.push_back(override_path);
+        for (const std::string& root : proton_roots()) {
+            std::error_code ec;
+            if (!fs::is_directory(root, ec)) continue;
+            std::vector<std::string> names;
+            for (fs::directory_iterator it(root, ec), end; it != end;
+                 it.increment(ec)) {
+                if (ec) break;
+                if (!it->is_directory()) continue;
+                names.push_back(it->path().filename().string());
+            }
+            std::sort(names.begin(), names.end());
+            for (const std::string& name : names) {
+                paths.push_back(root + "/" + name + "/proton");
+            }
+        }
+        return paths;
+    }
+    // Everything else is a distribution package, so $PATH is the right answer
+    // and the candidate names are in the spec table.
+    for (const ProviderSpec& spec : provider_specs()) {
+        if (spec.id != id) continue;
+        for (const char* candidate : spec.candidates) {
+            const std::string resolved = util::find_on_path(candidate);
+            if (!resolved.empty()) paths.push_back(resolved);
+        }
+    }
+    return paths;
+}
+
+namespace {
 
 /// The chain that runs the application directly — the boring fast path (§16).
 ExecutionChain native_chain() {
@@ -66,6 +150,29 @@ ExecutionChain chain_from_provider(const Provider& provider) {
     }
     if (!provider.executable.empty()) {
         chain.argv_prefix = {provider.executable};
+        if (provider.id == "proton") {
+            // Proton entry point is a Python dispatcher, not a loader: bare
+            // `proton <exe>` is not a command it has, so a chain built that way
+            // could never have run anything. `runinprefix` is the verb that
+            // runs the program in the compat prefix, creating the prefix when it
+            // does not exist yet, and — unlike `run` — leaves the child stdout
+            // and stderr attached to us, which is what lets a failed launch
+            // produce a diagnostic carrying the program own output instead of
+            // an empty one.
+            chain.argv_prefix.push_back("runinprefix");
+            // Both of these are mandatory. Without STEAM_COMPAT_DATA_PATH
+            // Proton prints "No compat data path?" and exits 1; without
+            // STEAM_COMPAT_CLIENT_INSTALL_PATH it dies with a Python KeyError.
+            // The values are SANDBOX paths under the application own private
+            // data root — where Wine prefix already lands, because HOME is
+            // redirected there — so Proton state is the application state and
+            // not the user. Nothing of the host real Steam installation is
+            // bound, named, or readable from inside.
+            chain.env["STEAM_COMPAT_DATA_PATH"] = kSandboxProtonPrefix;
+            chain.env["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = kSandboxProtonSteam;
+            // Proton needs the compat path to already exist (see the constant).
+            chain.required_data_dirs.push_back(".proton");
+        }
     }
     return chain;
 }
@@ -151,12 +258,53 @@ ProviderSet probe_providers() {
             if (!resolved.empty()) {
                 provider.available = true;
                 provider.executable = resolved;
+                provider.origin = "on PATH";
                 provider.detail = std::string("found at ") + resolved;
                 break;
             }
         }
+        // Providers that are not distribution packages live at well-known paths
+        // instead. Proton is the case that matters: a PATH-only probe answered
+        // "not installed on this host" on a machine with Proton installed, so
+        // every Proton chain was reported unavailable and the entire path went
+        // unexercised while looking implemented.
         if (!provider.available) {
-            provider.detail = "not installed on this host";
+            for (const std::string& candidate : provider_search_paths(spec.id)) {
+                std::error_code ec;
+                if (!fs::is_regular_file(candidate, ec)) continue;
+                provider.available = true;
+                provider.executable = candidate;
+                provider.origin =
+                    util::get_env("LEXE_PROTON").value_or("") == candidate
+                        ? "LEXE_PROTON override"
+                        : "Steam compatibility tool";
+                provider.detail = "found at " + candidate;
+                break;
+            }
+        }
+        if (!provider.available) {
+            // Say that it LOOKED, and where to see where. "not installed on
+            // this host" on its own is what made a discovery bug read as
+            // policy: it is the same sentence whether the runtime searched the
+            // right places and found nothing, or searched the wrong place.
+            const std::size_t candidates =
+                provider_search_paths(spec.id).size();
+            const std::size_t roots = provider_search_roots(spec.id).size();
+            if (candidates > 0) {
+                provider.detail =
+                    "not installed on this host (considered " +
+                    std::to_string(candidates) + " candidate" +
+                    (candidates == 1 ? "" : "s") + "; `lexe runtime show " +
+                    spec.id + "` lists them)";
+            } else if (roots > 0) {
+                provider.detail =
+                    "not installed on this host (searched " +
+                    std::to_string(roots) +
+                    " locations, none of which exist; `lexe runtime show " +
+                    spec.id + "` lists them)";
+            } else {
+                provider.detail = "not installed on this host (not on $PATH)";
+            }
         }
         set.providers.push_back(std::move(provider));
     }

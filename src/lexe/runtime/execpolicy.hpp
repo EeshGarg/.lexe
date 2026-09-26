@@ -28,6 +28,7 @@
 #include "lexe/state/appconfig.hpp"
 #include "lexe/package/manifest.hpp"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -54,6 +55,11 @@ struct Provider {
     /// ISA the provider can EXECUTE (the guest ISA), e.g. "x86_64". Empty for
     /// foreign-OS providers, which are ISA-agnostic on their own.
     std::string guest_isa;
+    /// Where this provider was found, in words a user can act on: "on PATH",
+    /// "Steam compatibility tool", "LEXE_PROTON override". Recorded because
+    /// "Proton was found" is not a useful thing to be told when a machine has
+    /// four of them and the runtime picked one.
+    std::string origin;
 };
 
 /// Every provider this runtime knows how to look for, with its host state.
@@ -65,9 +71,31 @@ struct ProviderSet {
     std::vector<Provider> available() const;
 };
 
-/// Probe the host for compatibility providers. Cheap (PATH lookups + a
-/// well-known path check); never executes a provider.
+/// Probe the host for compatibility providers. Cheap (PATH lookups and
+/// directory listings); never executes a provider.
 ProviderSet probe_providers();
+
+/// Every absolute path `probe_providers()` will consider for `id`, in the order
+/// it considers them, whether or not anything is there.
+///
+/// Exposed because provider discovery is the part of the compatibility story
+/// that is easiest to get wrong and hardest to notice: Proton is never on
+/// $PATH, so a PATH-only probe reports "not installed on this host" on a
+/// machine with four Proton builds on it. `lexe runtime` prints this list so
+/// the answer to "why can't it find mine?" is inspectable instead of guessed
+/// at, and tests assert against it without needing a Proton installed.
+std::vector<std::string> provider_search_paths(const std::string& id);
+
+/// The DIRECTORIES `provider_search_paths(id)` looks inside, in order, whether
+/// or not they exist.
+///
+/// Separate from the candidates because the two answer different questions, and
+/// the difference matters exactly when something is missing: with no Steam
+/// installation at all there are no candidates, so a message built only from
+/// candidates can say nothing more useful than "not installed" — which is what
+/// sent a previous session looking for a policy bug instead of a discovery one.
+/// Empty for a provider found on $PATH, which is its own explanation.
+std::vector<std::string> provider_search_roots(const std::string& id);
 
 /// A concrete way to run the application. "native" has no layers at all —
 /// the architecture's boring fast path (§16).
@@ -83,7 +111,34 @@ struct ExecutionChain {
 
     /// The argv prefix this chain contributes, e.g. {"/usr/bin/box64"}. Empty
     /// for native. The application's own entrypoint and arguments follow.
+    ///
+    /// This is not always just the executable. Proton's entry point is a
+    /// dispatcher that requires a verb, so its prefix is
+    /// {"<path>/proton", "runinprefix"} — invoking it without one does nothing
+    /// at all, which is how a Proton chain can look correct and never have run.
     std::vector<std::string> argv_prefix;
+
+    /// Environment this chain REQUIRES, as name -> value. Merged into the
+    /// sandbox's allowlisted environment by the isolation layer.
+    ///
+    /// It exists for Proton, which refuses to start without
+    /// STEAM_COMPAT_DATA_PATH and STEAM_COMPAT_CLIENT_INSTALL_PATH and exits 1
+    /// with a Python KeyError if either is absent. Values are SANDBOX paths,
+    /// not host paths: the chain says what it needs, the sandbox decides where
+    /// that lives, and nothing of the host's real Steam installation is
+    /// exposed to the application.
+    std::map<std::string, std::string> env;
+
+    /// Directories this chain needs to exist before exec, relative to the
+    /// application private DATA root. Created by the launcher.
+    ///
+    /// Proton is why: it requires STEAM_COMPAT_DATA_PATH to name an existing
+    /// directory and does not create one, failing with
+    /// "chdir to <path>/pfx : No such file or directory" when it is missing.
+    /// Expressed as chain data rather than as a special case in the launcher, so
+    /// the launcher stays free of per-provider knowledge and a test can assert
+    /// what a chain asks for without running it.
+    std::vector<std::string> required_data_dirs;
 };
 
 /// Why a candidate chain was not selected — kept so the UI can show the user

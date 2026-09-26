@@ -110,6 +110,9 @@ constexpr const char* kOpenUsage =
 constexpr const char* kDoctorUsage = "usage: lexe doctor [--repair] [--json]";
 constexpr const char* kErrorsUsage =
     "usage: lexe errors <id> [--json] [--latest] [--clear] [--path]";
+constexpr const char* kRuntimeUsage =
+    "usage: lexe runtime [list | show <id>] [--json]";
+constexpr const char* kSandboxUsage = "usage: lexe sandbox [--json]";
 constexpr const char* kCompatUsage =
     "usage: lexe compat <id> [--set <chain> | --auto] [--json]";
 constexpr const char* kLaunchRefUsage =
@@ -1176,7 +1179,8 @@ const std::vector<std::string>& known_commands() {
         "inspect",  "update",  "rollback", "repair",  "remove",   "gc",
         "build",    "analyze", "sdk",     "pack",     "keygen",   "sign-update",
         "verify",   "trust",   "source",  "config",   "integrate", "doctor",
-        "errors",   "compat",  "launch-ref", "completion", "version", "help"};
+        "errors",   "compat",  "launch-ref", "completion", "version", "help",
+        "runtime",  "sandbox"};
     return k;
 }
 
@@ -2805,6 +2809,219 @@ int cmd_errors(const std::vector<std::string>& args) {
 // pick one. The preference is stored OUTSIDE the signed package, so changing
 // it never modifies or invalidates the application.
 
+/// `lexe runtime` - what this host can execute through, and where it lives.
+///
+/// This command exists because provider discovery was silently wrong and nothing
+/// surfaced it. Proton is never on $PATH, so a PATH-only probe answered "not
+/// installed on this host" on a machine with Proton installed: every Proton
+/// chain resolved as unavailable, and the failure read as policy rather than as
+/// a bug. Printing the search path turns "why can it not find mine?" into
+/// something a user can answer without reading the source.
+int cmd_runtime(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json"}, {}, false, kRuntimeUsage);
+    const bool json = parsed.flags.count("--json") != 0;
+
+    std::string mode = "list";
+    std::string which;
+    if (!parsed.positionals.empty()) {
+        mode = parsed.positionals[0];
+        if (mode == "show") {
+            if (parsed.positionals.size() < 2) {
+                throw UsageError(std::string("lexe runtime show needs a runtime "
+                                             "id\n\n") + kRuntimeUsage);
+            }
+            which = parsed.positionals[1];
+        } else if (mode != "list") {
+            throw UsageError("unknown subcommand \"" + mode +
+                             "\" - expected \"list\" or \"show\"\n\n" +
+                             kRuntimeUsage);
+        }
+    }
+
+    const ProviderSet providers = probe_providers();
+    const HostFacts host = detect_host();
+
+    if (mode == "show") {
+        const Provider* provider = providers.find(which);
+        if (provider == nullptr) {
+            std::string known;
+            for (const Provider& candidate : providers.providers) {
+                if (!known.empty()) known += ", ";
+                known += candidate.id;
+            }
+            throw NotFoundError("no such compatibility runtime \"" + which +
+                                "\". Known: " + known);
+        }
+        const std::vector<std::string> searched = provider_search_paths(which);
+        if (json) {
+            std::cout << ordered_json{{"id", provider->id},
+                                      {"name", provider->name},
+                                      {"available", provider->available},
+                                      {"executable", provider->executable},
+                                      {"origin", provider->origin},
+                                      {"guestIsa", provider->guest_isa},
+                                      {"detail", provider->detail},
+                                      {"searched", searched}}
+                             .dump(2)
+                      << "\n";
+            return provider->available ? 0 : 4;
+        }
+        std::cout << provider->name << " (" << provider->id << ")\n";
+        print_kv("  Status:", provider->available
+                                  ? std::string("available")
+                                  : std::string("not available"));
+        if (provider->available) {
+            print_kv("  Path:", provider->executable);
+            if (!provider->origin.empty()) {
+                print_kv("  Found via:", provider->origin);
+            }
+        }
+        if (!provider->guest_isa.empty()) {
+            print_kv("  Executes:", provider->guest_isa + " instructions");
+        }
+        print_kv("  Detail:", provider->detail);
+        if (!searched.empty()) {
+            std::cout << "\n  Candidates considered, in order:\n";
+            for (const std::string& candidate : searched) {
+                const bool chosen = candidate == provider->executable;
+                std::cout << "    " << (chosen ? "* " : "  ") << candidate
+                          << "\n";
+            }
+        }
+        // When there are no candidates the ROOTS are the useful answer: they say
+        // where it looked, which is what someone asking "why can it not find
+        // mine?" actually needs.
+        const std::vector<std::string> roots =
+            provider_search_roots(provider->id);
+        if (!roots.empty() && searched.empty()) {
+            std::cout << "\n  Searched these locations (none exist here):\n";
+            for (const std::string& dir : roots) {
+                std::cout << "      " << dir << "\n";
+            }
+        }
+        if (provider->id == "proton") {
+            std::cout << "\n  Set LEXE_PROTON to a proton script to choose a "
+                         "specific build.\n";
+        }
+        return provider->available ? 0 : 4;
+    }
+
+    if (json) {
+        ordered_json list = ordered_json::array();
+        for (const Provider& provider : providers.providers) {
+            list.push_back(ordered_json{{"id", provider.id},
+                                        {"name", provider.name},
+                                        {"available", provider.available},
+                                        {"executable", provider.executable},
+                                        {"origin", provider.origin},
+                                        {"guestIsa", provider.guest_isa},
+                                        {"detail", provider.detail}});
+        }
+        std::cout << ordered_json{{"hostOs", host.os},
+                                  {"hostIsa", host.isa},
+                                  {"knownChains", known_chain_ids()},
+                                  {"runtimes", list}}
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+
+    print_kv("This host:", host.os + " / " + host.isa);
+    std::cout << "\nCompatibility runtimes\n";
+    for (const Provider& provider : providers.providers) {
+        std::cout << "  " << (provider.available ? "yes" : " no") << "  "
+                  << provider.name;
+        if (!provider.guest_isa.empty()) {
+            std::cout << " (executes " << provider.guest_isa << ")";
+        }
+        std::cout << "\n      " << provider.detail << "\n";
+    }
+    std::cout << "\nNative execution needs none of these: this host runs its "
+                 "own "
+              << host.isa
+              << " Linux\nbinaries directly, with nothing in the execution "
+                 "path. Everything above\nis for payloads that are not "
+                 "that.\n";
+    std::cout << "\n`lexe runtime show <id>` lists every location searched for "
+                 "one runtime.\n";
+    return 0;
+}
+
+/// `lexe sandbox` - is confinement available on this host, and what does it
+/// actually cover?
+///
+/// Reported per control rather than as one word, because "sandboxed" is not a
+/// boolean: a host can have a working backend that cannot establish a network
+/// namespace, and an application launched there is confined in some ways and not
+/// others. Saying which is the difference between a security claim and a
+/// security fact.
+///
+/// The wording comes from presentation::present_isolation, which is the same
+/// source both graphical frontends render. A second description of what the
+/// sandbox does is a second thing that can be wrong.
+int cmd_sandbox(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--json"}, {}, false, kSandboxUsage);
+    require_positionals(parsed, 0, kSandboxUsage);
+    const Paths paths = Paths::detect();
+    const std::unique_ptr<IsolationBackend> backend =
+        make_isolation_backend(paths);
+    const IsolationCapabilities caps = backend->capabilities();
+    const presentation::IsolationView view = presentation::present_isolation(caps);
+    const bool available = caps.status == CapabilityStatus::Available;
+
+    if (parsed.flags.count("--json") != 0) {
+        ordered_json controls = ordered_json::array();
+        for (const auto& [label, state] : view.controls) {
+            controls.push_back(ordered_json{{"control", label}, {"state", state}});
+        }
+        std::cout << ordered_json{
+                         {"backend", backend->name()},
+                         {"status", to_string(caps.status)},
+                         {"available", available},
+                         {"headline", view.headline},
+                         {"detail", view.detail},
+                         {"platformCaveat", view.platform_caveat},
+                         {"probe",
+                          ordered_json{
+                              {"backendPresent", caps.backend_present},
+                              {"userNamespaces", caps.user_namespaces},
+                              {"networkNamespaces", caps.network_namespaces},
+                              {"bindMounts", caps.bind_mounts}}},
+                         {"controls", controls}}
+                         .dump(2)
+                  << "\n";
+        return available ? 0 : 1;
+    }
+
+    std::cout << view.headline << "\n";
+    print_kv("  Backend:", backend->name() + " (" + to_string(caps.status) + ")");
+    if (!view.detail.empty()) print_kv("  Detail:", view.detail);
+    if (!view.controls.empty()) {
+        std::cout << "\nControls\n";
+        for (const auto& [label, state] : view.controls) {
+            print_kv("  " + label + ":", state);
+        }
+    }
+    std::cout << "\nProbe\n";
+    const auto yes_no = [](bool ok) {
+        return std::string(ok ? "yes" : "no");
+    };
+    print_kv("  Backend executable:", yes_no(caps.backend_present));
+    print_kv("  User namespaces:", yes_no(caps.user_namespaces));
+    print_kv("  Network namespaces:", yes_no(caps.network_namespaces));
+    print_kv("  Bind mounts:", yes_no(caps.bind_mounts));
+    if (!view.platform_caveat.empty()) {
+        std::cout << "\n" << view.platform_caveat << "\n";
+    }
+    if (!available) {
+        std::cout << "\nA launch that needs confinement this host cannot "
+                     "establish FAILS rather\nthan running unconfined.\n";
+    }
+    return available ? 0 : 1;
+}
+
 int cmd_compat(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(args, {"--json", "--auto"},
                                           {"--set"}, false, kCompatUsage);
@@ -3031,6 +3248,10 @@ std::string usage_text() {
            "  source set <id> <url>                    set the update source\n"
            "\n"
            "System\n"
+           "  runtime [list | show <id>] [--json]      the compatibility "
+           "runtimes this host has, and where\n"
+           "  sandbox [--json]                         the isolation backend "
+           "and every control it enforces\n"
            "  config [get|set|reset] ...               view or change runtime "
            "settings\n"
            "  doctor [--repair] [--json]               check (and repair) "
@@ -3039,7 +3260,6 @@ std::string usage_text() {
            "for the runtime\n"
            "  launch-ref <id> [-o <run.lexe>]          write a .LEXE launch "
            "reference for an installed app\n"
-           "  completion [bash]                        print a shell-completion "
            "  completion [bash | zsh]                  print a shell-completion "
            "script\n"
            "  version [--json]                         show runtime, format and "
@@ -3065,6 +3285,10 @@ std::string usage_text() {
 struct CommandHelp {
     const char* summary;
     const char* usage;
+    /// Worked invocations, newline-separated, each already indented. Optional: a
+    /// command whose usage line says everything needs none, and an invented
+    /// example is worse than no example.
+    const char* examples = nullptr;
 };
 
 const std::map<std::string, CommandHelp>& command_help() {
@@ -3128,6 +3352,49 @@ const std::map<std::string, CommandHelp>& command_help() {
         {"integrate",
          {"Register .lexe file handling and desktop entries for this user.",
           kIntegrateUsage}},
+        {"open",
+         {"Open any .lexe artifact: install a package, or launch a run.lexe.",
+          kOpenUsage,
+          "  lexe open ./app.lexe     install a package (it asks first)\n"
+          "  lexe open ~/App.lexe     launch what a launch reference names"}},
+        {"compat",
+         {"Show or change how an installed application is executed.",
+          kCompatUsage,
+          "  lexe compat com.example.app              what runs it, and what\n"
+          "                                           else could\n"
+          "  lexe compat com.example.app --set wine   pin a chain the package\n"
+          "                                           permits\n"
+          "  lexe compat com.example.app --auto       back to automatic"}},
+        {"doctor",
+         {"Check - and with --repair, re-establish - this runtime desktop "
+          "integration.",
+          kDoctorUsage,
+          "  lexe doctor              name every registration that is missing\n"
+          "  lexe doctor --repair     put them back from installed state"}},
+        {"errors",
+         {"Show the structured diagnostic records a failed launch left behind.",
+          kErrorsUsage,
+          "  lexe errors                             every app with a record\n"
+          "  lexe errors com.example.app --latest    the most recent failure\n"
+          "  lexe errors com.example.app --path      where the record lives"}},
+        {"launch-ref",
+         {"Write a signed .LEXE launch reference for an installed application.",
+          kLaunchRefUsage,
+          "  lexe launch-ref com.example.app                        default\n"
+          "  lexe launch-ref com.example.app -o ~/Desktop/App.lexe"}},
+        {"runtime",
+         {"Show the compatibility runtimes this host has, and where they were "
+          "found.",
+          kRuntimeUsage,
+          "  lexe runtime                 what this host can run, at a glance\n"
+          "  lexe runtime show proton     every location searched, which won\n"
+          "  lexe runtime list --json     the same, for a script"}},
+        {"sandbox",
+         {"Show the isolation backend and the state of every control it "
+          "enforces.",
+          kSandboxUsage,
+          "  lexe sandbox             is confinement available, what it covers\n"
+          "  lexe sandbox --json      the same, for a script"}},
         {"completion", {"Print a shell-completion script for bash or zsh.",
                         kCompletionUsage}},
         {"version",
@@ -3151,6 +3418,9 @@ int print_command_help(const std::string& command) {
         throw UsageError(msg + "\n\n" + usage_text());
     }
     std::cout << it->second.summary << "\n\n" << it->second.usage << "\n";
+    if (it->second.examples != nullptr) {
+        std::cout << "\nexamples:\n" << it->second.examples << "\n";
+    }
     return 0;
 }
 
@@ -3217,6 +3487,8 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "doctor") return cmd_doctor(rest);
     if (command == "errors") return cmd_errors(rest);
     if (command == "compat") return cmd_compat(rest);
+    if (command == "runtime") return cmd_runtime(rest);
+    if (command == "sandbox") return cmd_sandbox(rest);
     if (command == "launch-ref") return cmd_launch_ref(rest);
     if (command == "config") return cmd_config(rest);
     if (command == "completion") return cmd_completion(rest);
