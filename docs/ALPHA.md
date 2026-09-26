@@ -99,15 +99,24 @@ Stated plainly so the documentation never overreaches:
   this runtime has happened on x86-64. Cross-ISA execution is
   designed-but-unproven, and so is the claim that one portable `.lexe` compiles
   on a second architecture. RISC-V has no architecture id in 0.1 at all.
-- **No proven Proton chain, and no proven graphical foreign-OS application.**
-  Wine runs a Windows console program end to end; Proton is selected and
-  prefixed by the same code and has never been exercised, and neither has a
-  layered chain such as `proton+fex`.
+- **No proven layered compatibility chain.** A chain such as `proton+fex` is
+  vocabulary the resolver understands and nothing has ever executed. Proton
+  itself and graphical foreign-OS applications ARE now demonstrated
+  (`tests/acceptance/07_proton.sh`, `09_windows_gui.sh`) — a Windows GUI program
+  maps a real window on Linux through Wine and again through Proton, witnessed by
+  `xwininfo` rather than by the runtime's own report. A layered chain needs a
+  host where the ISA translation is real.
 - **No 32-bit foreign payloads.** FORMAT-0.1 §5 names `x86_64` and `aarch64`
   only, so a 32-bit Windows program — still common — cannot be declared. It is
   refused by name rather than mis-reported.
-- **No supervision of a `service`.** It detaches; nothing restarts it, starts
-  it at login, or reports its status.
+- **No session-manager integration for a `service`.** It detaches by
+  declaration, the sandbox supervisor outlives the launcher, it holds a version
+  lease so uninstalling a running service is refused rather than silently
+  killing it, and SIGTERM produces a clean stop distinguishable from a kill
+  (`tests/lifecycle/03_service.sh`). What does not exist is any registration
+  with a session manager: nothing starts it at login or reports its status, and
+  `grep -rl systemd src/lexe/` returns nothing. A missing feature, not a missing
+  machine — `docs/ROADMAP.md` §4.
 - **No** language-runtime dependency harvesting (Python/Java/Node/…).
 - **No** externally verified publisher identity; a valid signature proves
   key-continuity, not a real-world identity.
@@ -203,18 +212,32 @@ push (`.github/workflows/ci.yml`).
 | Payload role: the bytes ARE what the manifest declares | `tests/test_payload_role.cpp`, `tests/test_pe.cpp` |
 | Portable code: approval, isolated build, verified output | `tests/test_hostbuild.cpp`, `tests/acceptance/05_portable_compile.sh` |
 | Foreign-OS payloads: declared, verified, run under Wine | `tests/test_pe.cpp`, `tests/acceptance/06_foreign_os.sh` |
+| Foreign-OS payloads run under **Proton**, found where Proton lives | `tests/test_proton.cpp`, `tests/acceptance/07_proton.sh` |
+| A **native GUI window maps** under the sandbox | `tests/acceptance/08_native_gui.sh` |
+| A **Windows GUI window maps** on Linux, via Wine and via Proton | `tests/acceptance/09_windows_gui.sh` |
 | Execution policy, chains, and a detached `service` | `tests/test_execution_architecture.cpp`, `tests/test_isolation_linux.cpp` |
+| Service lifecycle: detach, supervision, lease, clean stop, restart | `tests/lifecycle/03_service.sh` |
+| The transactional invariant, under interrupted operations | `tests/lifecycle/02_interrupted.sh` |
+| Hostile packages fail safely, explain themselves, and leave no residue | `tests/security/run_all.sh`, `tests/test_security_boundary.cpp` |
+| The engine's own layering, and one-way frontend dependency | `tests/test_architecture.cpp` |
+| Every example a test depends on is IN the repository | `tests/acceptance/00_repository.sh` |
 | Durable desktop integration across a reboot | `tests/acceptance/02_persistence.sh`, plus the manual `tests/acceptance/REBOOT.md` |
 | No compatibility process in the native steady state | `tests/acceptance/04_native_steady_state.sh` |
 | The GUIs render warning-clean, headlessly | `scripts/gui-smoke.sh` |
 | Warning-clean, markup-safe GUIs | `scripts/gui-smoke.sh` (CI `linux` job) |
 | Cross-distribution portability proof | `scripts/portability-demo.sh` (CI `portability` job) |
 
-**Regression totals (this line):** Linux (GCC) 495 test cases / 6681 assertions;
-Windows (MSVC) 475 test cases / 6540 assertions — both green. Linux runs more
-cases because the POSIX-only behaviour is compiled in only there: the
+**Regression totals (this line):** Linux (GCC) **680 test cases / 8873
+assertions**, green, and green again under ASan + UBSan. Linux runs more cases
+than Windows because the POSIX-only behaviour is compiled in only there: the
 bubblewrap isolation and cross-process race suites, plus the individual cases
 guarded for fork/exec, symlinks, file locking and FIFOs.
+
+Beyond the unit binary, on this machine: **10 acceptance suites**, 3 lifecycle
+scripts (including the interrupted-operation torture set), the security lane, and
+2 integration scripts — all green. `./scripts/test.sh --all` runs every one of
+them and distinguishes PASS from SKIP from BLOCKED, so a capability this machine
+cannot demonstrate is reported as a gap rather than counted as a success.
 
 See [../CHANGELOG.md](../CHANGELOG.md) for the release history and
 [../README.md#project-status](../README.md#project-status) for the current stage.

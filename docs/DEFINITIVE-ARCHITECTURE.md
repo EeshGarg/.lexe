@@ -783,17 +783,44 @@ than useless.
   implemented and tested (§5A below), but every build so far has happened on
   x86_64. "The same `.lexe` compiles on ARM64 too" is the architecture's claim
   and it remains unproven on hardware, exactly like the cross-ISA claims below.
+  This is the largest open item in the whole document; the test that would settle
+  it is written out in `docs/TESTING.md` §7, and emulation is explicitly not
+  accepted as a substitute.
+* **There is no session-manager integration.** `launch.mode: "service"` detaches,
+  is supervised, holds a version lease and stops cleanly and distinguishably from
+  being killed (`tests/lifecycle/03_service.sh`). It is not a systemd unit and
+  nothing registers it with a session manager: `grep -rl systemd src/lexe/`
+  returns nothing. This was previously recorded as an environment limitation —
+  "WSL has no systemd user session" — and that was wrong twice over, since WSL2
+  with systemd enabled has a running one. It is a missing feature, and
+  `docs/ROADMAP.md` §4 argues it is a design question before it is a task.
 * **Only `make`, `cmake` and an explicit `command` are understood** as build
   systems. Anything else must be expressed as a `command`.
 * **A portable package is compiled at install and never again** unless it is
   repaired or reinstalled. A host whose toolchain or libraries move underneath
   it keeps running the binary that was built at install time; the runtime
   notices a *changed* entrypoint, not a stale one.
-* **Proton has never been exercised.** The Wine chain runs a real Windows
-  program end to end (`tests/acceptance/06_foreign_os.sh`), but Proton has not
-  been installed on any machine this was developed on, and neither has a
-  layered `proton+fex` combination. Proton is selected, prefixed and reported
-  by the same code the Wine chain uses; that is an argument, not evidence.
+* ~~**Proton has never been exercised.**~~ It has now
+  (`tests/acceptance/07_proton.sh`, 27 checks: a real Windows PE executing
+  through a real GE-Proton installation, with the execution report naming
+  `proton`), and a Windows GUI program maps a real window through it
+  (`tests/acceptance/09_windows_gui.sh`). What that exercise found is worth
+  keeping, because the previous sentence — "Proton is selected, prefixed and
+  reported by the same code the Wine chain uses; that is an argument, not
+  evidence" — turned out to be exactly right, in the worst way. Three faults,
+  none visible to a test that built a chain from a synthesized provider set:
+
+  1. discovery was a `$PATH` lookup for a binary named `proton`, and Proton is
+     never on `$PATH`. On a machine with Proton installed the probe answered
+     "not installed on this host", so every Proton chain resolved as
+     unavailable and the failure read as policy rather than as a bug;
+  2. the chain invoked `proton <exe>`, and Proton's entry point is a dispatcher
+     that requires a VERB — without one it runs nothing at all;
+  3. nothing set `STEAM_COMPAT_DATA_PATH` or
+     `STEAM_COMPAT_CLIENT_INSTALL_PATH`, and Proton exits 1 without either.
+
+  A layered `proton+fex` combination remains unexercised, and needs a host where
+  the ISA translation is real.
 * **Only 64-bit foreign payloads can be declared.** FORMAT-0.1 §5 recognises
   `x86_64` and `aarch64`, so a 32-bit Windows program — still common — has no
   architecture id to declare. It is refused by name rather than mis-reported,
