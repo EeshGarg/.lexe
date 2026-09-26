@@ -19,7 +19,7 @@ Architecture's portable-code path:
         Native Linux
 ```
 
-It is the counterpart to [`../gui-hello/`](../gui-hello/), which ships a
+It is the counterpart to [`../../native/gui-hello/`](../../native/gui-hello/), which ships a
 compiled ELF and demonstrates the native path.
 
 ## What is in the package, and what is not

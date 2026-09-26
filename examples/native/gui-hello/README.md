@@ -2,10 +2,10 @@
 
 A **real GTK 3 desktop application that runs under the .LEXE sandbox**. This is
 the acceptance payload for the Definitive Architecture's GUI launch path: it is
-the example used by [`tests/acceptance/`](../../tests/acceptance/) to prove the
+the example used by [`tests/acceptance/`](../../../tests/acceptance/) to prove the
 install-and-launch criteria end to end.
 
-It is deliberately different from [`../gtk-app/`](../gtk-app/), which exists to
+It is deliberately different from [`../gtk-portability/`](../gtk-portability/), which exists to
 *show the Tux32 Core 1 boundary* and is not meant to run sandboxed. `gui-hello`
 is meant to run.
 
@@ -104,7 +104,7 @@ done
 Like any GTK application built against a current host toolchain, `gui-hello`
 imports newer glibc symbols, so `lexe sdk verify` reports it non-conformant on
 the symbol axis; build it in the Core 1 sysroot
-([../../sdk/tux32-core-1/](../../sdk/tux32-core-1/)) for a Core Portable result.
+([../../../sdk/tux32-core-1/](../../../sdk/tux32-core-1/)) for a Core Portable result.
 GTK also `dlopen`s its graphics stack, so those dependencies do not appear in
 static ELF metadata — a documented Core 1 limitation. Neither affects the
 sandboxed launch path this example exists to prove.

@@ -13,5 +13,5 @@ lexe run org.lexe.examples.cli-tool -- 2 9 16
 #   sqrt(16) = 4.000000
 ```
 
-Build it in the Core 1 sysroot (see [../README.md](../README.md)) for a
+Build it in the Core 1 sysroot (see [../../README.md](../../README.md)) for a
 conformant, Core Portable package.

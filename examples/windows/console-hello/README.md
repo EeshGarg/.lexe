@@ -10,7 +10,7 @@ It is the third of the three payload kinds:
 | Example | Payload | Runs by |
 |---|---|---|
 | [`../gui-hello/`](../gui-hello/) | a compiled Linux ELF | running directly — no layer at all |
-| [`../portable-hello/`](../portable-hello/) | source code | being compiled on the machine that installs it |
+| [`../../portable/c-hello/`](../../portable/c-hello/) | source code | being compiled on the machine that installs it |
 | **windows-hello** | a Windows PE | Wine or Proton |
 
 ## What the manifest says, and what it costs

@@ -22,7 +22,7 @@ lexe sdk verify .             # NON-conformant (exit 3) — see below
 - **Built on a current host, it trips the symbol ceiling.** Like any binary built
   on a newer glibc, `gtk-example` imports `GLIBC_2.34`, so `lexe sdk verify`
   returns `symbol-ceiling-exceeded` — build it in a Core 1 sysroot to clear that
-  axis (see [../../sdk/tux32-core-1/](../../sdk/tux32-core-1/)).
+  axis (see [../../../sdk/tux32-core-1/](../../../sdk/tux32-core-1/)).
 - **GTK loads its graphics stack with `dlopen`.** Interfaces like `libGL` are not
   in the executable's static ELF metadata, so they do not appear as dependencies
   — a documented Core 1 limitation: `dlopen`-ed dependencies must be reasoned
