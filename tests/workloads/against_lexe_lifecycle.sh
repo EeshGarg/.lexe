@@ -289,6 +289,80 @@ PYEOF
              wl.depdangling /nonexistent-rb/lib accept
     dep_case "an rpath that EXISTS on this host does not block one /usr can satisfy" \
              wl.depshadow "$DEP/elsewhere/lib" accept
+
+    # --------------------------------------------------- analyze vs the launch #
+    #
+    # "What should I bundle?" and "will this start?" are two different questions.
+    # The engine has historically answered both with one function, and the answers
+    # disagree about the same bytes: the launch contract asks whether the LOADER
+    # can reach the library, while `analyze` treats the payload directory as
+    # implicitly searchable -- true for bundling advice, false for the runtime.
+    #
+    # So `analyze` reports `0 unresolved` for a package the runtime then refuses
+    # to launch. That is the reassuring direction, and `analyze` is the check a
+    # publisher runs BEFORE shipping, which is what makes it worth a test rather
+    # than a note. Both shapes below are NATIVE, not portable: the first instance
+    # was found in a portable package and it would have been easy to conclude the
+    # portable build path was the problem.
+    #
+    # The assertion is agreement, not a particular verdict: whatever `analyze`
+    # says about a package, the runtime must not then contradict it.
+    dep_agree() {   # label, appid, rpath-or-empty, ship-libs(yes/no)
+        local label="$1" id="$2" rpath="$3" p="$W/pa-$2"
+        rm -rf "$p"; mkdir -p "$p/bin" "$p/lib"
+        printf 'int mine_value(void){return 7;}\n' > "$DEP/src/mine.c"
+        printf '#include <stdio.h>\nint mine_value(void);\nint main(void){printf("VALUE=%%d\\nRESULT=PASS\\n",mine_value());return 0;}\n' \
+            > "$DEP/src/usemine.c"
+        gcc -O2 -fPIC -shared -o "$p/lib/libmine.so" "$DEP/src/mine.c" 2>/dev/null || {
+            fail "$label: could not build the probe library"; return; }
+        if [[ -n "$rpath" ]]; then
+            gcc -O2 -o "$p/bin/prog" "$DEP/src/usemine.c" -L"$p/lib" -lmine \
+                -Wl,-rpath,"$rpath" 2>/dev/null
+        else
+            gcc -O2 -o "$p/bin/prog" "$DEP/src/usemine.c" -L"$p/lib" -lmine 2>/dev/null
+        fi
+        python3 - "$W/dep.json" "$PUB" "$id" <<'PYEOF'
+import json, sys
+json.dump({"lexeVersion": "0.1", "id": sys.argv[3], "name": "dep agreement",
+           "version": "1.0.0",
+           "publisher": {"name": "workload-corpus", "publicKey": sys.argv[2]},
+           "applicationType": "native", "architectures": ["x86_64"],
+           "entrypoint": {"executable": "bin/prog", "arguments": []},
+           "launch": {"mode": "console"},
+           "install": {"scope": "user", "mode": "bundled"},
+           "permissions": []}, open(sys.argv[1], "w"), indent=2)
+PYEOF
+        local unresolved
+        unresolved="$("$LEXE_BIN" analyze "$p" --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["dependencySummary"]["unresolved"])
+except Exception:
+    print("?")
+')"
+        "$LEXE_BIN" pack "$p" --manifest "$W/dep.json" --key "$W/key.json" \
+            -o "$W/$id.lexe" >/dev/null 2>&1
+        "$LEXE_BIN" install "$W/$id.lexe" --yes --trust >/dev/null 2>&1
+        local out rc
+        out="$("$LEXE_BIN" run "$id" 2>/dev/null)"; rc=$?
+        local launches=no
+        [[ "$rc" -eq 0 && "$out" == *"RESULT=PASS"* ]] && launches=yes
+        if [[ "$launches" == "no" && "$unresolved" == "0" ]]; then
+            fail "$label" \
+                 "analyze reports 0 unresolved dependencies, and then the runtime" \
+                 "refuses to launch the same package — the pre-ship check says fine" \
+                 "about a package that cannot start"
+        else
+            pass "$label (analyze unresolved=$unresolved, launches=$launches)"
+        fi
+        "$LEXE_BIN" remove "$id" --purge-data --yes >/dev/null 2>&1
+    }
+    dep_agree "analyze agrees with the launch: bundled lib, no rpath to reach it" \
+              wl.depagree1 "" yes
+    dep_agree "analyze agrees with the launch: bundled lib, rpath to a dead dir" \
+              wl.depagree2 "$W/gone-rb/lib" yes
+    dep_agree "analyze agrees with the launch: bundled lib, \$ORIGIN rpath" \
+              wl.depagree3 '$ORIGIN/../lib' yes
 else
     blocked "no gcc or no system libz: the dependency-contract probe needs both" \
             "it builds a one-file program against a system library on purpose"

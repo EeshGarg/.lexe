@@ -678,6 +678,35 @@ class Runner:
         return self.lexe(["pack", payload, "--manifest", mpath,
                           "--key", self.key, "-o", out])
 
+    def chain_setup_allowance(self, appid):
+        """Seconds to allow for the EXECUTION CHAIN to set itself up, on top of
+        the specimen's own timeout.
+
+        `spec.timeout_s` describes how long the PROGRAM runs. It says nothing
+        about how long the chain takes to become usable, and for a foreign-OS
+        chain that is the dominant cost: the runtime builds a private Wine or
+        Proton prefix per APPLICATION, in the application's data root. Measured
+        on this host: a cold prefix costs 145-170 s and the resulting prefix is
+        1.3 GB (wine) or 645 MB (proton); the same application launches again in
+        15-21 s. Two different applications in one LEXE_HOME are BOTH cold, so the
+        cost is per-application and not amortised.
+
+        The old allowance was a flat +30 s, which sat just under the cold cost.
+        It passed only while the cost happened to be cheap, and when the host got
+        busy it turned 33 correct-but-slow launches into "timeouts" -- and cost a
+        long detour chasing a regression that did not exist. A timeout margin
+        that close to a known cost is not a margin.
+
+        A warm application needs none of this, so the allowance is charged only
+        when the prefix is not already there.
+        """
+        if self.a.corpus != "pe" and not self.a.chain:
+            return 30.0
+        datadir = os.path.join(self.home, "data", appid)
+        warm = any(os.path.isdir(os.path.join(datadir, d))
+                   for d in (".wine", ".proton"))
+        return 30.0 if warm else float(self.a.chain_setup_s)
+
     def launch(self, spec, appid):
         argv = ["run", appid]
         if self.a.chain:
@@ -685,7 +714,11 @@ class Runner:
         stdin = STDIN_4K if spec["stdin"]["bytes"] == 4096 else b""
         if spec["stdin"]["bytes"] not in (0, 4096):
             raise Blocked("unexpected stdin size; the harness only knows STDIN_4K")
-        timeout = float(spec.get("timeout_s", 60) or 60) + 30.0
+        datadir = os.path.join(self.home, "data", appid)
+        prefix_warm = any(os.path.isdir(os.path.join(datadir, d))
+                          for d in (".wine", ".proton"))
+        allowance = self.chain_setup_allowance(appid)
+        timeout = float(spec.get("timeout_s", 60) or 60) + allowance
         errdir = os.path.join(self.home, "state", "errors", appid)
         before = set(os.listdir(errdir)) if os.path.isdir(errdir) else set()
         t0 = time.time()
@@ -709,6 +742,12 @@ class Runner:
         return {
             "exit": code, "timed_out": timed_out, "duration_ms": dur,
             "stdout": out, "stderr": err, "captured": captured,
+            # Recorded so a slow FIRST launch can never again be mistaken for a
+            # hang. A timeout with prefix_warm false and a duration near the
+            # allowance is chain setup being slow; a timeout with prefix_warm
+            # true is the program.
+            "prefix_warm": prefix_warm, "timeout_s": timeout,
+            "chain_setup_allowance_s": allowance,
         }
 
     def collect_oracle_files(self, datadir):
@@ -813,8 +852,17 @@ class Runner:
         else:
             bexit, bsig = base_launch["exit_code"], None
         if launch["timed_out"]:
-            divs.append(Div("exit", "<exit>", f"exit={bexit} signal={bsig}",
-                            "TIMED OUT"))
+            # Say WHICH kind of timeout. A cold-prefix timeout is the chain
+            # setting itself up too slowly for the allowance; a warm one is the
+            # program. Conflating them cost a long detour chasing a regression
+            # that did not exist, so the two are never reported the same way
+            # again.
+            if launch.get("prefix_warm") is False and self.a.corpus == "pe":
+                what = (f"TIMED OUT after {launch['timeout_s']:.0f}s with a COLD "
+                        f"per-application prefix -- chain setup, not the program")
+            else:
+                what = f"TIMED OUT after {launch['timeout_s']:.0f}s"
+            divs.append(Div("exit", "<exit>", f"exit={bexit} signal={bsig}", what))
         else:
             got = launch["exit"]
             if bsig is not None:
@@ -1192,6 +1240,11 @@ def main():
     ap.add_argument("--grant-network", action="store_true")
     ap.add_argument("--launch-mode", choices=("console", "gui", "service"),
                     help="override launch.mode for every specimen in this pass")
+    ap.add_argument("--chain-setup-s", type=float, default=420.0,
+                    help="seconds allowed for a foreign-OS chain to build its "
+                         "per-application prefix, on top of the specimen's own "
+                         "timeout, and only when that prefix is not already "
+                         "there (measured cold cost on this host: 145-170s)")
     ap.add_argument("--extra-settle", type=float, default=0.0,
                     help="extra seconds to wait after the last launch before "
                          "looking at what it left behind (use with a detached "
