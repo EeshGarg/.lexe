@@ -713,6 +713,39 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
         fs::create_directories(data_root / candidate, mkec);
     }
 
+    // Say something before a FIRST foreign-OS launch, because it is slow and
+    // silent, and those two together read as broken.
+    //
+    // Measured: a first Windows launch costs 150–170 seconds while the
+    // per-application compatibility prefix is built, against 22 seconds once it
+    // exists — and during those three minutes the runtime produces nothing at
+    // all. No output, no progress, no diagnostic record; the data root quietly
+    // grows. The only conclusion available to somebody who double-clicked an
+    // application is that it has hung, and the natural response is to kill it,
+    // which leaves a half-built prefix and makes the next attempt worse.
+    //
+    // "Cold" is asked of the RECORD, not of the filesystem. The obvious test —
+    // did we just create the chain's required data directory — is Proton-only:
+    // the wine chain declares no required directories because wine builds its
+    // own prefix under the sandbox HOME, so that test would have stayed silent
+    // for the chain that costs 149 seconds cold. Whether this application has
+    // ever completed a launch on THIS chain is the condition that actually
+    // matters, and it is the same question for every chain.
+    //
+    // stderr, not stdout: stdout belongs to the application; this is the runtime
+    // talking. One line, and only on a first launch, so warm launches and
+    // scripted reruns stay silent.
+    const bool first_launch_on_this_chain =
+        record.last_run_at.empty() || record.last_chain != resolution.chain.id;
+    if (first_launch_on_this_chain && resolution.chain.id != "native") {
+        std::fprintf(stderr,
+                     "lexe: preparing the %s compatibility environment for %s. "
+                     "The first launch of a Windows application takes a few "
+                     "minutes; later launches do not.\n",
+                     resolution.chain.id.c_str(), id.c_str());
+        std::fflush(stderr);
+    }
+
     const std::unique_ptr<IsolationBackend> backend =
         make_isolation_backend(paths);
     const IsolationCapabilities caps = backend->capabilities();

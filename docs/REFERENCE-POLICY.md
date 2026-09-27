@@ -250,6 +250,46 @@ flakiest test there is — one had already cost this suite three false failures 
 so the assertion is on a property of the code, which is stable under load and is
 what actually regressed.
 
+## 2.1.2 A first Windows launch costs minutes, and says so
+
+The table above measures NATIVE launches. A foreign-OS chain has a one-off cost
+that dwarfs all of it, paid the first time a given application runs on a given
+chain, while its private compatibility prefix is built:
+
+| | |
+|---|---|
+| first launch, `wine` chain | **152 s** |
+| later launches, `wine` chain | **18 s** |
+| first launch, `proton` chain | **150–170 s** |
+| later launches, `proton` chain | **22 s** |
+
+The cost itself is Wine's and Proton's, not this runtime's, and it is not
+avoidable. What was this runtime's fault is that it said **nothing** for those
+three minutes: no output, no progress, no diagnostic record, just a data root
+quietly growing. Someone who double-clicks a Windows application and watches
+nothing happen for two and a half minutes has exactly one conclusion available to
+them, and the natural response — kill it — leaves a half-built prefix that makes
+the next attempt worse.
+
+So a first launch on a compatibility chain now prints one line to stderr saying a
+compatibility environment is being prepared and that later launches are fast.
+stderr, because stdout belongs to the application; once, because it is keyed on
+whether this application has ever completed a launch on this chain.
+
+That last detail is worth recording, because the obvious implementation is wrong.
+Testing "did we just create the chain's required data directory" covers Proton,
+which declares one, and silently misses **wine**, which declares none and builds
+its prefix itself under the sandbox `HOME` — so the cheap test would have stayed
+quiet for a 152-second launch. Asking the installation record whether this
+application has run on this chain before is the same question for every chain.
+
+This also cost an independent test pass most of an afternoon and three wrong
+attributions — a harness timeout of `specimen timeout + 30 s` is shorter than a
+cold prefix, so 33 slow-but-correct launches were recorded as hangs, then blamed
+on host debris, then on a runtime regression. Nothing was wrong except the
+margin. A cost that large and that silent invites exactly that mistake, which is
+the strongest argument for announcing it.
+
 ## 2.1.1 Why a captured console launch used to cost 1.3 seconds
 
 Recorded because the cause was not where anyone looked for it, including the
