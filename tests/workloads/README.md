@@ -231,3 +231,12 @@ elsewhere, and `linux-link-three-libs-ldpath` genuinely refuses to start when
    **before** you run it — that is the entire value of the exercise.
 3. Regenerate. If the verdict is `baseline-mismatch`, the fixture or the
    declaration is wrong. Fix it, and record what you got wrong.
+
+---
+
+## The Windows PE corpus
+
+The companion Windows corpus — PE specimens, a per-translation-layer baseline
+(native / Wine / Proton), the process-tree family, and the repeat-stability runs —
+lives in [README-PE.md](README-PE.md), with sources in `specs_pe/` and its own
+generator, `generate_pe.py`.

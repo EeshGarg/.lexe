@@ -249,7 +249,34 @@ happened, and no package can observe them.
 
 * **Sandboxing** is bubblewrap on Linux. The format requires isolation between
   applications (§9.6); it does not name a mechanism.
-* **Compatibility chains** (Wine, Proton, FEX, Box64) are how this runtime
+* **Proton is invoked as `proton runinprefix`, never `proton run`**, and there is
+  now measured evidence for that beyond the reason originally recorded.
+
+  The original reason was diagnostics: `run` does not leave the child's stdout and
+  stderr attached, so a failed launch produced an empty diagnostic instead of one
+  carrying the program's own output. An independent workload pass measured exactly
+  that from the outside — `proton run` delivers none of the guest's output, while
+  exit codes and file effects do propagate — and then found four more properties of
+  `run` that this runtime would have inherited:
+
+  | `proton run` behaviour | consequence had `.LEXE` used it |
+  |---|---|
+  | never returns unless `DISPLAY` names a **working** X server, even for a console program | every headless launch would hang |
+  | a guest that reads stdin blocks forever, even with stdin at `/dev/null` | any interactive program would hang |
+  | two concurrent invocations against one prefix intermittently produce a run where the guest never starts | a silent no-op launch reporting success |
+  | **an interrupted invocation leaves processes in uninterruptible `D` state** that survive `SIGKILL`, hold the prefix against every later run, and clear only by restarting the distro | one cancelled launch would wedge the application permanently |
+
+  The last one is the serious one, so it was tested against this runtime directly
+  rather than reasoned about: a Proton launch interrupted mid-flight added **zero**
+  `D`-state processes (4 before, 4 after), and the next launch succeeded in 2
+  seconds against the same prefix. `runinprefix` plus a per-application prefix
+  under the app's own private data root does not reproduce any of the four.
+
+  This is recorded because the choice looks like a detail and is not: a runtime
+  that had taken the obvious verb would have shipped a launcher that hangs
+  headless, hangs on stdin, and can be wedged by pressing Ctrl-C once.
+
+* **Other compatibility chains** (Wine, FEX, Box64) are how this runtime
   executes payloads it cannot run natively. The format defines the *vocabulary*
   a package uses to declare what it permits (§5.5), because a package must be
   able to say "never translate my instructions"; it does not require any
