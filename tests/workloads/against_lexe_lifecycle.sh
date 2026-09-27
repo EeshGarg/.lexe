@@ -344,6 +344,12 @@ json.dump({"lexeVersion": "0.1", "id": sys.argv[3], "name": "dep agreement",
            "install": {"scope": "user", "mode": "bundled"},
            "permissions": []}, open(sys.argv[1], "w"), indent=2)
 PYEOF
+        # The EXIT CODE, captured from the plain form -- the one a pre-ship script
+        # actually uses. A gate that always succeeds is not a gate, and the whole
+        # reason this is asserted separately from the JSON is that a script reads
+        # $? and stops there; it never sees the loud text line.
+        "$LEXE_BIN" analyze "$p" >/dev/null 2>&1
+        local ax=$?
         local verdict advisory
         read -r verdict advisory <<<"$("$LEXE_BIN" analyze "$p" --json 2>/dev/null \
             | python3 -c '
@@ -369,6 +375,23 @@ except Exception:
         [[ "$rc" -eq 0 && "$out" == *"RESULT=PASS"* ]] && launches=yes
         # Agreement in BOTH directions. A one-directional check would pass a
         # contract that condemns everything, which is how a false negative hides.
+        # The exit code must agree with the verdict it reports: 3 (verification
+        # failed, per REFERENCE-POLICY 3, reused rather than inventing a third
+        # convention for the same shape of answer) when the contract is not
+        # satisfied, 0 when it is. Asserted in BOTH directions for the same reason
+        # the verdict is: a gate that always fails is as useless as one that
+        # always passes, and only the pair distinguishes them.
+        local want_ax=0
+        [[ "$verdict" == "no" ]] && want_ax=3
+        if [[ "$verdict" != "absent" && "$ax" != "$want_ax" ]]; then
+            fail "$label — analyze exit code" \
+                 "the runtime contract is ${verdict/no/NOT satisfied}${verdict/yes/satisfied}," \
+                 "so a pre-ship script should see exit $want_ax; it saw $ax." \
+                 "A script reads \$? and stops — it never sees the text line."
+        else
+            pass "$label — analyze exits $ax, matching its own verdict"
+        fi
+
         if [[ "$verdict" == "$launches" ]]; then
             pass "$label (contract=$verdict, starts=$launches, advisory unresolved=$advisory)"
         elif [[ "$verdict" == "absent" ]]; then
