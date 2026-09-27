@@ -50,7 +50,37 @@ source "$WL_DIR/../acceptance/lib.sh"
 
 acc_begin "workloads: 184 foreign programs through .LEXE"
 
+# ---------------------------------------------------------------- finishing up #
+
+# Every exit from this lane goes through here. There are five exit sites, and the
+# first attempt at this fix patched only the last one -- so the runtime-missing
+# path still returned 0 having executed nothing, which is the very defect the fix
+# was for. Found by running the patched lane, not by reading it.
+#
+# BLOCKED stays distinct from FAIL: an unexecuted specimen is not a failure and
+# never will be (docs/TESTING.md, and the house rule in acceptance/lib.sh). But
+# "this lane produced no evidence" is a third outcome, and reporting it as success
+# is how a green suite comes to mean nothing. This session produced five separate
+# instances of that one shape -- a fingerprint that hashed nothing, an acceptance
+# glob that stopped at 09, this lane going unregistered while its inputs were
+# fingerprinted, these five exit sites, and a shared output path that overwrote
+# another run's artifact. Every one of them reported success over something it had
+# not done.
+wl_finish() {
+    acc_summary
+    local rc=$?
+    if [[ $ACC_PASS -eq 0 && $ACC_FAIL -eq 0 ]]; then
+        printf '  %sno evidence:%s this lane executed no specimens, so it proves nothing\n' \
+            "$ACC_BLUE" "$ACC_OFF"
+        printf '       %d prerequisite(s) were unavailable; the reasons are above\n' \
+            "$ACC_BLOCKED"
+        exit 2
+    fi
+    exit $rc
+}
+
 ENGINE="$WL_DIR/against_lexe.py"
+WL_RUN_ID="$$-$(date -u +%Y%m%dT%H%M%SZ)"
 LEXE_BIN="${LEXE_BUILD_DIR:-$ACC_REPO/build-linux}/lexe"
 JOBS="${LEXE_WORKLOAD_JOBS:-6}"
 ELF_INDEX="${LEXE_WORKLOAD_ELF_INDEX:-/tmp/lexe-workloads/index.json}"
@@ -60,7 +90,7 @@ case "$PE_CHAIN" in
     wine)   PE_LAYER=wine ;;
     proton) PE_LAYER=proton-wine ;;
     *)      fail "LEXE_WORKLOAD_PE_CHAIN must be wine or proton, not $PE_CHAIN"
-            acc_summary; exit $? ;;
+            wl_finish ;;
 esac
 
 WANT=("$@")
@@ -70,19 +100,25 @@ PY=""
 for candidate in python3 python; do
     command -v "$candidate" >/dev/null 2>&1 && { PY="$candidate"; break; }
 done
-[[ -n "$PY" ]] || { blocked "no python3: the comparison engine cannot run"; acc_summary; exit $?; }
-[[ -f "$ENGINE" ]] || { fail "engine missing: $ENGINE"; acc_summary; exit $?; }
+[[ -n "$PY" ]] || { blocked "no python3: the comparison engine cannot run"; wl_finish; }
+[[ -f "$ENGINE" ]] || { fail "engine missing: $ENGINE"; wl_finish; }
 [[ -x "$LEXE_BIN" ]] || {
     blocked "the runtime is not built at $LEXE_BIN" \
             "build it with scripts/build.sh, then re-run this lane"
-    acc_summary; exit $?
+    wl_finish
 }
 
 # --------------------------------------------------------------------------- #
 
 run_corpus() {   # $1 corpus  $2 index  $3 extra description  rest: engine args
     local corpus="$1" index="$2" desc="$3"; shift 3
-    local out="/tmp/lexe-vs-workloads-lane-$corpus"
+    # Unique per invocation. A stable path is convenient right up to the
+    # moment two runs overlap, at which point the second silently destroys
+    # the first's evidence -- which happened twice in one session, once to
+    # another role's in-flight regression run. It was noticed only because
+    # results.json records the runtime hash and the corpus provenance, which
+    # is the argument for recording them.
+    local out="/tmp/lexe-vs-workloads-lane-$corpus.$WL_RUN_ID"
     local log="$out.log"
 
     if [[ ! -f "$index" ]]; then
@@ -113,12 +149,21 @@ s = json.load(open(sys.argv[1]))["summary"]
 print(s["executed"], s["pass"], s["fail"], s["blocked"],
       len(s.get("fail_stream_delivery_only") or []),
       s["specimens_in_corpus"], s["wall_seconds"],
-      "drift" if s["corpus_provenance"]["matches"] is False else "pinned")
+      "drift" if s["corpus_provenance"]["matches"] is False else "pinned",
+      s.get("expectations_sha256") or "none")
 PYEOF
 )"
-    read -r n_exec n_pass n_fail n_block n_sd n_corpus secs prov <<<"$line"
+    read -r n_exec n_pass n_fail n_block n_sd n_corpus secs prov expect <<<"$line"
 
     note "$corpus: $n_exec of $n_corpus executed in ${secs}s, corpus $prov"
+    # Surfaced beside the corpus provenance, because with no expectations
+    # file the lane reports every INTENDED divergence as a failure -- twelve
+    # of them, confident-looking, with the cause named only in a side log.
+    if [[ "$expect" == "none" ]]; then
+        note "$corpus: NO expectations file was loaded, so every intended divergence will be reported as a failure"
+    else
+        note "$corpus: expectations ${expect:0:12}"
+    fi
     [[ "$prov" == "pinned" ]] || fail "$corpus: the corpus does not match the committed generator"
 
     if [[ "$n_block" -gt 0 ]]; then
@@ -138,6 +183,12 @@ PYEOF
     if [[ "$n_pass" -gt 0 ]]; then
         pass "$corpus: $n_pass of $n_exec executed specimens match their direct-execution baseline, or diverge only in a classified way"
     fi
+    # Where the evidence is, on every outcome and not only on failure. A passing
+    # run is evidence too, and the record carries the runtime hash, the corpus
+    # provenance and the expectations hash -- which is what let a clobbered
+    # artifact be spotted at all.
+    note "$corpus: full record in $res, engine log in $log"
+
     if [[ "$n_fail" -eq 0 ]]; then
         return
     fi
@@ -169,7 +220,6 @@ print("   " + ", ".join(ids))
 PYEOF
 )"
     fi
-    note "$corpus: full record in $res, engine log in $log"
 }
 
 for corpus in "${WANT[@]}"; do
@@ -195,5 +245,4 @@ for corpus in "${WANT[@]}"; do
     esac
 done
 
-acc_summary
-exit $?
+wl_finish
