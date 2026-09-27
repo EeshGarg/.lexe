@@ -289,6 +289,51 @@ hand as well: the `$ORIGIN` tree still runs after the whole directory is moved
 elsewhere, and `linux-link-three-libs-ldpath` genuinely refuses to start when
 `LD_LIBRARY_PATH` is removed.
 
+### A sixth, and the one the baseline could not have caught
+
+6. **`linux-io-stream-both-128mib`** reported `ERR_PAYLOAD_OFFSET`, an absolute
+   byte position into stderr, as a deterministic value. The offset counts the
+   header lines that precede the payload, and one of those is
+   `FIXTURE_ID=<id>` — whose value comes from the environment. Clear the
+   environment and the id falls back to the shorter compiled-in literal, the
+   header shrinks, and a value declared deterministic moves by exactly the
+   difference in id length. Measured on the original binary: **127 with
+   `FIXTURE_ID` set, 120 with the environment cleared.**
+
+   The payload is now **framed** rather than located by arithmetic. The
+   specimen announces `ERR_PAYLOAD_DELIMITER`, writes that delimiter on its own
+   line before and after the payload, and the consumer takes what lies between
+   the two `\n`-anchored occurrences. The delimiter cannot appear inside the
+   payload by construction rather than by luck: the payload alphabet is the 16
+   lowercase hex characters and `\n`, so it can contain neither `<` nor `=`
+   (verified — 0 of each in 2 MiB). The absolute offset is still reported, as
+   `OBS_ERR_PAYLOAD_OFFSET`, because it is useful when diagnosing a stream that
+   arrived wrong; nothing compares it.
+
+   **Why the five above were caught here and this one was not.** A baseline is
+   two or more direct executions under *the same* conditions, and this generator
+   always sets `FIXTURE_ID`. A value derived from the environment is therefore
+   perfectly stable across every baseline run, and perfectly stable across a
+   second generation into a different directory, and diverges only when
+   something changes the environment. The baseline mechanism cannot see that
+   class of defect at all. It surfaced when the specimen ran somewhere that
+   clears the environment by design.
+
+   The rule this yields, which applies to any specimen added later: **a
+   deterministic oracle value must not be a byte position, length or count over
+   a stream that also carries `FIXTURE_ID`.** Locate a region by its content.
+   Every wave-3 specimen was re-checked against that rule by running it twice,
+   once with `FIXTURE_ID` set and once under `env -i`, and requiring every
+   deterministic value except `FIXTURE_ID` itself to be identical: all six pass,
+   and the stderr byte counts shift by exactly the id-length difference
+   (5 bytes for `linux-io-stream-4mib`, 7 for `linux-io-stream-both-128mib`),
+   which is the line itself and no value.
+
+   `FIXTURE_ID` differing is not a defect and is not new: every specimen in the
+   corpus takes its id from the environment with a compiled-in fallback, and
+   every consumer already drops the line — `expand_differentials` excludes it
+   explicitly. What is not allowed is a *second* value that moves with it.
+
 ## Deliberately NOT generated
 
 - **Anything Windows/PE, Wine, Proton or foreign-ISA.** MinGW-w64 and wine exist

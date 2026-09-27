@@ -14,17 +14,51 @@
  *
  * Where the oracle goes, and why: BOTH streams are bulk, so there is no spare
  * stream to report on. The stderr payload is therefore deliberately made of
- * lines of lowercase hex containing no '=' character, so no payload line can
- * ever parse as a KEY=VALUE line, and the oracle is appended to stderr after
- * the payload ends. The specimen attests to the length and SHA-256 of the
- * stderr PAYLOAD as distinct from the whole stderr stream, and reports exactly
- * where the payload starts, so the claim stays checkable:
+ * lines of lowercase hex, and the oracle is appended to stderr after the payload
+ * ends. The specimen attests to the length and SHA-256 of the stderr PAYLOAD as
+ * distinct from the whole stderr stream, so the claim stays checkable.
  *
- *     sha256(stderr[ERR_PAYLOAD_OFFSET : +ERR_PAYLOAD_BYTES]) == ERR_PAYLOAD_SHA256
+ * HOW THE PAYLOAD IS LOCATED, and why it is not a byte offset.
  *
- * Every byte this program puts on stderr goes through one function that both
- * writes it and counts it, so the offset it reports cannot drift out of step
- * with the bytes it wrote. An earlier version recomputed the offset from copies
+ * The first version of this specimen reported ERR_PAYLOAD_OFFSET -- an absolute
+ * byte position into stderr -- as a deterministic oracle value, and that was a
+ * fixture that lied about what it measured. The offset counts the header lines
+ * that precede the payload, one of which is `FIXTURE_ID=<id>`, and the id comes
+ * from the environment. Anything that clears the environment (which .LEXE does
+ * by design) makes the id fall back to the shorter compiled-in literal, the
+ * header shrinks, and the offset moves by exactly the difference in id length --
+ * 129 with the environment set, 122 without it. A value derived from the
+ * environment cannot be declared deterministic, and reclassifying it as an
+ * observation would have kept the payload unlocatable without trusting a number
+ * nobody can predict.
+ *
+ * So the payload is FRAMED instead, and located by content:
+ *
+ *     FIXTURE_ID=<id>
+ *     BOTH_REQUESTED_BYTES_PER_STREAM=<n>
+ *     BOTH_CHUNK_BYTES=65536
+ *     ERR_PAYLOAD_DELIMITER=<<<LEXE-BULK-STDERR-PAYLOAD>>>
+ *     <<<LEXE-BULK-STDERR-PAYLOAD>>>          <- payload begins after this line
+ *     ...exactly ERR_PAYLOAD_BYTES of payload...
+ *     <<<LEXE-BULK-STDERR-PAYLOAD>>>          <- payload ended before this line
+ *     OUT_BYTES=<n>
+ *     ...
+ *
+ * The consumer finds "\n" + delimiter + "\n" and must find it exactly twice; the
+ * payload is what lies between. The delimiter cannot occur inside the payload,
+ * by construction and not by luck: the payload contains only the 16 lowercase
+ * hex characters and '\n', so it can contain neither '<' nor '='. The
+ * announcing line is not a false match either, because it is preceded by '='
+ * rather than by '\n'. Length and digest then cross-check the slice.
+ *
+ * Nothing about that framing depends on the environment, the id, the sizes, or
+ * the lengths of any header line. The absolute offset is still reported, as
+ * OBS_ERR_PAYLOAD_OFFSET, because it is useful when diagnosing a stream that
+ * arrived wrong -- but it is an observation and nothing compares it.
+ *
+ * Every byte this program puts on stderr still goes through one function that
+ * both writes it and counts it, so the observation cannot drift out of step with
+ * the bytes written. An even earlier version recomputed the offset from copies
  * of the format strings, which is a fixture that lies the moment a header line
  * is edited.
  */
@@ -32,6 +66,9 @@
 #include "orc_bulk.h"
 
 #define CHUNK (64u * 1024u)
+
+/* Contains '<' and '>', neither of which the payload alphabet can produce. */
+#define ERR_DELIM "<<<LEXE-BULK-STDERR-PAYLOAD>>>"
 
 static unsigned long long err_written = 0;
 
@@ -50,8 +87,10 @@ static int eout(const char *fmt, ...) {
     return n;
 }
 
-/* 1023 hex characters then a newline, repeating: exactly CHUNK bytes, no '='
- * anywhere, and a deterministic function of the generator. */
+/* 1023 hex characters then a newline, repeating: exactly CHUNK bytes. The
+ * alphabet is deliberately narrow -- [0-9a-f] and '\n' and nothing else -- so
+ * the payload can contain neither a '=' that would parse as an oracle line nor a
+ * '<' that would forge the frame delimiter. */
 static void fill_hex_lines(orb_rng *r, uint8_t *buf, size_t n) {
     static const char digits[] = "0123456789abcdef";
     size_t i;
@@ -79,8 +118,9 @@ int main(int argc, char **argv) {
     want = strtoull(argv[1], NULL, 10) * 1024ull * 1024ull;
     eout("BOTH_REQUESTED_BYTES_PER_STREAM=%llu\n", want);
     eout("BOTH_CHUNK_BYTES=%u\n", CHUNK);
-    eout("BOTH_PAYLOAD_BEGINS=here\n");
-    offset = err_written;
+    eout("ERR_PAYLOAD_DELIMITER=%s\n", ERR_DELIM);
+    eout("%s\n", ERR_DELIM);
+    offset = err_written;        /* reported as an observation only */
 
     /* Two independent generators, so the streams are not copies of each other
      * and a relay that crosses them shows up as a digest mismatch rather than
@@ -118,13 +158,15 @@ int main(int argc, char **argv) {
     orb_sha256_final(&esha, ehex);
 
     ok = (owritten == want && epayload == want);
-    eout("\n");                      /* the payload's last line need not be whole */
-    eout("ERR_PAYLOAD_OFFSET=%llu\n", offset);
+    /* The payload's last line need not be whole, so the closing frame gets its
+     * own newline. That newline is NOT part of the payload the digest covers. */
+    eout("\n%s\n", ERR_DELIM);
     eout("OUT_BYTES=%llu\n", owritten);
     eout("OUT_SHA256=%s\n", ohex);
     eout("ERR_PAYLOAD_BYTES=%llu\n", epayload);
     eout("ERR_PAYLOAD_SHA256=%s\n", ehex);
     eout("BOTH_STREAMS_COMPLETE=%s\n", ok ? "yes" : "no");
+    eout("OBS_ERR_PAYLOAD_OFFSET=%llu\n", offset);
     eout("RESULT=%s\n", ok ? "PASS" : "FAIL");
     return 0;
 }

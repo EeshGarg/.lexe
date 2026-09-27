@@ -516,10 +516,11 @@ S("linux-io-stream-both-128mib", "io_stream_both.c", "io",
   "128 MiB on stdout and 128 MiB on stderr, interleaved 64 KiB at a time",
   argv=["128"], oracle="stderr", duration="seconds",
   bulk={"stream": "stdout", "bytes_key": "OUT_BYTES", "sha_key": "OUT_SHA256",
-        "also": [{"stream": "stderr", "offset_key": "ERR_PAYLOAD_OFFSET",
+        "also": [{"stream": "stderr", "delimiter_key": "ERR_PAYLOAD_DELIMITER",
                   "bytes_key": "ERR_PAYLOAD_BYTES",
                   "sha_key": "ERR_PAYLOAD_SHA256"}]},
   expect={"OUT_BYTES": "134217728", "ERR_PAYLOAD_BYTES": "134217728",
+          "ERR_PAYLOAD_DELIMITER": "<<<LEXE-BULK-STDERR-PAYLOAD>>>",
           "BOTH_STREAMS_COMPLETE": "yes"}, timeout=600.0,
   caps=["both streams read concurrently"],
   notes="The deadlock shape, and measured directly: a reader that drains stdout "
@@ -527,8 +528,11 @@ S("linux-io-stream-both-128mib", "io_stream_both.c", "io",
         "pipe buffer -- and never resumes, because the specimen is then blocked "
         "writing to stderr and will never close stdout. A polling reader takes "
         "1.9 s for all 256 MiB. Both streams are bulk, so the oracle is appended "
-        "to stderr after the payload and the specimen reports where the payload "
-        "starts; bulk_check verifies that slice.")
+        "to stderr after the payload, which is FRAMED by a delimiter line rather "
+        "than located by a byte offset: the offset counted the FIXTURE_ID header, "
+        "whose length comes from the environment, so a value declared "
+        "deterministic moved from 129 to 122 the moment the environment was "
+        "cleared. The absolute offset is still reported, as an observation.")
 S("linux-io-stream-fail-64mib", "io_stream.c", "io",
   "64 MiB on stdout and then a non-zero exit", argv=["64", "3"],
   oracle="stderr", exit=3,
@@ -1132,9 +1136,16 @@ def check_bulk(bulk, last):
 
     `also` exists for the one specimen where BOTH streams are bulk and there is
     therefore no spare stream to report on. Its oracle is appended to stderr
-    after the payload, so what is checkable is a SLICE: the specimen reports
-    where its payload starts and how long it is, and the digest must match that
-    slice of what arrived.
+    after the payload, so what is checkable is a SLICE of that stream.
+
+    The slice is located by a FRAME and never by a byte offset. The first version
+    took `offset_key`, an absolute byte position the specimen reported -- and that
+    position counts the header lines before the payload, one of which is
+    `FIXTURE_ID=<id>` whose value comes from the environment. Clear the
+    environment and the id falls back to a shorter literal, the header shrinks,
+    and the "deterministic" offset moves by the difference in id length. Located
+    by a delimiter instead, nothing about finding the payload depends on the
+    environment, the id, or the length of any header line.
     """
     problems = []
     oracle = last["oracle"]
@@ -1158,24 +1169,38 @@ def check_bulk(bulk, last):
                             % (bulk["stream"], want_sha, got_sha))
     for extra in bulk.get("also", []):
         stream = _stream_bytes(last, extra["stream"])
-        off, length = oracle.get(extra["offset_key"]), oracle.get(extra["bytes_key"])
-        if off is None or length is None:
+        delim = oracle.get(extra["delimiter_key"])
+        length = oracle.get(extra["bytes_key"])
+        if delim is None or length is None:
             problems.append("%s slice: specimen did not report %s and %s"
-                            % (extra["stream"], extra["offset_key"],
+                            % (extra["stream"], extra["delimiter_key"],
                                extra["bytes_key"]))
             continue
-        off, length = int(off), int(length)
-        if len(stream) < off + length:
-            problems.append("%s is %d bytes: too short for the %d-byte payload "
-                            "the specimen says starts at offset %d"
-                            % (extra["stream"], len(stream), length, off))
+        # Anchored on newlines at both ends, so the line that ANNOUNCES the
+        # delimiter is not a false match: it is preceded by '=', not by '\n'.
+        frame = b"\n" + delim.encode() + b"\n"
+        first = stream.find(frame)
+        second = stream.find(frame, first + 1) if first >= 0 else -1
+        third = stream.find(frame, second + 1) if second >= 0 else -1
+        if first < 0 or second < 0:
+            problems.append("%s: found %d of the 2 expected %r frame markers"
+                            % (extra["stream"], (first >= 0) + (second >= 0), delim))
+            continue
+        if third >= 0:
+            problems.append("%s: found more than 2 %r frame markers, so the "
+                            "payload boundary is ambiguous" % (extra["stream"], delim))
+            continue
+        payload = stream[first + len(frame):second]
+        if len(payload) != int(length):
+            problems.append("%s framed payload is %d bytes, specimen claimed %r"
+                            % (extra["stream"], len(payload), length))
             continue
         want_sha = oracle.get(extra["sha_key"])
-        got_sha = sha256_bytes(stream[off:off + length])
+        got_sha = sha256_bytes(payload)
         if want_sha != got_sha:
-            problems.append("%s payload SHA-256 over [%d:%d]: specimen claimed "
-                            "%r, runner computed %s"
-                            % (extra["stream"], off, off + length,
+            problems.append("%s framed payload SHA-256 over [%d:%d]: specimen "
+                            "claimed %r, runner computed %s"
+                            % (extra["stream"], first + len(frame), second,
                                want_sha, got_sha))
     return problems
 
