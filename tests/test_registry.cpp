@@ -408,4 +408,42 @@ TEST_CASE("hostile ids and versions never become paths") {
     CHECK_FALSE(fs::exists(home.path().parent_path() / "evil.app"));
 }
 
+TEST_CASE("the teardown rule survives a record round trip") {
+    // FORMAT-0.1 §9.5.2 says a runtime that tears descendants down SHOULD say so
+    // for that launch. It can only say so if the fact is persisted, and a bool
+    // that silently defaults to false would make every launch -- including a
+    // detached service, which DOES preserve its background work -- report the
+    // same answer. That is worse than not reporting: it is a confident wrong
+    // answer on the surface a user consults after a launch that appeared to do
+    // nothing.
+    lexe::InstallationRecord r;
+    r.id = "com.example.svc";
+    r.last_run_at = "2026-09-27T12:00:00Z";
+    r.last_chain = "native";
+    r.last_launch_mode = "service";
+    r.last_descendants_preserved = true;
+
+    const auto back = lexe::InstallationRecord::from_json(r.to_json());
+    CHECK(back.last_descendants_preserved);
+    CHECK(back.last_launch_mode == "service");
+
+    // The console case, where it must come back FALSE rather than defaulting to
+    // whatever the field happens to initialise to.
+    lexe::InstallationRecord c;
+    c.id = "com.example.cli";
+    c.last_run_at = "2026-09-27T12:00:00Z";
+    c.last_chain = "native";
+    c.last_launch_mode = "console";
+    c.last_descendants_preserved = false;
+    CHECK_FALSE(
+        lexe::InstallationRecord::from_json(c.to_json()).last_descendants_preserved);
+
+    // An older record predates the field entirely. It must read as false, not
+    // throw and not be invented.
+    const auto legacy = lexe::InstallationRecord::from_json(
+        R"({"id":"com.example.old","lastExecution":{"chain":"native","launchMode":"console"}})");
+    CHECK_FALSE(legacy.last_descendants_preserved);
+    CHECK(legacy.last_launch_mode == "console");
+}
+
 } // TEST_SUITE("registry")

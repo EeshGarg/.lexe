@@ -168,6 +168,10 @@ InstallationRecord InstallationRecord::from_json(std::string_view json_text) {
         }
         r.last_chain = optional_string(*execution, "chain", "");
         r.last_launch_mode = optional_string(*execution, "launchMode", "");
+        if (const auto dp = execution->find("descendantsPreserved");
+            dp != execution->end() && dp->is_boolean()) {
+            r.last_descendants_preserved = dp->get<bool>();
+        }
     }
     return r;
 }
@@ -198,7 +202,9 @@ std::string InstallationRecord::to_json() const {
         j["lastExecution"] = nullptr;
     } else {
         j["lastExecution"] = ordered_json{{"chain", last_chain},
-                                          {"launchMode", last_launch_mode}};
+                                          {"launchMode", last_launch_mode},
+                                          {"descendantsPreserved",
+                                           last_descendants_preserved}};
     }
     return j.dump(2) + "\n";
 }

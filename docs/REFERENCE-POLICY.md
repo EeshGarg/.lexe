@@ -258,12 +258,27 @@ chain, while its private compatibility prefix is built:
 
 | | |
 |---|---|
-| first launch, `wine` chain | **152 s** |
-| later launches, `wine` chain | **18 s** |
-| first launch, `proton` chain | **150–170 s** |
-| later launches, `proton` chain | **22 s** |
+| first launch, `wine` chain | **37–41 s** |
+| later launches, `wine` chain | **4–5 s** |
 | disk, per wine application | **~1.3 GB** |
 | disk, per proton application | **~645 MB** |
+
+**These figures replace earlier ones of 152 s cold and 18 s warm, which were
+wrong, and the way they were wrong is worth more than the numbers.** They were
+measured while a build, a unit-test run and a Proton lane were all running, so
+they recorded contention and not cost — inflated about four-fold. An independent
+pass had already caught exactly this mistake in its own generation timings and
+said so explicitly; the same error was then made here anyway, which is a fair
+illustration of how easily a loaded-host measurement becomes a documented
+constant.
+
+It also dissolved a mystery rather than solving one. With cold at 150 s, a corpus
+of 72 Windows specimens completing in 369 s at six workers was arithmetically
+impossible — each specimen has its own App ID and therefore its own prefix — and
+that contradiction was carried as an open question with a page-cache hypothesis
+attached. At 38 s cold it is simply 72 × 38 / 6 ≈ 456 s, which is what was
+observed. There was never anything to amortise. A wrong measurement had
+manufactured a phenomenon.
 
 And it is **per application**, not per user: two different applications in the
 same `LEXE_HOME` each pay the full cold cost and each keep their own prefix, at
@@ -275,9 +290,9 @@ only the time.
 
 The cost itself is Wine's and Proton's, not this runtime's, and it is not
 avoidable. What was this runtime's fault is that it said **nothing** for those
-three minutes: no output, no progress, no diagnostic record, just a data root
+that time: no output, no progress, no diagnostic record, just a data root
 quietly growing. Someone who double-clicks a Windows application and watches
-nothing happen for two and a half minutes has exactly one conclusion available to
+nothing happen for most of a minute has exactly one conclusion available to
 them, and the natural response — kill it — leaves a half-built prefix that makes
 the next attempt worse.
 
@@ -380,6 +395,7 @@ spellings. These are this runtime's.
 | locale | the caller's `LANG` / `LC_ALL` / `LC_MESSAGES` when set, else `LANG=C.UTF-8` |
 | forwarded from the caller | nothing else, except display variables for a declared GUI launch |
 | descendant teardown | console and GUI launches are torn down with the entrypoint; `service` is not |
+| where that is stated | `lexe info` ("Background work:"), and `installed.lastDescendantsPreserved` in `--json` |
 
 Two of these are recorded because they were wrong and the reason they were wrong
 is instructive.

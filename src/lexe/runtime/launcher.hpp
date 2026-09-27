@@ -58,6 +58,25 @@ struct RunRequest {
     /// Detach and return immediately instead of waiting (service mode, and
     /// GUI launches from a desktop handler that must not block).
     bool detach = false;
+    /// Silence the COMPATIBILITY LAYER's own diagnostics, leaving the
+    /// application's output untouched.
+    ///
+    /// Relaying stderr correctly means a Windows application's stderr carries
+    /// Wine's own noise with it — `Fontconfig error: Cannot load default config
+    /// file`, `err:msvcrt:_invalid_parameter` — on an entirely successful launch.
+    ///
+    /// This does NOT filter the stream, and that distinction is the whole design.
+    /// The layer's bytes and the application's bytes are one stream and cannot be
+    /// told apart after the fact; any filter good enough to remove Wine's noise
+    /// will eventually eat a program's own diagnostic that resembles it, which is
+    /// precisely the defect the relay was fixed to close. Instead this quiets the
+    /// layer AT SOURCE, by asking it not to produce the diagnostics — so nothing
+    /// the application writes is ever inspected, matched against a pattern, or
+    /// dropped.
+    ///
+    /// Opt-in, never a default: a noisy launch is a worse experience, but a
+    /// launch that silently eats a program's error output is a worse runtime.
+    bool quiet_chain = false;
     /// Wait for the application to exit even when its manifest declares
     /// `launch.mode: "service"`, which is otherwise detached by declaration.
     /// This is for watching a service run — a developer's `--wait`, not a
@@ -75,6 +94,18 @@ struct ExecutionReport {
     bool mission_critical = false;
     bool started = false;     // the application was actually executed
     bool detached = false;    // started and deliberately not waited for
+    /// Whether work the application left running outlived its entrypoint
+    /// (FORMAT-0.1 §9.5.2). False for console and gui, true for a detached
+    /// service.
+    ///
+    /// This reports the POLICY that applied, not an observation that
+    /// descendants existed. Nothing outside the sandbox can tell the two apart:
+    /// bwrap exits identically whether or not the kernel had anything left to
+    /// kill in the PID namespace, so "we tore something down" and "there was
+    /// nothing to tear down" are indistinguishable from here. Reporting the
+    /// rule is what §9.5.2 asks for and is honest; claiming an observation
+    /// would not be.
+    bool descendants_preserved = false;
     int exit_code = -1;
     std::optional<int> signal;
     std::string isolation_summary; // truthful control summary

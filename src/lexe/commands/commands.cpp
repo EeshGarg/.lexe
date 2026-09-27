@@ -79,7 +79,7 @@ constexpr const char* kInstallUsage =
     "[--approve-compile] [--channel <c>]";
 constexpr const char* kRunUsage =
     "usage: lexe run <id> [--chain <id>] [--detach | --wait] "
-    "[--attached-terminal] [-- <args...>]";
+    "[--attached-terminal] [--quiet-chain] [-- <args...>]";
 constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
 constexpr const char* kRemoveUsage =
@@ -680,7 +680,9 @@ int cmd_install(const std::vector<std::string>& args) {
 
 int cmd_run(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(
-        args, {"--attached-terminal", "--no-terminal", "--detach", "--wait"},
+        args,
+        {"--attached-terminal", "--no-terminal", "--detach", "--wait",
+         "--quiet-chain"},
         {"--chain"}, true, kRunUsage);
     require_positionals(parsed, 1, kRunUsage);
 
@@ -693,6 +695,7 @@ int cmd_run(const std::vector<std::string>& args) {
     request.allow_terminal_spawn = parsed.flags.count("--no-terminal") == 0;
     request.detach = parsed.flags.count("--detach") != 0;
     request.wait_for_exit = parsed.flags.count("--wait") != 0;
+    request.quiet_chain = parsed.flags.count("--quiet-chain") != 0;
     if (request.detach && request.wait_for_exit) {
         throw UsageError("--detach and --wait contradict each other");
     }
@@ -1585,6 +1588,11 @@ int cmd_info(const std::vector<std::string>& args) {
             {"installedAt", record.installed_at},
             {"lastRunAt", record.last_run_at},
             {"lastExitCode", record.last_exit_code},
+            {"lastLaunchMode", record.last_launch_mode},
+            // FORMAT-0.1 §9.5.2. Without this, an application that correctly
+            // reported leaving a worker running could have it killed and still
+            // exit 0, with nothing anywhere reconciling the two.
+            {"lastDescendantsPreserved", record.last_descendants_preserved},
             // Same field name and same sum as `lexe apps --json`. The human
             // view reports a disk figure and this carried none at all, so a
             // script could not read what the terminal was showing it.
@@ -1636,6 +1644,20 @@ int cmd_info(const std::vector<std::string>& args) {
                      ? "(never)"
                      : record.last_run_at + " (exit " +
                            std::to_string(record.last_exit_code) + ")");
+        // §9.5.2's teardown rule, on the surface a user would actually consult
+        // after a launch that appeared to do nothing. Stated only once a launch
+        // has happened, and phrased as what it is -- a property of the declared
+        // launch mode, not an observation that anything was killed.
+        if (!record.last_run_at.empty()) {
+            print_kv("Background work:",
+                     record.last_descendants_preserved
+                         ? "preserved — this mode detaches, so work the "
+                           "application left running outlived it"
+                         : "not preserved — anything the application left "
+                           "running was terminated when its entrypoint exited. "
+                           "Declare launch.mode \"service\" if it must "
+                           "survive.");
+        }
     }
     return 0;
 }

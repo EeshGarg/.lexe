@@ -1267,6 +1267,18 @@ that started and chose to do nothing — and reporting a successful launch of an
 application whose actual work was killed before it ran is the most misleading
 outcome a launcher can produce.
 
+Note what that SHOULD can and cannot ask for. A runtime can report the RULE that
+applied to a launch; it cannot generally report that descendants actually
+existed. In the reference implementation nothing outside the sandbox can tell the
+two cases apart — the sandbox process exits identically whether or not the kernel
+had anything left to kill in its PID namespace — so "we tore something down" and
+"there was nothing to tear down" are not distinguishable after the fact. The
+clause is therefore satisfied by stating the applicable rule, and an
+implementation that claimed to have observed a teardown it had not observed would
+be worse than one that says nothing. See
+[REFERENCE-POLICY.md](REFERENCE-POLICY.md) §2.2 for where this runtime states
+it.
+
 ### 9.6 Isolation between applications
 
 One installed application MUST NOT be able to read or modify another's

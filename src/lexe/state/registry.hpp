@@ -62,6 +62,17 @@ struct InstallationRecord {
     std::string last_chain;
     /// Declared launch presentation of the last launch (gui/console/service).
     std::string last_launch_mode;
+    /// Whether the last launch PRESERVED work the application left running
+    /// after its entrypoint exited (FORMAT-0.1 §9.5.2).
+    ///
+    /// False for `console` and `gui`, which are torn down with the entrypoint;
+    /// true for a detached `service`. Recorded because §9.5.2 says a runtime
+    /// that tears descendants down SHOULD say so for that launch, and until
+    /// this existed no runtime surface mentioned it at all -- an application
+    /// could correctly report leaving a worker running, have it killed, and
+    /// exit 0, with the two statements never reconciled anywhere a user could
+    /// look. Absent from older records, which read as false.
+    bool last_descendants_preserved = false;
 
     /// Parse installation.json text. Throws Error on malformed contents.
     static InstallationRecord from_json(std::string_view json_text);

@@ -704,6 +704,15 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // to the sandbox allowlist. Nothing of the caller's environment reaches the
     // application this way.
     req.chain_env = resolution.chain.env;
+    // --quiet-chain, applied AT SOURCE rather than as a filter on the stream.
+    // WINEDEBUG=-all tells Wine (and Proton, which is Wine) to stop emitting its
+    // own err:/fixme:/warn: channels; the application's own writes are never
+    // touched, inspected or matched. A chain that has no such knob simply stays
+    // as it was, which is the honest outcome -- better than pretending to quiet
+    // something by guessing at its bytes.
+    if (request.quiet_chain && resolution.chain.id != "native") {
+        req.chain_env["WINEDEBUG"] = "-all";
+    }
     // Directories the chain needs to already exist, under the application's own
     // private data root. Proton is the case that requires this: it wants
     // STEAM_COMPAT_DATA_PATH to name an existing directory and does not create
@@ -725,13 +734,18 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // Say something before a FIRST foreign-OS launch, because it is slow and
     // silent, and those two together read as broken.
     //
-    // Measured: a first Windows launch costs 150–170 seconds while the
-    // per-application compatibility prefix is built, against 22 seconds once it
-    // exists — and during those three minutes the runtime produces nothing at
-    // all. No output, no progress, no diagnostic record; the data root quietly
-    // grows. The only conclusion available to somebody who double-clicked an
-    // application is that it has hung, and the natural response is to kill it,
-    // which leaves a half-built prefix and makes the next attempt worse.
+    // Measured on an idle host: a first Windows launch costs 37-41 seconds while
+    // the per-application compatibility prefix is built, against 4-5 seconds once
+    // it exists — and for all of that time the runtime produces nothing at all.
+    // No output, no progress, no diagnostic record; the data root quietly grows.
+    // The only conclusion available to somebody who double-clicked an application
+    // is that it has hung, and the natural response is to kill it, which leaves a
+    // half-built prefix and makes the next attempt worse.
+    //
+    // (An earlier version of this comment said 150-170 seconds. That was measured
+    // on a loaded host and was about four times the real cost — which is also
+    // what made a corpus throughput figure look impossible and get carried as an
+    // open question. See REFERENCE-POLICY §2.1.2.)
     //
     // "Cold" is asked of the RECORD, not of the filesystem. The obvious test —
     // did we just create the chain's required data directory — is Proton-only:
@@ -749,8 +763,8 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     if (first_launch_on_this_chain && resolution.chain.id != "native") {
         std::fprintf(stderr,
                      "lexe: preparing the %s compatibility environment for %s. "
-                     "The first launch of a Windows application takes a few "
-                     "minutes; later launches do not.\n",
+                     "The first launch of a Windows application takes about a "
+                     "minute; later launches are quick.\n",
                      resolution.chain.id.c_str(), id.c_str());
         std::fflush(stderr);
     }
@@ -864,6 +878,10 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     report.exit_code = exit_code;
     report.signal = signal;
     report.detached = detached;
+    // §9.5.2: a runtime that tears descendants down SHOULD say so for that
+    // launch. A detached service is the only mode whose work outlives its
+    // entrypoint; console and gui are torn down with it.
+    report.descendants_preserved = detached;
     report.isolation_summary = summarize_controls(enforced);
 
     // ------------------------------------------------ record execution report
@@ -871,6 +889,7 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     record.last_exit_code = exit_code;
     record.last_chain = resolution.chain.id;
     record.last_launch_mode = to_string(manifest.launch_mode);
+    record.last_descendants_preserved = detached;
     registry.write_record(record);
 
     // §14.4: exit code 0 is SUCCESS even when no window appeared. Only a
