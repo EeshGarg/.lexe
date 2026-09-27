@@ -1,0 +1,117 @@
+{
+  "_what_this_file_is": [
+    "The intended divergences for the Windows PE corpus, each with the clause that",
+    "makes it intended. Same rules as against_lexe_expected_elf.json: measured",
+    "first, attributed afterwards, no entry without a reason and a citation.",
+    "",
+    "Deliberately NOT in here, because they are findings and not intentions:",
+    "  * pe-arg-wide-unicode and pe-fs-unicode-path -- non-ASCII data corrupted or",
+    "    lost. PROVEN to be the sandbox environment missing the locale variables:",
+    "    the same specimens pass when the manifest declares launch.mode gui (the",
+    "    one mode docs/ISOLATION.md gives the locale variables to), and direct",
+    "    Wine with a cleared environment reproduces the corruption byte for byte",
+    "    while direct Wine with LANG/LC_ALL=C.UTF-8 does not.",
+    "  * pe-format-large-binary -- a legitimate 48 MiB program refused by this",
+    "    runtime's 200x expansion-ratio policy.",
+    "  * every <stdout-delivery> / <stderr-delivery> divergence -- the runtime not",
+    "    giving the caller the program's output."
+  ],
+  "families": {},
+  "specimens": {
+
+    "pe-env-narrow": [
+      {"token": "line:ENV_LEXE_WORKLOAD_TOKEN_PRESENT", "actual": "no",
+       "reason": "The runtime clears the environment and sets only an allowlist, and Format 0.1 has no manifest field by which a package could ask for a variable. Identical to the ELF corpus's linux-env-declared-present.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'; docs/FORMAT-0.1.md 5.7"},
+      {"token": "line:ENV_LEXE_WORKLOAD_EMPTY_PRESENT", "actual": "no",
+       "reason": "As above.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_HEX",
+       "reason": "Emitted only when the variable is present.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_LEN",
+       "reason": "Emitted only when the variable is present.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_HEX",
+       "reason": "Emitted only when the variable is present.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_LEN",
+       "reason": "Emitted only when the variable is present.", "citation": "docs/ISOLATION.md, 'Environment policy'"}
+    ],
+
+    "pe-env-wide-unicode": [
+      {"token": "line:WENV_LEXE_WORKLOAD_UNICODE_PRESENT", "actual": "no",
+       "reason": "The environment is cleared. This one is NOT the locale defect: the variable is absent under both console and gui launch modes, which is exactly the environment policy and not a conversion problem.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:WENV_LEXE_WORKLOAD_UNICODE_HEX",
+       "reason": "Emitted only when the variable is present.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:WENV_LEXE_WORKLOAD_UNICODE_LEN",
+       "reason": "Emitted only when the variable is present.", "citation": "docs/ISOLATION.md, 'Environment policy'"}
+    ],
+
+    "pe-format-console-x86": [
+      {"token": "install:<refused>",
+       "reason": "A 32-bit i386 PE cannot be named by a conforming 0.1 manifest at all: `architectures` recognises only x86_64 and aarch64, and the payload-role check reads the machine out of the PE rather than trusting the declaration. The refusal is correct and its message is accurate. That an entire class of legitimate Windows program is therefore unpackageable is a FORMAT limitation, reported separately -- it is not a defect in this refusal.",
+       "citation": "docs/FORMAT-0.1.md 5.3 (`architectures`: recognised values x86_64, aarch64) and 6.7 (payload role)"}
+    ],
+    "pe-fs-unicode-path--mingw32-O2": [
+      {"token": "install:<refused>",
+       "reason": "32-bit i386 PE; see pe-format-console-x86.",
+       "citation": "docs/FORMAT-0.1.md 5.3, 6.7"}
+    ],
+    "pe-ipc-named-pipe--mingw32-O2": [
+      {"token": "install:<refused>",
+       "reason": "32-bit i386 PE; see pe-format-console-x86.",
+       "citation": "docs/FORMAT-0.1.md 5.3, 6.7"}
+    ],
+    "pe-run-cpu-bound--mingw32-O2": [
+      {"token": "install:<refused>",
+       "reason": "32-bit i386 PE; see pe-format-console-x86.",
+       "citation": "docs/FORMAT-0.1.md 5.3, 6.7"}
+    ],
+
+    "pe-fs-cwd-relative-asset": [
+      {"token": "line:ASSET_OPENED_BACKSLASH", "actual": "no",
+       "reason": "The runtime sets the working directory to the application's private data root, so a relative path to an asset shipped in the package does not resolve -- with a backslash or with a forward slash. PROVEN to be the working directory and nothing else: with --stage-into-data this specimen PASSES. The ELF corpus's linux-fs-cwd-relative-asset behaves identically, so this is one decision and not two.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'. NOTE: neither docs/FORMAT-0.1.md 9 nor docs/REFERENCE-POLICY.md specifies the working directory; reported separately as a spec gap."},
+      {"token": "key-extra:ASSET_OPENED_FORWARDSLASH", "actual": "no",
+       "reason": "The specimen tries the forward-slash form only after the backslash form fails, so this key appears only when the asset is unreachable. Consequence of the above.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'"},
+      {"token": "line:ASSET_CONTENT", "actual": "(none)",
+       "reason": "Consequence of the above.", "citation": "docs/ISOLATION.md, 'Writable roots'"},
+      {"token": "key-missing:ASSET_CONTENT_OK",
+       "reason": "Consequence of the above.", "citation": "docs/ISOLATION.md, 'Writable roots'"},
+      {"token": "line:RESULT", "actual": "FAIL",
+       "reason": "The specimen's own self-check accurately reports that its asset is not where it expected. Forgiven only for this value on this specimen, because --stage-into-data isolates the cause to the working directory.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'"}
+    ],
+
+    "pe-tree-launcher-exits": [
+      {"token": "key-missing:<post-file:t_bootstrap.oracle>", "actual": "absent",
+       "reason": "A console-mode launch is bounded by the sandbox, so when the launcher the runtime waited for exits, everything it started is torn down. PROVEN to be the launch mode: with --launch-mode service and settle time, all four nodes' oracle files appear and the specimen PASSES. What is NOT forgiven, and is reported separately, is that `lexe run` returned 0 for this launch -- the runtime reported success for an application that had been killed before it ran.",
+       "citation": "docs/FORMAT-0.1.md 5.6 (a service MUST survive the process that started it); docs/ISOLATION.md, 'Privilege / process creation' (--die-with-parent, private PID namespace). Console-mode survival is specified nowhere."},
+      {"token": "key-missing:<post-file:t_main.oracle>", "actual": "absent",
+       "reason": "As above.", "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"},
+      {"token": "key-missing:<post-file:t_worker.oracle>", "actual": "absent",
+       "reason": "As above.", "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"}
+    ],
+    "pe-tree-bootstrap-only": [
+      {"token": "key-missing:<post-file:t_bootstrap.oracle>", "actual": "absent",
+       "reason": "Console-mode teardown; PASSES under --launch-mode service. See pe-tree-launcher-exits.",
+       "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"},
+      {"token": "key-missing:<post-file:t_main.oracle>", "actual": "absent",
+       "reason": "As above.", "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"},
+      {"token": "key-missing:<post-file:t_worker.oracle>", "actual": "absent",
+       "reason": "As above.", "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"}
+    ],
+    "pe-tree-orphan-tree": [
+      {"token": "key-missing:<post-file:t_main.oracle>", "actual": "absent",
+       "reason": "Console-mode teardown; PASSES under --launch-mode service. See pe-tree-launcher-exits.",
+       "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"},
+      {"token": "key-missing:<post-file:t_helper.oracle>", "actual": "absent",
+       "reason": "As above. `t_helper.oracle` is the corpus's load-bearing evidence that work survived the exit of everything that started it, and in console mode it does not.",
+       "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md; tests/workloads/README-PE.md, 'The process tree'"}
+    ],
+    "pe-tree-detach-helper": [
+      {"token": "key-missing:<post-file:t_helper.oracle>", "actual": "absent",
+       "reason": "A DETACHED_PROCESS helper does not outlive a console-mode sandbox. PASSES under --launch-mode service. See pe-tree-launcher-exits.",
+       "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md"}
+    ]
+  }
+}

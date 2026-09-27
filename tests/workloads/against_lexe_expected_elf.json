@@ -1,0 +1,194 @@
+{
+  "_what_this_file_is": [
+    "The divergences between direct execution and execution under .LEXE that are",
+    "INTENDED, each with the clause that makes it intended. against_lexe.py",
+    "refuses to load an entry that has no reason and no citation, because a",
+    "forgiven divergence without a written reason is a blind spot wearing a green",
+    "tick.",
+    "",
+    "Every entry here was MEASURED FIRST and attributed afterwards. None was",
+    "predicted. Where an attribution could be proved rather than argued, the proof",
+    "is a second deliberate pass named in the reason -- run it and the specimen",
+    "passes, which is what makes the claim 'this is the cwd / the environment /",
+    "the network permission and nothing else' true rather than plausible.",
+    "",
+    "A `token` is `<kind>:<key>`. When `actual` is present the entry forgives only",
+    "that value: a DIFFERENT value under the same key is still a finding."
+  ],
+  "families": {},
+  "specimens": {
+
+    "linux-env-declared-present": [
+      {"token": "line:ENV_LEXE_WORKLOAD_TOKEN_PRESENT", "actual": "no",
+       "reason": "The runtime clears the caller's environment and sets only an allowlist, so a variable the caller exported is not visible to the application. Format 0.1 has no manifest field by which a package could request an environment variable, so there is no conforming way for this specimen to receive one.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'; docs/FORMAT-0.1.md 5.7 (the closed list of optional manifest fields contains no environment)"},
+      {"token": "line:ENV_LEXE_WORKLOAD_EMPTY_PRESENT", "actual": "no",
+       "reason": "As above: the environment is cleared, so an exported empty-valued variable is absent rather than empty.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_HEX",
+       "reason": "The specimen prints the hex and length of a variable only when it is present; with the environment cleared these keys are correctly not emitted.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_LEN",
+       "reason": "As above.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_HEX",
+       "reason": "As above.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_LEN",
+       "reason": "As above.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"}
+    ],
+
+    "linux-env-unicode-value": [
+      {"token": "line:ENV_LEXE_WORKLOAD_UNICODE_PRESENT", "actual": "no",
+       "reason": "The environment is cleared; a UTF-8 valued variable is as absent as any other.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_UNICODE_HEX",
+       "reason": "Emitted only when the variable is present.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:ENV_LEXE_WORKLOAD_UNICODE_LEN",
+       "reason": "Emitted only when the variable is present.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"}
+    ],
+
+    "linux-fs-path-environment": [
+      {"token": "key-extra:XDG_DATA_HOME", "actual": "unset",
+       "reason": "XDG_* is not in the sandbox environment allowlist, and the specimen reports 'unset' instead of probing. The runtime gives the application a private data root at $HOME and $LEXE_APP_DATA instead; the private data/cache/temp roots ARE writable, which the passing filesystem specimens show.",
+       "citation": "docs/ISOLATION.md, 'Environment policy' and 'Writable roots'"},
+      {"token": "key-extra:XDG_CONFIG_HOME", "actual": "unset",
+       "reason": "As above.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-extra:XDG_CACHE_HOME", "actual": "unset",
+       "reason": "As above.", "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:XDG_DATA_HOME_WRITABLE",
+       "reason": "Not probed when the variable is unset.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:XDG_CONFIG_HOME_WRITABLE",
+       "reason": "Not probed when the variable is unset.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:XDG_CACHE_HOME_WRITABLE",
+       "reason": "Not probed when the variable is unset.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:OBS_XDG_DATA_HOME",
+       "reason": "An observation of a variable that is deliberately absent.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:OBS_XDG_CONFIG_HOME",
+       "reason": "An observation of a variable that is deliberately absent.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"},
+      {"token": "key-missing:OBS_XDG_CACHE_HOME",
+       "reason": "An observation of a variable that is deliberately absent.",
+       "citation": "docs/ISOLATION.md, 'Environment policy'"}
+    ],
+
+    "linux-fs-readonly-probe": [
+      {"token": "line:USR_WRITE_ERRNO", "actual": "EROFS",
+       "reason": "Direct execution was denied /usr by file permissions (EACCES); under .LEXE it is denied by a read-only bind mount (EROFS). Same denial, reported by a stronger mechanism -- a different errno for a write that fails either way is not a behavioural difference worth calling a defect. The ETC_WRITE and ROOT_WRITE divergences on this same specimen are deliberately NOT forgiven here.",
+       "citation": "docs/ISOLATION.md, 'Filesystem view' (/usr bound read-only)"}
+    ],
+
+    "linux-fs-cwd-relative-asset": [
+      {"token": "line:ASSET_OPENED", "actual": "no",
+       "reason": "The runtime sets the working directory to the application's private data root, never to the directory the payload lives in and never to the caller's cwd, so a relative path to an asset shipped in the package does not resolve. PROVEN to be the working directory and nothing else: with --stage-into-data, which places the same asset in the data root where the cwd actually is, this specimen PASSES.",
+       "citation": "docs/ISOLATION.md, 'Writable roots' ('The working directory is the private data root -- never the caller's cwd'). NOTE: docs/FORMAT-0.1.md 9 does not specify the working directory at all; that gap is reported separately."},
+      {"token": "line:ASSET_CONTENT", "actual": "(none)",
+       "reason": "Consequence of the above.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'"},
+      {"token": "key-missing:ASSET_CONTENT_OK",
+       "reason": "Consequence of the above.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'"},
+      {"token": "key-extra:ASSET_ERRNO", "actual": "ENOENT",
+       "reason": "Consequence of the above: the open fails rather than returning wrong data.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'"},
+      {"token": "line:RESULT", "actual": "FAIL",
+       "reason": "The specimen's own self-check reports that its environment did not behave as it requires, which is accurate: the cwd is not where its asset is. Forgiven ONLY on this specimen and ONLY for this value, because the cause is a documented runtime decision that the same specimen's --stage-into-data pass isolates.",
+       "citation": "docs/ISOLATION.md, 'Writable roots'"}
+    ],
+
+    "linux-socket-name-resolution": [
+      {"token": "line:ETC_HOSTS_READABLE", "actual": "no",
+       "reason": "/etc/hosts and /etc/resolv.conf are bound into the sandbox only when the `network` permission is granted, and this pass grants nothing. PROVEN: with --grant-network this specimen PASSES, as do all five sockets specimens.",
+       "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"},
+      {"token": "line:LOCALHOST_RC_IS_ZERO", "actual": "no",
+       "reason": "getaddrinfo cannot resolve `localhost` without the NSS host configuration, which is withheld with the permission.",
+       "citation": "docs/ISOLATION.md, 'Filesystem view'"},
+      {"token": "key-missing:LOCALHOST_ADDRS_NONZERO",
+       "reason": "Not emitted when the lookup failed.",
+       "citation": "docs/ISOLATION.md, 'Filesystem view'"},
+      {"token": "key-extra:LOCALHOST_GAI", "actual": "EAI_AGAIN",
+       "reason": "The specimen reports the resolver's error code only when the lookup failed. Which failure a resolver reports is environment-dependent -- the corpus itself records that, having been bitten by it.",
+       "citation": "docs/ISOLATION.md, 'Filesystem view'; tests/workloads/README-PE.md, fixture mismatch 3 (the same code is environment-dependent)"},
+      {"token": "line:BOGUS_GAI", "actual": "EAI_AGAIN",
+       "reason": "With no resolver configuration the bogus name fails with EAI_AGAIN rather than EAI_NONAME. That it FAILED is the property; which code says so is not, and the corpus says as much.",
+       "citation": "docs/ISOLATION.md, 'Filesystem view'"}
+    ],
+
+    "linux-link-rpath": [
+      {"token": "exit:<exit>", "actual": "127",
+       "reason": "NOT a runtime defect. This specimen's DT_RPATH is the ABSOLUTE path of its build directory, so the binary is only runnable from where it was built; any installer that relocates it breaks it, and the sandbox does not bind that host directory. The supported way to carry libraries in a package is a $ORIGIN-relative RPATH, and the specimen that does that -- linux-link-origin-relative -- PASSES. What IS a defect is that `lexe analyze` reported these three libraries as 'bundle' (carried in the package) when the package contains only the executable, and that the launch pre-flight passed; both are reported separately.",
+       "citation": "examples/native/bundled-library/Makefile (the documented bundling pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 2 (installed layout -- a version's content lives at a runtime-chosen path)"},
+      {"token": "line:<stdout-delivery>", "actual": "0 bytes",
+       "reason": "The program never started, so it produced no stdout to deliver. This is the consequence of the exit above, not the stdout-relay defect reported elsewhere.",
+       "citation": "as above"},
+      {"token": "key-missing:FIXTURE_ID", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:ALPHA", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:BETA", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:GAMMA", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:CHAIN_CONSISTENT", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:RESULT", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:OBS_DSO", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:OBS_DSO_COUNT", "reason": "The program never started.", "citation": "as above"}
+    ],
+
+    "linux-link-runpath": [
+      {"token": "exit:<exit>", "actual": "127",
+       "reason": "Same as linux-link-rpath with DT_RUNPATH instead of DT_RPATH: an absolute build-tree search path that does not survive installation. linux-link-origin-relative, which uses $ORIGIN, PASSES.",
+       "citation": "examples/native/bundled-library/Makefile"},
+      {"token": "line:<stdout-delivery>", "actual": "0 bytes", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:FIXTURE_ID", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:ALPHA", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:BETA", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:GAMMA", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:CHAIN_CONSISTENT", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:RESULT", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:OBS_DSO", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:OBS_DSO_COUNT", "reason": "The program never started.", "citation": "as above"}
+    ],
+
+    "linux-link-symbol-versioning": [
+      {"token": "exit:<exit>", "actual": "127",
+       "reason": "The specimen's DT_RUNPATH is the corpus's absolute lib/ directory, which the sandbox does not bind. The property under test (a versioned symbol resolving to its default version) is never reached, so this says nothing about symbol versioning under .LEXE -- a real, stated gap in this pass rather than a result.",
+       "citation": "examples/native/bundled-library/Makefile"},
+      {"token": "line:<stdout-delivery>", "actual": "0 bytes", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:FIXTURE_ID", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:VER_VALUE", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:RESOLVED_TO_DEFAULT_V2", "reason": "The program never started.", "citation": "as above"},
+      {"token": "key-missing:RESULT", "reason": "The program never started.", "citation": "as above"}
+    ],
+
+    "linux-link-three-libs-ldpath": [
+      {"token": "exit:<exit>", "actual": "1",
+       "reason": "This binary has no RPATH at all and found its libraries through LD_LIBRARY_PATH, which the runtime deliberately does not forward. The runtime REFUSED THE LAUNCH HONESTLY rather than exec'ing a binary that cannot start: 'cannot start: its dependency contract is not satisfied on this host', with a diagnostic record. That is the correct behaviour and a genuine positive; it is also the exact check that DID NOT fire for linux-link-rpath, which is reported as a defect.",
+       "citation": "docs/ISOLATION.md, 'Environment policy' (LD_LIBRARY_PATH is not forwarded); docs/REFERENCE-POLICY.md 3 (exit 1 = an unexpected failure)"},
+      {"token": "line:<stdout-delivery>", "actual": "0 bytes", "reason": "The launch was refused, so there was no program output.", "citation": "as above"},
+      {"token": "key-missing:FIXTURE_ID", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:ALPHA", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:BETA", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:GAMMA", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:CHAIN_CONSISTENT", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:RESULT", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:OBS_DSO", "reason": "The launch was refused.", "citation": "as above"},
+      {"token": "key-missing:OBS_DSO_COUNT", "reason": "The launch was refused.", "citation": "as above"}
+    ],
+
+    "linux-proc-daemon-double-fork": [
+      {"token": "key-missing:<post-file:daemon.log>", "actual": "absent",
+       "reason": "A console-mode launch is bounded by the sandbox: when the process the runtime waited for exits, the sandbox is torn down and the detached daemon dies before it can finish its work. PROVEN to be the launch mode and nothing else: with --launch-mode service the same specimen leaves daemon.log behind, which is what Format 0.1 5.6 requires of a service ('the application MUST survive the process that started it'). Console-mode behaviour is not specified either way; that gap is reported separately.",
+       "citation": "docs/FORMAT-0.1.md 5.6 (service semantics); docs/ISOLATION.md, 'Privilege / process creation' (--die-with-parent, private PID namespace)"}
+    ],
+
+    "linux-proc-orphan": [
+      {"token": "key-missing:<post-file:orphan.log>", "actual": "absent",
+       "reason": "Same as linux-proc-daemon-double-fork: the orphaned child does not outlive the console-mode sandbox. With --launch-mode service it does, and orphan.log appears.",
+       "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md, 'Privilege / process creation'"}
+    ]
+  }
+}
