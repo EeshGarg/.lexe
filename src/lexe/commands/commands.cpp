@@ -1124,7 +1124,37 @@ int cmd_analyze(const std::vector<std::string>& args) {
             }
         }
     }
-    return 0; // analysis is informational; the report content conveys issues
+    // TYPED exit, matching `sdk verify`: 0 when the loader can reach every
+    // dependency, 3 when it cannot.
+    //
+    // This used to return 0 unconditionally, on the reasoning that "analysis is
+    // informational; the report content conveys issues". That is true of a human
+    // reading the report and false of everything else. `analyze` is the pre-ship
+    // gate — it is what a publisher and a CI job run precisely to avoid shipping
+    // a package that cannot start — and exiting 0 meant every scripted
+    // integration silently passed exactly those packages. REFERENCE-POLICY §3
+    // says exit codes are the contract that tells a script what happened, and
+    // "this will not start" is something a script needs told.
+    //
+    // 3 rather than a new code, because `sdk verify` already returns 3 for a
+    // non-conformant verdict and `verify` returns 3 for a package not accepted.
+    // A reader should not have to learn a third convention for the same shape of
+    // answer.
+    //
+    // The obvious objection — that this breaks ordinary inspection of a loose
+    // binary — was measured rather than assumed, and does not hold: a normal
+    // dynamically linked program's libc is a host interface, reachable inside
+    // the sandbox, so its contract is SATISFIED and this does not fire. It fires
+    // for the case it is about: a library the loader cannot reach at launch.
+    //
+    // Note the deliberate asymmetry with the advisory count. An unsatisfied
+    // contract is not the same as "unresolved dependencies", and changing what
+    // `unresolved` means would collapse the two questions back into one, which
+    // was the original defect.
+    if (report.runtime_contract_checked && !report.runtime_unreachable.empty()) {
+        return 3;
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------- sdk verify

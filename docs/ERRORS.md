@@ -29,6 +29,13 @@ CLI command maps through it.
 | 6 | busy, or an operation conflict | `BusyError`, `RetainedDataConflict` |
 | 7 | local publisher-trust rejection | `TrustError`, `ChangedKeyError`, `BlockedKeyError`, `CorruptTrustError` |
 
+The inspection commands carry a typed exit rather than always returning 0:
+`lexe verify` exits 3 when a package was not accepted, `lexe sdk verify` exits 3
+on a non-conformant verdict, and `lexe analyze` exits 3 when the dynamic loader
+could not reach every dependency — that is, when the program would not start.
+`analyze` returned 0 unconditionally until it was pointed out that a pre-ship
+gate which always succeeds is not a gate.
+
 Two properties a script may rely on:
 
 * **Exit 3 never means "probably fine".** The file was not accepted. It is not a
@@ -235,7 +242,51 @@ was nearest to hand.
 
 ---
 
-## 7. Known diagnostic defects
+## 7. The failure mode this project keeps producing
+
+Not an error taxonomy entry, but it belongs in the same document, because it is
+the reason several of the entries above exist and it will produce more.
+
+Six times in one development pass, a piece of machinery **reported success over
+work it had not done**:
+
+1. `source_fingerprint()` hashed nothing at all — `find | xargs stat` split on the
+   space in the repository path, every stat failed into `/dev/null`, and the
+   evidence guard approved every run it saw.
+2. The acceptance lane globbed `0*.sh` and stopped at 09, so the tenth script
+   never ran while the suite printed "all 10 automated acceptance scripts passed".
+3. The workload lane exited 0 when every specimen was BLOCKED, so a green lane
+   could mean 184 specimens executed or none.
+4. A patch fixing that covered one of five exit sites; the other four still
+   returned 0.
+5. `Dependency::out_of_package_search_path` was assigned in one place and read
+   nowhere — a field whose header comment described a behaviour that did not
+   exist.
+6. A patch script recursed until bash overflowed, **printing every correct line
+   on the way down**, so its output looked right and its exit code did not.
+
+The common factor is not carelessness. **Every one of those artefacts reports on
+itself**: the fingerprint reports on the fingerprint, the lane on the lane, the
+patch on its own output. Self-reporting machinery cannot detect its own absence,
+because "nothing to report" and "not looking" produce identical output.
+
+Two practices follow, and they are the ones worth keeping:
+
+* **Test that a check FIRES, not only that it passes.** Every one of the six was
+  found that way and none would have been found by reading the code. A check with
+  no failing case is indistinguishable from no check.
+* **Give a check an independent observer.** This is what the separation of
+  implementation, testing and fixture-manufacture is for. Five of the six were
+  found by someone other than the author, and the sixth by its author only
+  because they ran it instead of reading it.
+
+A corollary worth stating because it cost real time: a check that cannot
+distinguish "did not run" from "passed" must be made to fail when it did not run.
+`BuildReport::runtime_contract_checked` exists for exactly that reason — an empty
+list of problems and an unasked question are not the same fact, and rendering
+them identically is how the sixth instance would have become the seventh.
+
+## 8. Known diagnostic defects
 
 Recorded because a misleading message sends someone hunting for the wrong thing.
 

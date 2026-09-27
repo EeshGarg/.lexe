@@ -1244,18 +1244,38 @@ TEST_CASE("analyze reports dependency classification and compatibility") {
     test::write_elf(root, app);
 
     const auto human = run_cli({"analyze", root.string()});
-    CHECK(human.exit_code == 0);
+    // This fixture declares `libmystery.so.9`, which exists nowhere, so its
+    // runtime contract genuinely is not satisfied -- exit 3, like `sdk verify`
+    // and `verify`. `analyze` used to return 0 unconditionally, which meant
+    // every scripted pre-ship gate passed the packages it exists to catch.
+    CHECK(human.exit_code == 3);
     CHECK(contains(human.stdout_text, "Dependencies:"));
     CHECK(contains(human.stdout_text, "libcustom.so.1"));
     CHECK(contains(human.stdout_text, "Compatibility:"));
+    CHECK(contains(human.stdout_text, "Runtime contract: NOT satisfied"));
 
     const auto j = run_cli({"analyze", root.string(), "--json"});
-    CHECK(j.exit_code == 0);
+    CHECK(j.exit_code == 3);
     const json doc = json::parse(j.stdout_text);
     CHECK(doc.at("runtimeProfile") == "core-portable");
     CHECK(doc.at("dependencySummary").at("forbidden") == 1);
     CHECK(doc.at("dependencySummary").at("unresolved") == 1);
     CHECK(doc.at("dependencySummary").at("hostInterface") == 1);
+    CHECK(doc.at("runtimeContract").at("satisfied") == false);
+
+    // And the case that must NOT exit 3, because a check that condemns
+    // everything is indistinguishable from a broken one. Same fixture minus the
+    // dependency that exists nowhere: a host interface and a bundled library the
+    // analysis can see, so the contract holds.
+    test::ElfSpec fine;
+    fine.interp = "/lib64/ld-linux-x86-64.so.2";
+    fine.needed = {"libc.so.6"};
+    const fs::path ok_root = work.dir / "app-ok";
+    test::write_elf(ok_root, fine);
+    const auto okr = run_cli({"analyze", ok_root.string(), "--json"});
+    CHECK(okr.exit_code == 0);
+    CHECK(json::parse(okr.stdout_text).at("runtimeContract").at("satisfied") ==
+          true);
 
     // --profile selects a profile; a bad profile is a usage error.
     const auto nc =

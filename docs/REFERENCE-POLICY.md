@@ -395,6 +395,33 @@ runtime directory stay writable.
 Exit codes are a CLI contract, not a format one: they tell a script what
 happened, and no package can observe them.
 
+Which is why the inspection commands carry a TYPED exit rather than always
+returning 0:
+
+| Command | 0 | 3 |
+|---|---|---|
+| `lexe verify` | the package was accepted | it was not |
+| `lexe sdk verify` | conformant to the profile | a non-conformant verdict |
+| `lexe analyze` | the loader can reach every dependency | it cannot — the program would not start |
+
+`analyze` used to return 0 unconditionally, on the reasoning that analysis is
+informational and the report conveys the issues. That is true of a human reading
+the report and false of every other consumer. `analyze` is the pre-ship gate — it
+is what a publisher and a CI job run precisely to avoid shipping something that
+cannot start — so returning 0 meant every scripted integration silently passed
+exactly the packages it exists to catch.
+
+It reuses 3 rather than introducing a code of its own, because a reader should not
+have to learn a third convention for the same shape of answer.
+
+The obvious objection, that this would fire on ordinary inspection of a loose
+binary, was measured before the change rather than argued about: a normal
+dynamically linked program's libc is a host interface and is reachable inside the
+sandbox, so its contract is satisfied and the non-zero exit does not fire. It
+fires for the case it is about — a library the dynamic loader cannot reach at
+launch, which for a bundled library means no `$ORIGIN`-relative rpath points at
+it.
+
 ## 4. Other implementation choices
 
 * **Sandboxing** is bubblewrap on Linux. The format requires isolation between
