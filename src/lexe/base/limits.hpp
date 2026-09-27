@@ -38,7 +38,23 @@ inline constexpr std::uint64_t kMaxTotalUncompressedBytes =
 /// (see kRatioGraceBytes) so small highly-compressible files are not rejected.
 inline constexpr std::uint64_t kMaxExpansionRatio = 200;
 /// Below this many emitted bytes the expansion-ratio guard does not apply.
-inline constexpr std::uint64_t kRatioGraceBytes = 16ull * 1024 * 1024; // 16 MiB
+///
+/// Raised from 16 MiB after the guard refused a legitimate application: a
+/// 48 MiB executable whose `.data` is large, initialised and low-entropy
+/// compressed to 53,914 bytes — a ratio of 934 — and could not be installed at
+/// all. It ran correctly outside the runtime, so the refusal was wrong about
+/// the package, and the old hint went further and asserted that a payload this
+/// compressible "is not a normal application payload". It is one.
+///
+/// This costs very little, because the ratio guard was never the real defence.
+/// The absolute caps above are: whatever a package claims, extraction stops at
+/// kMaxEntryUncompressedBytes per entry and kMaxTotalUncompressedBytes overall,
+/// and both are checked against the DECLARED sizes before a byte is
+/// decompressed. The ratio guard only rejects the pathological
+/// small-file-claiming-a-lot case earlier than those caps would, and at 256 MiB
+/// it still does exactly that.
+inline constexpr std::uint64_t kRatioGraceBytes =
+    256ull * 1024 * 1024; // 256 MiB
 
 // ------------------------------------------------------------------- paths
 /// Maximum bytes in a whole entry path.

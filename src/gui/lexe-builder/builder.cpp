@@ -567,8 +567,16 @@ inline std::vector<DependencyRow> dependency_rows(const DependencyReport& r) {
         row.handling = to_string(d.kind);
         row.reason = d.reason;
         row.recommendation = d.recommendation;
+        // An `Elsewhere` dependency warns too. It resolved on THIS machine,
+        // through an absolute DT_RPATH or an explicit search path pointing
+        // outside both the payload and the system directories, so it looks
+        // satisfied here and will not exist inside the sandbox: the launch fails
+        // with exit 127 and nothing on either stream. A builder that showed it
+        // as an ordinary resolved library would be the last place the publisher
+        // could have caught it.
         row.warn = d.kind == DependencyKind::Forbidden ||
-                   d.kind == DependencyKind::Unresolved;
+                   d.kind == DependencyKind::Unresolved ||
+                   d.origin == DependencyOrigin::Elsewhere;
         rows.push_back(std::move(row));
     }
     return rows;

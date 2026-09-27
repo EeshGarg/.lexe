@@ -45,6 +45,24 @@ void list_kind(std::ostringstream& os, const DependencyReport& deps,
         if (show_hash && !d->sha256.empty()) {
             os << "  sha256:" << d->sha256.substr(0, 12) << "…";
         }
+        // WHERE it was found, never left to the reader's inference. This
+        // heading used to read "Bundled libraries" over a list that could
+        // include libraries found on the build host, with digests, which reads
+        // as "the package carries these and they are verified".
+        switch (d->origin) {
+        case DependencyOrigin::Payload:
+            os << "  [in the package]";
+            break;
+        case DependencyOrigin::System:
+            os << "  [found on this host, NOT in the package]";
+            break;
+        case DependencyOrigin::Elsewhere:
+            os << "  [found only at " << d->resolved_path.string()
+               << ", which a sandboxed launch will not have]";
+            break;
+        case DependencyOrigin::None:
+            break;
+        }
         os << "\n";
     }
 }
@@ -90,7 +108,10 @@ std::string render_build_report_text(const BuildReport& r) {
        << d.count(DependencyKind::Bundle) << " bundle, "
        << d.count(DependencyKind::Forbidden) << " forbidden, "
        << d.count(DependencyKind::Unresolved) << " unresolved\n";
-    list_kind(os, d, DependencyKind::Bundle, "Bundled libraries", true);
+    // "to bundle", not "bundled": DependencyKind::Bundle is a RECOMMENDATION
+    // that the library be carried, not a finding that it already is. Each entry
+    // states where it was actually found.
+    list_kind(os, d, DependencyKind::Bundle, "Libraries to bundle", true);
     list_kind(os, d, DependencyKind::HostInterface, "Host interfaces", false);
     list_kind(os, d, DependencyKind::Forbidden, "Forbidden (host must provide)", false);
     list_kind(os, d, DependencyKind::Unresolved, "Unresolved", false);
@@ -144,8 +165,15 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
 
     ordered_json deps = ordered_json::array();
     for (const Dependency& d : r.dependencies.dependencies) {
+        // `origin` sits next to `sha256` deliberately. Without it a consumer
+        // reads a soname, a digest and the word "bundle" and concludes the
+        // package carries a verified copy of that library -- which is false for
+        // anything found on the analysing host. The text report states this too;
+        // a machine-readable surface that omitted it would just be the same
+        // mistake for a different audience.
         deps.push_back({{"soname", d.soname},
                         {"kind", to_string(d.kind)},
+                        {"origin", to_string(d.origin)},
                         {"resolvedPath", d.resolved_path.string()},
                         {"reason", d.reason},
                         {"recommendation", d.recommendation},

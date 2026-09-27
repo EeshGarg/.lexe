@@ -378,6 +378,32 @@ void resolve_runtime_contract(const fs::path& version_dir,
          deps.of_kind(DependencyKind::Unresolved)) {
         record.runtime_unresolved.push_back(dependency->soname);
     }
+    // A library that resolved ONLY through a path outside both the payload and
+    // the host system directories is not satisfied, however well it resolved
+    // here. That path belongs to the machine running the install — typically an
+    // absolute DT_RPATH left over from a build tree — and it does not exist
+    // inside the sandbox, so the loader will fail at exec.
+    //
+    // Recorded as unresolved because that is what it is, and because the
+    // alternative is what used to happen: the contract was reported satisfied,
+    // the launch was cleared, and the application exited 127 with nothing on
+    // either stream. Measured with a package whose single file was its own
+    // executable and whose DT_RPATH pointed into a build directory — `analyze`
+    // called all three libraries "bundle", and the launch failed.
+    //
+    // Note the deliberate asymmetry: DependencyOrigin::System is NOT recorded
+    // here. The sandbox mounts a read-only system view, so a host library in
+    // /usr/lib genuinely is reachable at runtime, and refusing those would
+    // break every application that correctly relies on the host.
+    for (const Dependency& dependency : deps.dependencies) {
+        if (dependency.origin != DependencyOrigin::Elsewhere) continue;
+        if (dependency.kind == DependencyKind::Forbidden) continue;
+        if (std::find(record.runtime_unresolved.begin(),
+                      record.runtime_unresolved.end(), dependency.soname) ==
+            record.runtime_unresolved.end()) {
+            record.runtime_unresolved.push_back(dependency.soname);
+        }
+    }
     record.runtime_glibc = deps.max_glibc_version();
 
     const std::size_t bundled = deps.count(DependencyKind::Bundle);

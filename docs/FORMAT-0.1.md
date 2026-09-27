@@ -863,6 +863,18 @@ For `role: "application"` with `applicationType: "windows"`, the entry named by
   refused as such, rather than reported as a mismatch against a list the
   publisher could not have satisfied.
 
+Recorded plainly, because the consequence is larger than the rule looks: since
+`architectures` recognises only `x86_64` and `aarch64`, **a 32-bit Windows
+program cannot be named by a conforming 0.1 manifest at all.** There is no
+spelling that packages it. That excludes a large and entirely legitimate class
+of existing Windows software — much of it precisely the old, unmaintained,
+still-needed kind that a compatibility story exists to serve.
+
+This is a deliberate limitation of 0.1 rather than an oversight, and it is the
+right shape of limitation: such a package is refused at verification with an
+accurate reason, not accepted and then broken at launch. Adding an `i386` value
+is a 0.2 question, and it is a real one.
+
 A .NET/CLR image is NOT a verification failure: whether the host can run it is
 a host-capability question for the execution resolver, not a question about
 whether the bytes are what the manifest says.
@@ -1195,6 +1207,65 @@ What a runtime MUST still do:
 * make the approved set inspectable, so a user can see what an application has
   been granted without having to remember when they granted it;
 * discard the approval when the application's persistent data is purged.
+
+### 9.5.2 The execution context a launched application receives
+
+Three properties of a launch were specified nowhere in this document, were
+discovered only by running foreign programs, and each fails the §0.2 test: a
+package can observe them, so a package can work on one conforming
+implementation and fail on another. They are specified here for that reason.
+
+**The working directory.** A runtime MUST launch the entrypoint with its working
+directory set to a directory the application MAY write to, and that directory
+MUST NOT be the installed content directory. A package MUST NOT assume that its
+payload is reachable by a path relative to the working directory; content is
+found relative to the executable's own location.
+
+Both halves matter and for different reasons. Without the first, a program that
+writes a file to its own working directory behaves differently on every
+implementation — and half of them break. Without the second, the working
+directory becomes the installed tree, which makes the application's own content
+writable and turns every "save a file next to me" program into a self-modifying
+package. Publishers should read this as: a relative path on open is a path into
+your data, never into your payload.
+
+**The environment.** A runtime MUST reset the environment to a defined set
+rather than inheriting the caller's, and MUST NOT forward any variable that
+confers authority over the launch — `LD_PRELOAD`, `LD_LIBRARY_PATH` and their
+equivalents on other loaders. It MUST provide locale configuration sufficient
+for the application to handle non-ASCII text.
+
+That last clause reads like a detail and is not. Measured on a real
+implementation: with no locale in the environment, non-ASCII bytes in arguments
+and filenames reached a Windows-chain application with the high bit stripped
+from every byte, and opening a file by its own non-ASCII name failed — for a
+package that was intact and correctly signed, on a compatibility layer that was
+behaving correctly. An environment stripped for safety had silently become an
+environment that corrupts text.
+
+**Known limitation, to be resolved in a later version.** The *names* by which an
+application discovers its own writable data location are not fixed by 0.1. The
+reference implementation sets `LEXE_APP_ID`, `LEXE_APP_DATA` and
+`LEXE_APP_CACHE` ([REFERENCE-POLICY.md](REFERENCE-POLICY.md)), but a package
+that reads them is relying on that implementation, not on this format. This is
+recorded as a gap rather than closed here, because closing it means adding a
+required interface to a frozen format, and that is a 0.2 decision — not
+something to slip in under a clarification. Until then, a package that must be
+portable across implementations should treat its working directory as the
+writable location it was given.
+
+**Background work and teardown.** A runtime MAY terminate the entrypoint's
+descendants when the entrypoint exits, for any launch mode other than
+`service`. A package whose work must outlive its entrypoint — a launcher that
+starts a worker and returns, which is the commonest shape in some ecosystems —
+MUST declare `launch.mode: "service"` (§5.6); it MUST NOT rely on descendants
+surviving any other mode.
+
+A runtime that does tear descendants down SHOULD say so in its report for that
+launch. It is otherwise indistinguishable, to the caller, from an application
+that started and chose to do nothing — and reporting a successful launch of an
+application whose actual work was killed before it ran is the most misleading
+outcome a launcher can produce.
 
 ### 9.6 Isolation between applications
 

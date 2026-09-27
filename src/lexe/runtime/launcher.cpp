@@ -30,6 +30,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <system_error>
@@ -162,6 +163,26 @@ std::string detect_terminal_emulator() {
 }
 
 namespace {
+
+/// Write a captured stream through to the caller VERBATIM: every byte, however
+/// many, NUL bytes included.
+///
+/// The relay this replaces used `std::fputs`, which takes a C string and
+/// therefore stopped at the application's first NUL byte. An application that
+/// wrote 8 MiB of binary data to stdout had 163 bytes delivered, and one that
+/// wrote all 256 byte values had NONE, because byte zero is NUL. The data was
+/// captured correctly in full and discarded at the very last step, with no
+/// error and no warning — the worst shape a data-loss bug can take.
+///
+/// A launched program's stdout is a byte stream, not text, and the only correct
+/// way to forward it is by length.
+void relay_stream(const std::string& text, std::FILE* to) {
+    if (text.empty()) return;
+    std::fwrite(text.data(), 1, text.size(), to);
+    // Flushed here so the application's own output cannot be reordered behind
+    // a diagnostic the CLI prints afterwards.
+    std::fflush(to);
+}
 
 /// The argv that re-invokes `lexe run <id>` inside a terminal emulator.
 /// Returns an empty vector when no terminal is available on this host.
@@ -716,6 +737,35 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // there is no outcome to judge. Reporting one would be an invention, and
     // whatever the application does from here is its own business until the
     // next time something looks. (Nothing supervises it; see §5.)
+    // Hand the caller whatever the application wrote, ALWAYS, and by length.
+    //
+    // This relay used to be the ELSE of the non-zero-exit branch below, and it
+    // wrote only stdout, only on success, only up to the first NUL. Three
+    // silent failures came out of that one arrangement:
+    //
+    //   * `captured_stderr` was never written to our stderr in ANY branch. An
+    //     application that reports on stderr and exits 0 therefore produced
+    //     nothing at all — and no error record either, since those are only
+    //     made for a failing exit. FORMAT-0.1 §5.6 forbids exactly this, in
+    //     these words: a launch must not leave the application "silently
+    //     appearing to do nothing".
+    //
+    //   * Output was withheld from the caller precisely WHEN the application
+    //     exited non-zero. A non-zero exit is a normal, documented outcome for
+    //     a large class of programs — `diff`, `grep`, `test`, every compiler —
+    //     and for those the output IS the result. It survived only inside an
+    //     error record the caller had to know to go and ask for.
+    //
+    //   * `fputs` truncated at the first NUL (see relay_stream).
+    //
+    // The error record below is ADDITIONAL, never a substitute. It is durable
+    // and machine-readable for `lexe errors`; this relay is what the caller's
+    // pipe is waiting for. Writing one was never a reason to skip the other.
+    if (capture_output) {
+        relay_stream(captured_stdout, stdout);
+        relay_stream(captured_stderr, stderr);
+    }
+
     if (detached) {
         // nothing to record beyond "it started", which report.detached says
     } else if (exit_code != 0 || signal.has_value()) {
@@ -739,10 +789,6 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
         report.error = ErrorStore(paths).record(std::move(failure),
                                                 captured_stdout,
                                                 captured_stderr);
-    } else if (capture_output && !captured_stdout.empty()) {
-        // A console application that succeeded but had nowhere to print: show
-        // the user its output rather than leaving "nothing happened".
-        std::fputs(captured_stdout.c_str(), stdout);
     }
 
     return report;

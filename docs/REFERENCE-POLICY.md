@@ -43,11 +43,25 @@ reference runtime's values.
 | per-entry uncompressed size | 1 GiB | each member |
 | total uncompressed size | 2 GiB | sum over all members |
 | expansion ratio | 200× | total uncompressed ÷ packaged size |
-| ratio grace threshold | 16 MiB | below this total, the ratio is not applied |
+| ratio grace threshold | 256 MiB | below this total, the ratio is not applied |
 
-The grace threshold exists so that a small, highly compressible package — a few
-kilobytes of text that deflates well — is not refused for a ratio that means
-nothing at that size.
+The grace threshold exists so that a highly compressible package is not refused
+for a ratio that says nothing about whether it is legitimate.
+
+It was 16 MiB, and 16 MiB was too low — demonstrated by a program, not by
+reasoning. A 48 MiB executable whose `.data` section is large, initialised and
+low-entropy compressed to 53,914 bytes, a ratio of 934×, and could not be
+installed at all. It ran correctly outside the runtime. Worse, the refusal's
+hint asserted that "a package this compressible is not a normal application
+payload", which was a claim about the input that the input disproved: embedded
+tables and low-entropy resources do exactly this.
+
+Raising it costs very little, because the ratio guard was never the real defence
+— the absolute caps above are. Whatever a package claims, extraction stops at
+1 GiB per entry and 2 GiB overall, and both are checked against the declared
+sizes before a single byte is decompressed. The ratio guard only rejects the
+pathological small-file-claiming-a-lot case earlier than those caps would, and
+at 256 MiB it still does.
 
 Both aggregate limits are enforced twice: once in the reader's constructor from
 the central directory's declared sizes, so nothing is inflated before the
@@ -229,6 +243,45 @@ flakiest test there is — one had already cost this suite three false failures 
 so the assertion is on a property of the code, which is stable under load and is
 what actually regressed.
 
+## 2.2 The execution context of a launch
+
+Format 0.1 §9.5.2 requires a writable working directory that is not the
+installed content, an environment reset to a defined set, locale sufficient for
+non-ASCII text, and a documented teardown rule. It deliberately does not fix the
+spellings. These are this runtime's.
+
+| Property | This runtime's choice |
+|---|---|
+| working directory | the application's private data root |
+| data / cache discovery | `LEXE_APP_ID`, `LEXE_APP_DATA`, `LEXE_APP_CACHE` |
+| locale | the caller's `LANG` / `LC_ALL` / `LC_MESSAGES` when set, else `LANG=C.UTF-8` |
+| forwarded from the caller | nothing else, except display variables for a declared GUI launch |
+| descendant teardown | console and GUI launches are torn down with the entrypoint; `service` is not |
+
+Two of these are recorded because they were wrong and the reason they were wrong
+is instructive.
+
+The locale variables were forwarded **only** for a GUI launch, filed among
+"toolkit hints that only affect rendering". A locale is not a rendering hint. A
+console application on the Windows chain therefore received arguments and
+filenames with the high bit stripped from every non-ASCII byte, while the same
+binary declared as a GUI application received them intact. The default exists
+for the other half of the problem: a launch from a session manager frequently
+has no locale at all, and no locale means ASCII, which produces the same
+corruption with nobody to blame for it.
+
+The system view is sealed read-only **last**, after every mount is in place.
+bubblewrap's root is a fresh tmpfs and a tmpfs is writable, so although `/usr`
+was correctly bound read-only, the root directory and the `/etc` directory
+holding the read-only `/etc` binds were both writable: a program could create
+`/anything`. Not an escape — the writes landed on the sandbox's own tmpfs,
+invisible outside and gone when it exited — but it contradicted the read-only
+system view this runtime advertises, and it gave a program probing its own
+privileges a different answer inside `.LEXE` than outside. Ordering is what makes
+the fix safe: the seal is applied after the binds, tmpfs mounts and `--dev`, so
+those keep their own mount flags and the private data root, `/tmp` and the
+runtime directory stay writable.
+
 ## 3. Exit codes
 
 | Code | Meaning |
@@ -275,6 +328,18 @@ happened, and no package can observe them.
   This is recorded because the choice looks like a detail and is not: a runtime
   that had taken the obvious verb would have shipped a launcher that hangs
   headless, hangs on stdin, and can be wedged by pressing Ctrl-C once.
+
+  **What `runinprefix` does not fix, stated rather than glossed.** Putting 72
+  Windows programs through the Proton chain twice produced a different set of
+  failures each time: output delivery failed for 16 specimens in one pass and 17
+  in the other, and the specimens affected included several that exited 0. So on
+  the Proton chain, whether a successful program's output reaches the caller
+  varies between runs of an identical corpus. This is not the relay defect fixed
+  in the launcher — that was deterministic and is now covered by
+  `tests/acceptance/10_output_relay.sh` — and it does not reproduce on the
+  `wine` chain, where the same corpus fails identically every time.
+  Undiagnosed, recorded as a known limitation of this chain, and a reason not to
+  treat Proton output as reliable for anything scripted.
 
 * **Other compatibility chains** (Wine, FEX, Box64) are how this runtime
   executes payloads it cannot run natively. The format defines the *vocabulary*

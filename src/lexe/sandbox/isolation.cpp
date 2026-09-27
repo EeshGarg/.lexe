@@ -102,6 +102,43 @@ sanitize_environment(const IsolationRequest& req) {
         return env;
     }
 
+    // LOCALE is forwarded for EVERY launch mode, not just GUI.
+    //
+    // These three used to sit in the `req.gui` block below, filed under
+    // "toolkit/session hints that only affect rendering". That was wrong about
+    // what a locale is. It is not a rendering hint: it decides how a program
+    // interprets and emits bytes, and on the Windows chains it decides how the
+    // compatibility layer converts arguments and filenames between the UTF-8
+    // world outside and the UTF-16 world inside.
+    //
+    // Measured, from outside this runtime, on the wine chain. Arguments stored
+    // in the package as `caf\xc3\xa9` reached a console-mode application as
+    // `caf\x43\x29` — the high bit cleared from every non-ASCII byte — while
+    // the identical binary under `launch.mode: "gui"` received them byte for
+    // byte. `CreateFileW` on a non-ASCII filename failed ERROR_FILE_NOT_FOUND
+    // in console mode and succeeded in GUI mode. The package was intact and the
+    // compatibility layer was innocent; the difference was these two lines
+    // being reachable only through a GUI launch.
+    //
+    // So a correctly built, correctly signed application handling non-ASCII
+    // text was silently corrupted for no reason other than declaring itself a
+    // console program.
+    for (const char* name : {"LANG", "LC_ALL", "LC_MESSAGES"}) {
+        const auto it = req.inherited_env.find(name);
+        if (it != req.inherited_env.end() && !it->second.empty()) {
+            env[name] = it->second;
+        }
+    }
+    // With NO locale at all, the C/POSIX default is effectively ASCII-only and
+    // the corruption above is what happens. A session launched from systemd
+    // frequently has no LANG, so "inherit whatever is there" is not by itself
+    // enough — an explicit UTF-8 default is the difference between a service
+    // that handles its own filenames and one that cannot open them. Only ever a
+    // fallback: anything the caller actually set wins.
+    if (env.find("LANG") == env.end() && env.find("LC_ALL") == env.end()) {
+        env["LANG"] = "C.UTF-8";
+    }
+
     // Display variables are forwarded ONLY for a declared GUI launch mode
     // (Definitive Architecture §14.4), and even then they are rewritten to the
     // fixed sandbox paths so the host's real runtime directory layout is never
@@ -123,9 +160,11 @@ sanitize_environment(const IsolationRequest& req) {
             env["DISPLAY"] = display;
         }
         // Toolkit/session hints that only affect rendering, never authority.
+        // (Locale is handled above for every launch mode — it does not belong
+        // in this list, which is what the bug was.)
         for (const char* name :
              {"XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "GDK_BACKEND",
-              "QT_QPA_PLATFORM", "LANG", "LC_ALL", "LC_MESSAGES"}) {
+              "QT_QPA_PLATFORM"}) {
             const std::string value = host(name);
             if (!value.empty()) env[name] = value;
         }
@@ -409,6 +448,31 @@ std::vector<std::string> render_bwrap_argv(const IsolationPlan& plan,
         a.push_back(b.host);
         a.push_back(b.sandbox);
     }
+
+    // Seal the sandbox ROOT read-only, last, once every mount above exists.
+    //
+    // bwrap's root is a fresh tmpfs, and a tmpfs is writable. So while /usr was
+    // correctly ro-bound, the root DIRECTORY itself and the /etc directory that
+    // holds the read-only /etc binds were both writable, and a program could
+    // create /anything and /etc/anything. Measured from outside: a probe using
+    // O_CREAT|O_EXCL got EACCES for all three of /usr, /etc and / when run
+    // directly, and under this runtime got EROFS for /usr but SUCCESS for /etc
+    // and /.
+    //
+    // Not an escape — those writes landed on the sandbox's own tmpfs and were
+    // invisible outside it, and they did not survive the launch. What they did
+    // do is contradict the "read-only system view" this file sets up twenty
+    // lines above, and give a program probing its own privileges a different
+    // answer inside .LEXE than outside, which is the kind of difference that
+    // makes a correct program behave incorrectly for reasons its author cannot
+    // see.
+    //
+    // Ordering is the whole trick: --remount-ro takes effect where it appears,
+    // so every bind, tmpfs, symlink, --proc and --dev above is already in place
+    // and keeps its own mount flags. Sealing the root does not seal them, which
+    // is why the private data root, /tmp and the runtime dir stay writable.
+    a.push_back("--remount-ro");
+    a.push_back("/");
 
     a.push_back("--chdir");
     a.push_back(plan.working_dir);

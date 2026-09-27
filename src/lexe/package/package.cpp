@@ -643,8 +643,13 @@ PackageReader::PackageReader(const fs::path& lexe_file)
                 "package: expands more than " +
                     std::to_string(limits::kMaxExpansionRatio) +
                     "x its packaged size (decompression-bomb guard)",
-                "A package this compressible is not a normal application "
-                "payload. The runtime refuses it rather than expanding it.");
+                "This is a resource limit of THIS runtime, not a defect in the "
+                "package: another conforming implementation may set a "
+                "different ratio, or none, and read it correctly. If you "
+                "built this package and it is what you intended, the payload "
+                "is unusually compressible — large embedded tables or "
+                "low-entropy resources will do it — and the limit is what "
+                "needs raising.");
         }
     }
 

@@ -17,11 +17,13 @@ bool has(const std::string& hay, const std::string& needle) {
 }
 
 Dependency dep(const std::string& soname, DependencyKind kind,
-               const std::string& sha = "") {
+               const std::string& sha = "",
+               DependencyOrigin origin = DependencyOrigin::Payload) {
     Dependency d;
     d.soname = soname;
     d.kind = kind;
     d.sha256 = sha;
+    d.origin = origin;
     return d;
 }
 
@@ -51,8 +53,16 @@ TEST_CASE("assemble + render summarizes identity, deps, profile and compatibilit
     CHECK(has(text, "Demo 1.0.0 (com.example.demo)"));
     CHECK(has(text, "x86_64"));
     CHECK(has(text, "Core Portable"));
-    CHECK(has(text, "Bundled libraries"));
+    // "Libraries to bundle", not "Bundled libraries". DependencyKind::Bundle is
+    // a recommendation that the library be carried, and this heading used to
+    // assert that it already was -- over a list that could include libraries
+    // found on the build host, printed with digests.
+    CHECK(has(text, "Libraries to bundle"));
+    CHECK_FALSE(has(text, "Bundled libraries"));
     CHECK(has(text, "libfoo.so.1"));
+    // Every resolved entry states WHERE it was found, so a digest can never be
+    // read as a claim about package content.
+    CHECK(has(text, "[in the package]"));
     CHECK(has(text, "Host interfaces"));
     CHECK(has(text, "network"));
     CHECK(has(text, "ABCD 1234"));
@@ -129,6 +139,35 @@ TEST_CASE("Core Portable reports attach a Tux32 Core 1 verdict; others do not") 
                                               RuntimeProfile::NativeCapture);
         CHECK_FALSE(r.core1.has_value());
     }
+}
+
+TEST_CASE("a resolved library's origin is stated, never left to inference") {
+    // The regression this locks down: an independent pass packaged a program
+    // whose ONLY payload file was its own executable, carrying an absolute
+    // DT_RPATH into a build-tree directory. `analyze` reported three libraries
+    // as "bundle" with digests -- reading as "carried by the package and
+    // verified" -- and the launch then failed with exit 127 and nothing on
+    // either stream, because that directory does not exist inside the sandbox.
+    DependencyReport deps;
+    deps.root_info.is_elf = true;
+    deps.root_info.machine = elf::Machine::X86_64;
+    deps.dependencies = {
+        dep("libin.so.1", DependencyKind::Bundle, std::string(64, 'a'),
+            DependencyOrigin::Payload),
+        dep("libhost.so.2", DependencyKind::Bundle, std::string(64, 'b'),
+            DependencyOrigin::System),
+        dep("libgone.so.3", DependencyKind::Bundle, std::string(64, 'c'),
+            DependencyOrigin::Elsewhere)};
+    deps.dependencies[2].resolved_path = "/tmp/some-build-tree/lib/libgone.so.3";
+
+    const std::string text = render_build_report_text(
+        assemble_report(std::move(deps), RuntimeProfile::CorePortable));
+
+    CHECK(has(text, "[in the package]"));
+    CHECK(has(text, "[found on this host, NOT in the package]"));
+    // The one that breaks a launch names the path and says what it means.
+    CHECK(has(text, "/tmp/some-build-tree/lib/libgone.so.3"));
+    CHECK(has(text, "a sandboxed launch will not have"));
 }
 
 } // TEST_SUITE("buildreport")

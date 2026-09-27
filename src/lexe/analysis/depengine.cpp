@@ -27,6 +27,16 @@ const char* to_string(DependencyKind k) {
     return "unresolved";
 }
 
+const char* to_string(DependencyOrigin o) {
+    switch (o) {
+    case DependencyOrigin::None:      return "none";
+    case DependencyOrigin::Payload:   return "payload";
+    case DependencyOrigin::System:    return "system";
+    case DependencyOrigin::Elsewhere: return "elsewhere";
+    }
+    return "none";
+}
+
 namespace {
 
 // The core glibc / toolchain runtime present on every conforming Linux host.
@@ -185,6 +195,42 @@ fs::path resolve(const std::string& soname, const std::vector<fs::path>& dirs) {
     return {};
 }
 
+/// Is `file` inside any of `roots`?
+bool under_any(const fs::path& file, const std::vector<fs::path>& roots) {
+    if (file.empty()) return false;
+    std::error_code ec;
+    const fs::path canon = fs::weakly_canonical(file, ec);
+    const fs::path target = ec ? file : canon;
+    for (const fs::path& root : roots) {
+        if (root.empty()) continue;
+        std::error_code rec;
+        const fs::path rcanon = fs::weakly_canonical(root, rec);
+        const fs::path base = rec ? root : rcanon;
+        const fs::path rel = target.lexically_relative(base);
+        if (rel.empty() || rel == fs::path(".")) continue;
+        if (rel.begin() == rel.end()) continue;
+        if (rel.begin()->string() == "..") continue;
+        return true;
+    }
+    return false;
+}
+
+/// Classify WHERE a resolved library was found — see DependencyOrigin. The
+/// payload wins over the system directories, because a package that carries its
+/// own copy is using that copy.
+DependencyOrigin origin_of(const fs::path& resolved,
+                           const DependencyOptions& opts,
+                           elf::Machine machine) {
+    if (resolved.empty()) return DependencyOrigin::None;
+    if (under_any(resolved, opts.payload_search_paths)) {
+        return DependencyOrigin::Payload;
+    }
+    if (under_any(resolved, default_search_dirs(machine))) {
+        return DependencyOrigin::System;
+    }
+    return DependencyOrigin::Elsewhere;
+}
+
 struct Resolver {
     const DependencyOptions& opts;
     DependencyReport& report;
@@ -271,6 +317,9 @@ struct Resolver {
             if (!resolved.empty()) {
                 child_info = elf::read(resolved);
                 dep.machine = child_info.machine;
+                // Recorded from the machine of the file actually found, so a
+                // wrong-arch library cannot be filed under the wrong origin.
+                dep.origin = origin_of(resolved, opts, child_info.machine);
                 dep.version_needs = child_info.version_needs;
                 if (opts.hash_bundles && dep.kind == DependencyKind::Bundle) {
                     try {

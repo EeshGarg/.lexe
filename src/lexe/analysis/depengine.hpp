@@ -33,13 +33,51 @@ enum class DependencyKind {
 const char* to_string(DependencyKind k);
 
 /// One node of the resolved dependency graph.
+/// WHERE a resolved library was found. Distinct from DependencyKind, which says
+/// how the library should be HANDLED; this says what was actually observed.
+///
+/// The two were conflated, and a launch broke because of it. `Bundle` means
+/// "an ordinary library, recommend bundling it" — a recommendation — but the
+/// report offered no way to ask whether a library had in fact come out of the
+/// package, so every consumer that needed that fact guessed. `lexe analyze`
+/// printed libraries found on the build host under the heading "Bundled
+/// libraries", with digests, which reads as a statement that the package
+/// carries them and is verified. It does not and it was not.
+enum class DependencyOrigin {
+    None,      ///< not resolved anywhere
+    Payload,   ///< inside the package — the package really does carry it
+    System,    ///< a standard host library directory, present to a sandboxed
+               ///< launch because the system view is mounted
+    Elsewhere, ///< resolved only through a DT_RPATH/DT_RUNPATH or an explicit
+               ///< extra search path that points outside both of the above.
+               ///<
+               ///< This is the dangerous one. Such a path exists on the machine
+               ///< the analysis ran on and will NOT exist inside the sandbox,
+               ///< so counting it as satisfied clears a launch that cannot
+               ///< start: the loader fails and the application exits 127 having
+               ///< printed nothing. Measured with a package whose only file was
+               ///< its executable, carrying an absolute DT_RPATH into a
+               ///< build-tree directory.
+};
+const char* to_string(DependencyOrigin o);
+
 struct Dependency {
     std::string soname;                    // e.g. "libssl.so.3"
     std::filesystem::path resolved_path;   // where it was found ("" if not)
     DependencyKind kind = DependencyKind::Unresolved;
+    /// Where `resolved_path` came from. Never infer this from `kind`.
+    DependencyOrigin origin = DependencyOrigin::None;
     std::string reason;                    // why it was classified this way
     std::string recommendation;            // recommended handling, in plain words
-    std::string sha256;                    // set only for a resolved bundle file
+    /// SHA-256 of the file at `resolved_path`, when one was computed.
+    ///
+    /// This is a digest of whatever file the analysis FOUND, which for
+    /// `DependencyOrigin::System` or `Elsewhere` is a file on the analysing
+    /// host, not package content. It is still useful — a builder about to copy
+    /// the library in wants it — but presenting it as if it were a verified
+    /// package entry is a claim about the package that nothing checked. Always
+    /// state `origin` alongside it.
+    std::string sha256;
     elf::Machine machine = elf::Machine::Unknown; // arch of the resolved file
     std::vector<std::string> needed_by;    // sonames/root that depend on it
     std::vector<std::string> version_needs;// versioned reqs of THIS object

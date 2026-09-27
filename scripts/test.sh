@@ -65,10 +65,11 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 # "blocked" instead of "skip" when the obstacle is the environment rather than
 # applicability), and a `<lane>_run`.
 
-ALL_LANES=(unit acceptance integration gui lifecycle concurrency session conformance security windows proton sanitizers)
+ALL_LANES=(evidence unit acceptance integration gui lifecycle concurrency session conformance security windows proton sanitizers)
 
 lane_desc() {
     case "$1" in
+    evidence)   echo "the evidence guard itself: does source_fingerprint() actually fire, and only where documented" ;;
     unit)       echo "the doctest binary: every subsystem, both GUI view models, the architecture rules" ;;
     acceptance) echo "end-to-end scripts against a throwaway LEXE_HOME" ;;
     integration) echo "trust and lifecycle across process boundaries" ;;
@@ -87,6 +88,13 @@ lane_desc() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # --------------------------------------------------------------- availability
+
+# Needs no build, no packages and no LEXE_HOME: it reads scripts/test.sh and
+# hashes the tree. If this one cannot run, nothing can be cited as evidence
+# anyway, so it has no skip condition worth naming beyond the hasher itself.
+evidence_check() {
+    have sha256sum || { echo "blocked: sha256sum is not available"; return 1; }
+}
 
 unit_check() { [[ -x "$BUILD_DIR/lexe_tests" ]] || { echo "skip: lexe_tests is not built"; return 1; }; }
 acceptance_check() { [[ -x "$BUILD_DIR/lexe" ]] || { echo "skip: the lexe CLI is not built"; return 1; }; }
@@ -204,6 +212,12 @@ session_run() {
     LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/session/run_all.sh"
 }
 
+# Needs no build and no LEXE_HOME -- it reads scripts/test.sh and hashes the
+# tree, nothing more. That is why it is the first lane.
+evidence_run() {
+    bash "$REPO/tests/evidence/run_all.sh"
+}
+
 conformance_run() {
     LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/conformance/run_all.sh"
 }
@@ -297,22 +311,70 @@ sanitizers_run() {
 source_fingerprint() {
     {
         git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "no-git"
-        git -C "$REPO" status --porcelain 2>/dev/null
-        # `tests/workloads/` is pruned: it holds SPECIMEN sources manufactured
-        # for .LEXE to consume, and no lane compiles or runs them — the unit
-        # binary globs `tests/*.cpp` only. Fingerprinting them would invalidate
-        # every run the workload engineer happened to be working through, for a
-        # change that cannot alter a single lane's result.
+        # Everything tracked or untracked EXCEPT two prefixes, each excluded for
+        # a stated reason. The rule is "cover what can change a result", not
+        # "cover everything" — but note that both exclusions have to be made
+        # HERE as well as in the find below, because this line sees the whole
+        # repository. The previous version pruned `tests/workloads/` in the find
+        # and not here, which did almost nothing: a tracked specimen that was
+        # edited still showed up in `git status`, so the prune only ever
+        # suppressed a touch that changed no content. Found by testing that the
+        # guard fires, which is the only way these things are ever found.
         #
-        # The rule is "cover what can change a result", not "cover everything".
-        # When a workload LANE exists, its inputs stop being inert and belong
-        # back in here — that is a deliberate decision to revisit, not an
-        # exclusion to forget.
+        # 1. docs/ — documentation cannot change a lane result. Every docs/
+        #    reference under scripts/, tests/ and tools/ is a comment or a
+        #    human-readable message, and no lane parses a document at runtime.
+        #    Checked, not assumed. The case that looks like a counterexample is
+        #    not one: the conformance corpus is written FROM the spec by hand
+        #    into corpus.py, which IS fingerprinted, so editing the spec cannot
+        #    silently change what a lane checks.
+        #
+        # 2. tests/workloads/specs*/ — the specimen sources. These ARE inputs to
+        #    the workload lane, so excluding them needs a better reason than
+        #    convenience, and there is one: that lane fingerprints them by
+        #    CONTENT, which is strictly stronger than what this function could
+        #    do. It re-hashes the generator against the sha256 recorded in the
+        #    corpus index and refuses to run on drift, and re-hashes every
+        #    specimen binary against its recorded digest, blocking any whose
+        #    bytes moved. They are also inputs to no other lane.
+        #
+        # Both exclusions also keep this bearable with three roles in one tree.
+        # A guard that discards a twelve-lane run because somebody fixed a typo
+        # in a Markdown file is a guard that creates pressure to bypass it.
+        git -C "$REPO" status --porcelain 2>/dev/null \
+            | grep -v -E '^(.. )"?(docs/|tests/workloads/specs)' || true
+        # Only `tests/workloads/specs*/` is pruned now — the SPECIMEN sources,
+        # the C and C++ programs manufactured for .LEXE to consume.
+        #
+        # This used to prune the whole of `tests/workloads/`, on the stated
+        # grounds that no lane compiled or ran any of it, with the revisit
+        # condition written down: "when a workload LANE exists, its inputs stop
+        # being inert and belong back in here". That lane now exists
+        # (`against_lexe.sh`), so the condition has come due and the harness
+        # itself — the engine, the two lane scripts, the expectation files — is
+        # fingerprinted like any other test code.
+        #
+        # The specimen sources stay pruned, and that is safe for a specific
+        # reason rather than a convenient one: the harness fingerprints them
+        # better than an mtime sweep can. It re-hashes the generator against the
+        # sha256 recorded in the corpus `index.json` and refuses to run at all
+        # on drift, and re-hashes every specimen binary against its recorded
+        # digest, BLOCKING any specimen whose bytes moved. An mtime here would
+        # only invalidate runs; that actually verifies the inputs.
+        #
+        # `examples/` and the build files are in the list because lanes DEPEND
+        # on them and the patterns below used to miss both:
+        # tests/conformance/01_differential.sh and 02_gate_agreement.sh build
+        # packages out of `examples/`, and CMakeLists.txt decides what the
+        # binary under test even is — yet neither is a *.cpp under src/, so the
+        # only thing catching them was the repo-wide status line above, which is
+        # now filtered. A guard that misses the build definition is not a guard.
         find "$REPO/src" "$REPO/tests" "$REPO/scripts" "$REPO/tools" \
-             "$REPO/schema" \
-             -path "$REPO/tests/workloads" -prune -o -type f \
+             "$REPO/schema" "$REPO/examples" "$REPO/CMakeLists.txt" \
+             -path "$REPO/tests/workloads/specs*" -prune -o -type f \
              \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.sh' \
-                -o -name '*.py' -o -name '*.json' \) \
+                -o -name '*.py' -o -name '*.json' -o -name '*.c' \
+                -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
              -printf '%p %s %T@\n' 2>/dev/null \
             | LC_ALL=C sort
     } | sha256sum | cut -d' ' -f1
