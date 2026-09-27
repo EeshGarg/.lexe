@@ -340,6 +340,32 @@ over a slow filesystem. The syscall *count* was the tell and the syscall-time
 summary was where it showed up; a profile of CPU time would have shown almost
 nothing, because waiting on a stat is not CPU.
 
+## 2.1.3 Relaying stderr means relaying the compatibility layer's stderr
+
+A consequence of fixing the output relay, recorded as a trade-off rather than a
+defect, and recorded mainly so that nobody "fixes" it the wrong way.
+
+Because a launched application's stderr now reaches the caller, a Windows
+application's stderr carries Wine's own noise with it — typically several
+repetitions of `Fontconfig error: Cannot load default config file` and an
+`err:msvcrt:_invalid_parameter`, on an otherwise completely successful launch.
+That output is the compatibility layer's, it was always being produced, and
+before the relay was fixed it was simply discarded along with the application's
+own stderr.
+
+**The obvious remedy is forbidden.** Filtering the chain's stderr means deciding,
+at the runtime, which bytes on that stream are the layer's and which are the
+application's — and there is no reliable way to tell them apart, because they are
+one stream. Any filter accurate enough to remove Wine's noise will eventually
+remove a program's own diagnostic that happens to resemble it, which is exactly
+the defect this relay was fixed to close: an application "silently appearing to
+do nothing" (FORMAT-0.1 §5.6). A noisy launch is a worse experience than a quiet
+one; a launch that silently eats a program's error output is a worse *runtime*.
+
+So if this is ever addressed it must be **additive and opt-in** — a flag a caller
+sets when it has decided it does not want the chain's diagnostics — never a
+default filter. Recorded as an open decision, not a planned change.
+
 ## 2.2 The execution context of a launch
 
 Format 0.1 §9.5.2 requires a writable working directory that is not the
