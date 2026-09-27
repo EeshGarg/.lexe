@@ -1,0 +1,11 @@
+WL_1.0 {
+  global:
+    ver_value;
+  local:
+    *;
+};
+
+WL_2.0 {
+  global:
+    ver_value;
+} WL_1.0;
