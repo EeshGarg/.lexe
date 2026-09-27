@@ -42,6 +42,25 @@ struct BuildReport {
     // Its typed verdict is the authoritative gate for that claim.
     std::optional<Core1VerifyResult> core1;
 
+    /// Sonames the DYNAMIC LOADER could not reach — the answer to "will this
+    /// start", as against `dependencies`, which answers "what does this need and
+    /// where would it come from".
+    ///
+    /// Separate because the two questions have different answers for the same
+    /// bytes, and reporting only the first one made this the pre-ship check that
+    /// says "fine" about a package that cannot start. The advisory analysis
+    /// searches the payload directly; the loader cannot, reaching it only
+    /// through an `$ORIGIN`-relative rpath. So a package with its libraries in
+    /// `payload/lib/` and nothing pointing there resolves cleanly here and dies
+    /// at exec with 127 and nothing on either stream.
+    ///
+    /// Filled by whoever ran the contract analysis (DependencyOptions::
+    /// runtime_contract). Empty means either "nothing unreachable" or "not
+    /// asked" — `runtime_contract_checked` distinguishes them, because "we did
+    /// not look" must never render as "all clear".
+    std::vector<std::string> runtime_unreachable;
+    bool runtime_contract_checked = false;
+
     // --- output (optional; set after a real build) ---
     std::filesystem::path output_package;
     std::uint64_t output_size = 0;

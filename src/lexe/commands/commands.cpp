@@ -1068,11 +1068,49 @@ int cmd_analyze(const std::vector<std::string>& args) {
                     "executables");
     }
 
+    // Ask the SECOND question too, and say which one each answer belongs to.
+    //
+    // The analysis above is advisory — it searches the payload directly, which
+    // is the right way to answer "what does this need and where would I get
+    // it". It is the wrong way to answer "will this start", because the dynamic
+    // loader does not know the payload exists; it reaches it only through an
+    // $ORIGIN-relative rpath.
+    //
+    // Reporting only the first answer made this the pre-ship check that says
+    // "0 unresolved" about a package the runtime then refuses to launch. A
+    // publisher runs `lexe analyze` precisely to avoid shipping that, so the
+    // one place it must not be silent is the one where it was.
+    DependencyOptions contract_opts = opts;
+    contract_opts.runtime_contract = true;
+    std::vector<std::string> unreachable;
+    bool contract_checked = false;
+    try {
+        const DependencyReport contract = analyze_dependencies(root, contract_opts);
+        contract_checked = true;
+        for (const Dependency* d : contract.of_kind(DependencyKind::Unresolved)) {
+            unreachable.push_back(d->soname);
+        }
+        for (const Dependency& d : contract.dependencies) {
+            if (d.origin != DependencyOrigin::Elsewhere) continue;
+            if (d.kind == DependencyKind::Forbidden) continue;
+            if (std::find(unreachable.begin(), unreachable.end(), d.soname) ==
+                unreachable.end()) {
+                unreachable.push_back(d.soname);
+            }
+        }
+    } catch (const std::exception&) {
+        // Leave contract_checked false. "We did not look" must never render as
+        // "all clear" — which is why the report carries the flag as well as the
+        // list.
+    }
+
     BuildReport report = assemble_report(std::move(deps), profile);
     report.app_name = app_name;
     report.app_id = app_id;
     report.app_version = app_version;
     report.permissions = permissions;
+    report.runtime_unreachable = std::move(unreachable);
+    report.runtime_contract_checked = contract_checked;
 
     if (parsed.flags.count("--json") != 0) {
         std::cout << build_report_json(report).dump(2) << "\n";

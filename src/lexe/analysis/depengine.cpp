@@ -220,8 +220,21 @@ bool under_any(const fs::path& file, const std::vector<fs::path>& roots) {
 /// own copy is using that copy.
 DependencyOrigin origin_of(const fs::path& resolved,
                            const DependencyOptions& opts,
-                           elf::Machine machine) {
+                           elf::Machine machine,
+                           const std::vector<fs::path>& origin_relative_dirs) {
     if (resolved.empty()) return DependencyOrigin::None;
+    // An $ORIGIN-relative rpath travels WITH the binary. It resolves against
+    // wherever the object happens to be, which means it resolves inside the
+    // sandbox exactly as it does here -- it is the precise opposite of a
+    // host-only path, and it is the idiom this runtime documents and recommends.
+    //
+    // Classifying it as Elsewhere was a false negative of the worst kind: a
+    // package using the CORRECT relocatable idiom was reported as unable to
+    // start. Caught by building the three shapes and checking each against
+    // whether it actually runs, rather than against what the code implied.
+    if (under_any(resolved, origin_relative_dirs)) {
+        return DependencyOrigin::Payload;
+    }
     if (under_any(resolved, opts.payload_search_paths)) {
         return DependencyOrigin::Payload;
     }
@@ -265,16 +278,28 @@ struct Resolver {
     }
 
     // Build the ordered search dirs for an object being processed.
+    //
+    // Two shapes, because there are two questions -- see
+    // DependencyOptions::runtime_contract. The advisory shape may look straight
+    // into the payload; the runtime shape may not, because the dynamic loader
+    // cannot. The ONLY way the payload is reachable at launch is through an
+    // $ORIGIN-relative DT_RPATH/DT_RUNPATH, and that is expanded below either
+    // way, so a correctly linked package resolves identically under both.
     std::vector<fs::path> search_dirs(const elf::ElfInfo& info,
                                       const fs::path& object_dir) {
-        std::vector<fs::path> dirs = opts.payload_search_paths;
+        std::vector<fs::path> dirs;
+        if (!opts.runtime_contract) {
+            dirs = opts.payload_search_paths;
+        }
         for (const std::string& e : info.runpath) {
             dirs.push_back(expand_origin(e, object_dir));
         }
         for (const std::string& e : info.rpath) {
             dirs.push_back(expand_origin(e, object_dir));
         }
-        for (const fs::path& p : opts.extra_search_paths) dirs.push_back(p);
+        if (!opts.runtime_contract) {
+            for (const fs::path& p : opts.extra_search_paths) dirs.push_back(p);
+        }
         const std::vector<fs::path> sys = default_search_dirs(info.machine);
         dirs.insert(dirs.end(), sys.begin(), sys.end());
         return dirs;
@@ -286,8 +311,26 @@ struct Resolver {
     /// Deliberately excludes DT_RPATH / DT_RUNPATH and any caller-supplied extra
     /// paths, because those can name directories that exist only on the machine
     /// running this analysis.
+    /// The directories this object's own DT_RPATH/DT_RUNPATH name RELATIVE to
+    /// itself. These move with the binary, so they are part of the package.
+    std::vector<fs::path> origin_relative_dirs(const elf::ElfInfo& info,
+                                               const fs::path& object_dir) {
+        std::vector<fs::path> dirs;
+        for (const std::vector<std::string>* list : {&info.runpath, &info.rpath}) {
+            for (const std::string& e : *list) {
+                if (e.rfind("$ORIGIN", 0) != 0) continue;
+                dirs.push_back(expand_origin(e, object_dir));
+            }
+        }
+        return dirs;
+    }
+
     std::vector<fs::path> sandbox_search_dirs(const elf::ElfInfo& info) {
-        std::vector<fs::path> dirs = opts.payload_search_paths;
+        std::vector<fs::path> dirs;
+        // Same split as search_dirs: under the runtime question the payload is
+        // not implicitly searchable, so the fallback may only consider what the
+        // loader would actually reach.
+        if (!opts.runtime_contract) dirs = opts.payload_search_paths;
         const std::vector<fs::path> sys = default_search_dirs(info.machine);
         dirs.insert(dirs.end(), sys.begin(), sys.end());
         return dirs;
@@ -332,7 +375,10 @@ struct Resolver {
                 dep.machine = child_info.machine;
                 // Recorded from the machine of the file actually found, so a
                 // wrong-arch library cannot be filed under the wrong origin.
-                dep.origin = origin_of(resolved, opts, child_info.machine);
+                const std::vector<fs::path> own_origin_dirs =
+                    origin_relative_dirs(info, object_dir);
+                dep.origin = origin_of(resolved, opts, child_info.machine,
+                                       own_origin_dirs);
 
                 // If it was found only through a path the sandbox will not have,
                 // ask the question that actually matters -- CAN THE SANDBOX
@@ -363,8 +409,9 @@ struct Resolver {
                         dep.resolved_path = in_sandbox;
                         dep.machine = sandbox_info.machine;
                         child_info = sandbox_info;
-                        dep.origin =
-                            origin_of(in_sandbox, opts, sandbox_info.machine);
+                        dep.origin = origin_of(in_sandbox, opts,
+                                               sandbox_info.machine,
+                                               own_origin_dirs);
                         dep.out_of_package_search_path = resolved;
                     }
                 }

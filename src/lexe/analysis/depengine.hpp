@@ -127,6 +127,27 @@ struct DependencyOptions {
     std::vector<std::filesystem::path> payload_search_paths;
     /// Additional host library directories to search (beyond the arch defaults).
     std::vector<std::filesystem::path> extra_search_paths;
+    /// Answer "WILL THIS START?" instead of "what should be bundled?".
+    ///
+    /// These are two different questions and one function was being asked to
+    /// answer both, which is how two components ended up contradicting each
+    /// other about the same bytes. `lexe analyze` reported `0 unresolved` for a
+    /// package whose launch the runtime refused — and both were configured
+    /// reasonably and neither modelled the dynamic loader.
+    ///
+    /// The advisory question (default, false) may search the payload directly:
+    /// a library sitting in `payload/lib/` is a fine answer to "what does this
+    /// program need and where would I get it". The runtime question may NOT.
+    /// The loader does not know the payload exists; it searches DT_RPATH /
+    /// DT_RUNPATH and then the system directories, so the payload is reachable
+    /// only through an `$ORIGIN`-relative entry. A package whose libraries sit
+    /// in `payload/lib/` with no rpath pointing there cannot start, however
+    /// plainly the files are present.
+    ///
+    /// With this set: no implicit payload search, and no caller-supplied extra
+    /// paths either, since those name directories that exist on the analysing
+    /// machine and not inside the sandbox.
+    bool runtime_contract = false;
     /// Recurse into resolved bundle libraries (default true).
     bool recurse = true;
     /// Compute SHA-256 for resolved bundle files (default true).

@@ -46,6 +46,15 @@ namespace fs = std::filesystem;
 
 namespace lexe {
 
+// The retained diagnostic copy must fit inside what the error store keeps, with
+// room for the note appended to it, or the store truncates a second time and
+// reports a count that means nothing about the program. See
+// limits::kMaxRetainedOutputBytes.
+static_assert(limits::kMaxRetainedOutputBytes + 1024 <=
+                  ErrorStore::kMaxStreamBytes,
+              "the retained output sample must fit in an error record, leaving "
+              "room for the note, so only ONE layer ever truncates");
+
 namespace {
 
 /// True when canonical path `p` is strictly inside canonical directory

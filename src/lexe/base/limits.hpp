@@ -69,10 +69,24 @@ inline constexpr std::uint64_t kRatioGraceBytes =
 /// package could exhaust the session on purpose. It also meant a failing launch
 /// could write a multi-hundred-megabyte error record to disk.
 ///
-/// 256 KiB is far more than any diagnostic needs and small enough that the cost
-/// is irrelevant. Truncation is always REPORTED, never silent: the record says
-/// how much the application actually wrote.
-inline constexpr std::size_t kMaxRetainedOutputBytes = 256u * 1024;
+/// This value is COUPLED to `ErrorStore::kMaxStreamBytes` and must stay below
+/// it, with room to spare for the one-line note the launcher appends. A
+/// static_assert in launcher.cpp enforces that, because the coupling is not
+/// obvious from either side and getting it wrong produces a specific,
+/// measured kind of lie.
+///
+/// Retaining MORE than the error store keeps means two layers truncate in
+/// sequence and each reports its own count in its own units. Measured: a
+/// program wrote 26 MB, the launcher kept 256 KiB of it, the store then clamped
+/// that to 64 KiB and noted "196749 earlier bytes dropped" — true of the store's
+/// own action and wildly false as a statement about the program, which had
+/// 25,934,610 bytes dropped. The figure was pinned near 196,748 no matter how
+/// much was really lost, understating by up to 132x, and a reader adding the two
+/// numbers concludes the program produced about 262 KB.
+///
+/// So: retain exactly what the record will keep, and let the launcher's note —
+/// which knows the true total — be the only statement about scale.
+inline constexpr std::size_t kMaxRetainedOutputBytes = 63u * 1024;
 
 // ------------------------------------------------------------------- paths
 /// Maximum bytes in a whole entry path.

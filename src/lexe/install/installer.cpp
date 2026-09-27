@@ -374,8 +374,31 @@ void resolve_runtime_contract(const fs::path& version_dir,
         return;
     }
 
+    // The RUNTIME contract is a second, differently-shaped question, and asking
+    // it separately is the point -- see DependencyOptions::runtime_contract.
+    //
+    // `deps` above is the advisory analysis: it searches the payload directly,
+    // which is right for "what does this package need and where would it come
+    // from" and wrong for "will this start". The loader has no idea the payload
+    // exists; it reaches it only through an $ORIGIN-relative rpath. A package
+    // with its libraries in payload/lib and no rpath pointing there resolves
+    // perfectly in the advisory view and cannot start.
+    //
+    // Conflating the two is what let `lexe analyze` report "0 unresolved" for a
+    // package this installer refused -- two components disagreeing about the
+    // same bytes, each configured reasonably, neither modelling the loader.
+    DependencyOptions contract_options = options;
+    contract_options.runtime_contract = true;
+    DependencyReport contract;
+    try {
+        contract = analyze_dependencies(entry, contract_options);
+    } catch (const std::exception&) {
+        // Same rule as above: an analysis that cannot run must not block an
+        // install, and an empty contract gates nothing.
+        contract = DependencyReport{};
+    }
     for (const Dependency* dependency :
-         deps.of_kind(DependencyKind::Unresolved)) {
+         contract.of_kind(DependencyKind::Unresolved)) {
         record.runtime_unresolved.push_back(dependency->soname);
     }
     // A library that resolved ONLY through a path outside both the payload and
@@ -395,7 +418,7 @@ void resolve_runtime_contract(const fs::path& version_dir,
     // here. The sandbox mounts a read-only system view, so a host library in
     // /usr/lib genuinely is reachable at runtime, and refusing those would
     // break every application that correctly relies on the host.
-    for (const Dependency& dependency : deps.dependencies) {
+    for (const Dependency& dependency : contract.dependencies) {
         if (dependency.origin != DependencyOrigin::Elsewhere) continue;
         if (dependency.kind == DependencyKind::Forbidden) continue;
         if (std::find(record.runtime_unresolved.begin(),

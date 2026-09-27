@@ -128,6 +128,27 @@ std::string render_build_report_text(const BuildReport& r) {
     list_kind(os, d, DependencyKind::Forbidden, "Forbidden (host must provide)", false);
     list_kind(os, d, DependencyKind::Unresolved, "Unresolved", false);
 
+    // "Will it start?", stated separately from "what does it need?", because
+    // the same bytes can pass one and fail the other.
+    if (r.runtime_contract_checked) {
+        if (r.runtime_unreachable.empty()) {
+            os << "Runtime contract: satisfied — the dynamic loader can reach "
+                  "every dependency\n";
+        } else {
+            os << "Runtime contract: NOT satisfied — "
+               << r.runtime_unreachable.size() << " dependenc"
+               << (r.runtime_unreachable.size() == 1 ? "y" : "ies")
+               << " the loader cannot reach at launch:\n";
+            for (const std::string& soname : r.runtime_unreachable) {
+                os << "    ! " << soname << "\n";
+            }
+            os << "                  The files may well be in the package. The "
+                  "loader searches DT_RPATH/DT_RUNPATH and then the system "
+                  "directories, so a\n                  bundled library is "
+                  "reachable only through an $ORIGIN-relative rpath.\n";
+        }
+    }
+
     if (!r.permissions.empty()) {
         os << "Permissions:     ";
         for (std::size_t i = 0; i < r.permissions.size(); ++i) {
@@ -200,6 +221,19 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
                         {"neededBy", d.needed_by}});
     }
     j["dependencies"] = std::move(deps);
+    // A gate needs this to be unambiguous, including the "not asked" case: a
+    // missing key and an empty list must not read the same.
+    if (r.runtime_contract_checked) {
+        j["runtimeContract"] = {
+            {"satisfied", r.runtime_unreachable.empty()},
+            {"unreachable", r.runtime_unreachable}};
+    }
+    // `unresolved` answers the ADVISORY question — "is there anywhere this could
+    // come from" — and a gate that reads only it will pass a package that cannot
+    // start, because a library sitting in payload/lib with no rpath pointing at
+    // it resolves here and is unreachable to the loader. `runtimeUnreachable` is
+    // the launch question. Both are published because both are real, and a
+    // consumer that cares whether the thing will RUN wants the second.
     j["dependencySummary"] = {
         {"total", r.dependencies.dependencies.size()},
         {"hostInterface", r.dependencies.count(DependencyKind::HostInterface)},
@@ -207,6 +241,10 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
         {"forbidden", r.dependencies.count(DependencyKind::Forbidden)},
         {"unresolved", r.dependencies.count(DependencyKind::Unresolved)},
     };
+    if (r.runtime_contract_checked) {
+        j["dependencySummary"]["runtimeUnreachable"] =
+            r.runtime_unreachable.size();
+    }
     j["glibcRequirement"] = r.dependencies.max_glibc_version();
     if (!r.dependencies.cycles.empty()) j["cycles"] = r.dependencies.cycles;
 
