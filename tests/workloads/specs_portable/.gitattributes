@@ -1,0 +1,16 @@
+# These files are build recipes consumed by make, cmake and sh on Linux.
+#
+# This repository is developed on Windows with core.autocrlf=true, and the root
+# .gitattributes pins `Makefile` and `*.sh` to LF -- but not `Makefile.<variant>`
+# and not `CMakeLists.txt`, both of which are used here. Without this file the
+# six rpath variants would be checked out with CRLF, and make would put a
+# carriage return INSIDE the rpath string it bakes into the product:
+# `$ORIGIN/../lib\r` resolves to nothing, and every recipe line would have a
+# stray \r appended to the command.
+#
+# That failure would not appear in the tree that created the corpus, where the
+# files are already LF. It would appear on a fresh clone. A fixture that works
+# only where it was written is the exact failure this directory exists to catch,
+# so the rule is stated here rather than left to the root file's patterns.
+Makefile.*     eol=lf
+CMakeLists.txt eol=lf

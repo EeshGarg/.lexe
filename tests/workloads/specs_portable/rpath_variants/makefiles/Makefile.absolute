@@ -1,0 +1,34 @@
+# rpath variant: absolute
+#
+# A hardcoded absolute path -- the honest version of the same mistake, and by
+# far the most common in locally built software. It says where the library will
+# be on the author's machine. On this host /opt/lexe-workload/lib does not
+# exist, and the corpus records what that does.
+#
+# Everything below is identical across the six variants except RPATH_ARG. The
+# product is payload/bin/portable-rpath-absolute plus payload/lib/libutil.so, and what
+# each variant actually put in DT_RUNPATH / DT_RPATH is read out of the built
+# file with readelf and recorded in the corpus index. Nothing here decides
+# whether that string is acceptable; that is not a question a recipe can answer.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+BINDIR   = ../bin
+LIBDIR   = ../lib
+LIB      = $(LIBDIR)/libutil.so
+APP      = $(BINDIR)/portable-rpath-absolute
+RPATH_ARG = /opt/lexe-workload/lib
+
+all: $(APP)
+
+$(LIB): libutil.c libutil.h
+	mkdir -p $(LIBDIR)
+	$(CC) $(CFLAGS) -shared -o $@ libutil.c
+
+$(APP): app.c libutil.h $(LIB)
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ app.c -L$(LIBDIR) -lutil -Wl,-rpath,$(RPATH_ARG)
+
+clean:
+	rm -rf $(BINDIR) $(LIBDIR)
+
+.PHONY: all clean

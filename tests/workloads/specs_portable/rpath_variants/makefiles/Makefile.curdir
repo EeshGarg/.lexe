@@ -1,0 +1,33 @@
+# rpath variant: curdir
+#
+# CURDIR is make's own absolute working directory. It is the correct answer to
+# the question "where am I", and precisely the wrong thing to bake into a
+# product, because the product outlives the directory it was built in.
+#
+# Everything below is identical across the six variants except RPATH_ARG. The
+# product is payload/bin/portable-rpath-curdir plus payload/lib/libutil.so, and what
+# each variant actually put in DT_RUNPATH / DT_RPATH is read out of the built
+# file with readelf and recorded in the corpus index. Nothing here decides
+# whether that string is acceptable; that is not a question a recipe can answer.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+BINDIR   = ../bin
+LIBDIR   = ../lib
+LIB      = $(LIBDIR)/libutil.so
+APP      = $(BINDIR)/portable-rpath-curdir
+RPATH_ARG = $(CURDIR)/../lib
+
+all: $(APP)
+
+$(LIB): libutil.c libutil.h
+	mkdir -p $(LIBDIR)
+	$(CC) $(CFLAGS) -shared -o $@ libutil.c
+
+$(APP): app.c libutil.h $(LIB)
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ app.c -L$(LIBDIR) -lutil -Wl,-rpath,$(RPATH_ARG)
+
+clean:
+	rm -rf $(BINDIR) $(LIBDIR)
+
+.PHONY: all clean

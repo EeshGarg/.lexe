@@ -120,16 +120,16 @@ Each specimen record:
 
 ## Coverage
 
-112 specimens, 92 distinct binaries + 20 compiler differentials, one property
+124 specimens, 102 distinct binaries + 22 compiler differentials, one property
 each unless the family is `compound`:
 
 | Family | n | Covers |
 |---|---|---|
 | `format` | 14 | dynamic PIE, non-PIE, static, static-PIE, stripped, unstripped+DWARF, full RELRO/BIND_NOW, explicit lazy binding, a 48 MiB executable, a self-contained static one |
-| `linkage` | 10 | three interdependent shared libraries via `LD_LIBRARY_PATH`, `DT_RPATH`, `DT_RUNPATH`, `$ORIGIN`-relative lookup, symbol versioning, `dlopen` of a built plugin, `dlopen` of a missing library, C++ against shared and static libstdc++ |
+| `linkage` | 13 | three interdependent shared libraries via `LD_LIBRARY_PATH`, `DT_RPATH`, `DT_RUNPATH`, `$ORIGIN`-relative lookup, symbol versioning, `dlopen` of a built plugin, `dlopen` of a missing library, C++ against shared and static libstdc++, plus `$ORIGIN`-relative twins of `DT_RPATH`, symbol versioning and `dlopen` (see **Relocatability**) |
 | `process` | 15 | 4 and 256 threads, fork+wait, exec of self, exec of a sibling binary, fork+exec, grandchildren, double-fork daemon, a parent that exits leaving a live child, death-by-signal wait status, `posix_spawn`, session/process-group facts |
 | `signals` | 11 | catch and report, ignore, die from SIGTERM/SIGQUIT, SIGALRM-bounded run, SIGPIPE both ways, SIGCHLD reaping inside the handler |
-| `io` | 13 | stdin to EOF, stdout only, stderr only, both, pipe round trip, FIFO, 256 fds, 8 MiB bulk stdout, all 256 byte values on stdout, isatty, dup2 self-redirection |
+| `io` | 20 | stdin to EOF, stdout only, stderr only, both, pipe round trip, FIFO, 256 fds, 8 MiB bulk stdout, all 256 byte values on stdout, isatty, dup2 self-redirection, and the **volume** family: 4 / 64 / 256 MiB on stdout, 128 MiB on stdout and stderr at once, 64 MiB then exit 3, paced output with a silent tail, 16 MiB of binary |
 | `filesystem` | 13 | mkstemp, state across two launches, a `./assets` CWD assumption, `flock` contention, `fcntl` record locks, file mmap, 1 GiB anonymous mmap, POSIX shm with a child, symlinks, a 46-entry directory tree, fsync+rename, HOME/XDG/TMPDIR writability, denied-write probes |
 | `interface` | 12 | no args, flags, empty-string args, spaces/tabs/quotes, UTF-8 args, 512 args, a 100 000-byte arg, present/absent/empty/UTF-8 env vars, an emptied environ, `argv[0]` vs `/proc/self/exe` |
 | `outcome` | 15 | exit 0/1/42/255, atexit ordering, SIGSEGV, abort, a 500 ms run, a 3 s run, a deterministic CPU-bound run |
@@ -140,9 +140,94 @@ Argument and environment specimens declare **byte length and hex**, so an empty
 string, a trailing space, a tab and a multi-byte character are all
 distinguishable from each other and from damage.
 
+## Output volume and concurrency
+
+Seven specimens whose property is the size or the timing of output rather than
+its content. Each attests to what it wrote with a SHA-256 it computes itself
+(`specs/orc_bulk.h`, a hand-written SHA-256 checked against eight published
+vectors and against `sha256sum` over 5 MiB of the specimen's own stream), and the
+runner recomputes that digest over what it captured. A byte count alone cannot
+tell a truncated stream from a reordered one, or from one whose NUL bytes were
+eaten.
+
+| Specimen | stdout | measured directly |
+|---|---|---|
+| `linux-io-stream-4mib` | 4 MiB | `sha256 1613d62c…`, both digests verified |
+| `linux-io-stream-64mib` | 64 MiB | `sha256 b0529b58…`; the 4 MiB stream is a byte-for-byte prefix of it |
+| `linux-io-stream-256mib` | 256 MiB | `sha256 8077dcc2…`; 2.55 s wall and **1536 kB peak RSS** for the specimen itself |
+| `linux-io-stream-both-128mib` | 128 MiB + 128 MiB on stderr | a naive relay stalls after exactly 65536 bytes; a polling relay reads all 256 MiB in 1.9 s |
+| `linux-io-stream-fail-64mib` | 64 MiB, then `exit 3` | `sha256 b0529b58…`, identical stream, exit 3 |
+| `linux-io-stream-slow-paced` | 16 × 32 KiB, 150 ms apart, 1 s silent tail | 3.26 s wall; bursts at 0, 151, 301 … 2257 ms |
+| `linux-io-binary-bulk-16mib` | 16 MiB binary | 256 distinct byte values, 65866 NULs, every hazard sequence at its declared offset |
+
+The sizes were chosen to make the property observable and for no other reason. Of
+note, because it is the whole point of the 256 MiB entry: the specimen needs about
+1.5 MiB of memory to produce 256 MiB of output. The cost of the volume belongs
+entirely to whatever is reading it.
+
+`linux-io-stream-both-128mib` is the shape that deadlocks a naive relay, and the
+deadlock was reproduced directly rather than argued: a reader that drains stdout
+to EOF before touching stderr stops after one pipe buffer and never resumes,
+because the specimen is then blocked writing to stderr and will never close
+stdout. Both its streams are bulk, so its oracle is appended to stderr after the
+payload and it reports where the payload starts; `bulk_check` verifies that slice.
+
+## Relocatability
+
+A specimen that cannot start covers nothing. Measured by building the corpus at
+one path, renaming the whole tree, and running every `baseline-ok` specimen from
+the new location with argv rewritten for the new path and `LD_LIBRARY_PATH`
+unset — which is what `audit_relocation.py` does.
+
+Of 112 specimens (before this wave), **108 started and 4 did not**:
+
+| Specimen | why | rescued by `LD_LIBRARY_PATH` |
+|---|---|---|
+| `linux-link-three-libs-ldpath` | no `RPATH` at all — **this is its declared property** | yes |
+| `linux-link-rpath` | `DT_RPATH` is the absolute build-tree stage directory | yes |
+| `linux-link-runpath` | `DT_RUNPATH` is the absolute build-tree stage directory | yes |
+| `linux-link-symbol-versioning` | `DT_RUNPATH` is the absolute corpus `lib/` directory | yes |
+
+All four fail identically: `exit 127`, `error while loading shared libraries:
+…: cannot open shared object file`.
+
+Only the first of the four is *supposed* to behave that way. For the other three
+the absolute path is incidental to the property being tested, and it made that
+property unreachable for anything that does not run the binary in the directory
+it was built in. So each now has a `$ORIGIN`-relative twin, and the absolute
+originals stay — a binary that bakes in an absolute `RPATH` is a legitimate and
+extremely common shape, and the pair is more informative than either alone
+because the difference between them is one link-line argument:
+
+| absolute original | `$ORIGIN` twin | what the twin makes reachable |
+|---|---|---|
+| `linux-link-rpath` | `linux-link-rpath-origin` | `DT_RPATH` semantics in a relocatable binary |
+| `linux-link-runpath` | `linux-link-origin-relative` (already existed) | `DT_RUNPATH` semantics, relocatable |
+| `linux-link-symbol-versioning` | `linux-link-symbol-versioning-origin` | symbol versioning, which the corpus could not test at all before |
+| `linux-dlopen-plugin` | `linux-dlopen-plugin-origin` | `dlopen` of a bare soname through the caller's own `RUNPATH` |
+
+The last row is a different case and worth separating. Five specimens name an
+absolute path *inside the corpus* in their declared `argv`:
+
+```
+linux-dlopen-plugin       argv = ["{LIBDIR}/libplugin.so", "ok"]
+linux-dlopen-missing      argv = ["{LIBDIR}/libnotpresent.so", "fail"]
+linux-proc-exec-helper    argv = ["{HELPER}"]
+linux-proc-fork-exec      argv = ["{HELPER}"]
+linux-proc-posix-spawn    argv = ["{HELPER}"]
+```
+
+These all **start** — the dependence is in the argument, not in the file — but
+their property is only reachable if the consumer substitutes the path for wherever
+the corpus now lives, and for the three `{HELPER}` entries only if `helper_child`
+is shipped alongside. The placeholders are in `index.json`, so this is a stated
+contract rather than a trap, but it is a contract and not a property of the
+binary. `linux-dlopen-plugin-origin` removes the dependence entirely for the
+`dlopen` case: its argument is a bare soname.
+
 ## Compiler differentials
 
-20 specimens are the same source under a second toolchain, chosen because a real
+22 specimens are the same source under a second toolchain, chosen because a real
 assumption could break — not enumerated flag by flag. Each names its reason in
 `differential_reason`:
 
@@ -156,7 +241,12 @@ assumption could break — not enumerated flag by flag. Each names its reason in
   entitled to delete undefined behaviour and a specimen that stops crashing is a
   broken fixture;
 - 8 MiB through stdio; the compound pipeline; clang++ against the same libstdc++;
-  static linking under clang.
+  static linking under clang;
+- the 4 MiB stream and the 16 MiB binary stream, because the xorshift generator
+  and the SHA-256 in `specs/orc_bulk.h` are hand-written integer code: one
+  differing byte or digit would mean undefined behaviour in a header that every
+  volume specimen includes. Both produce a byte-identical stream and an identical
+  digest under `clang -O2`.
 
 `generate.py` cross-checks every differential against its base and reports any
 deterministic line that differs. On this host: **0 divergences**.
@@ -167,7 +257,9 @@ Two independent generations into different output directories produced
 **identical deterministic output for all 112 specimens**, and 109 of 112
 binaries were byte-identical. The three that differ are exactly the specimens
 that bake an absolute path into the file (`DT_RPATH`, `DT_RUNPATH`), so their
-hash depends on the output directory by construction.
+hash depends on the output directory by construction. That was measured before
+the volume family and the `$ORIGIN` twins existed; the twins bake in no absolute
+path, so they do not add to the three.
 
 ## Baseline mismatches found while building this corpus
 
@@ -240,3 +332,12 @@ The companion Windows corpus — PE specimens, a per-translation-layer baseline
 (native / Wine / Proton), the process-tree family, and the repeat-stability runs —
 lives in [README-PE.md](README-PE.md), with sources in `specs_pe/` and its own
 generator, `generate_pe.py`.
+
+## The portable-source factory
+
+The third payload kind — packages that ship SOURCE and are compiled at install
+time — lives in [README-PORTABLE.md](README-PORTABLE.md), with recipes in
+`specs_portable/` and its own generator, `generate_portable.py`. It records a
+baseline for the BUILD as well as the program, and runs every product twice: once
+in the tree that built it and once from somewhere else with that tree renamed
+away.

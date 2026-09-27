@@ -1,0 +1,33 @@
+# rpath variant: shell-func-pwd
+#
+# What people mean when they write \$(pwd): \$(shell pwd), a real command
+# substitution evaluated by make. Correct as an expression and still an absolute
+# path into the build tree.
+#
+# Everything below is identical across the six variants except RPATH_ARG. The
+# product is payload/bin/portable-rpath-shell-func-pwd plus payload/lib/libutil.so, and what
+# each variant actually put in DT_RUNPATH / DT_RPATH is read out of the built
+# file with readelf and recorded in the corpus index. Nothing here decides
+# whether that string is acceptable; that is not a question a recipe can answer.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+BINDIR   = ../bin
+LIBDIR   = ../lib
+LIB      = $(LIBDIR)/libutil.so
+APP      = $(BINDIR)/portable-rpath-shell-func-pwd
+RPATH_ARG = $(shell pwd)/../lib
+
+all: $(APP)
+
+$(LIB): libutil.c libutil.h
+	mkdir -p $(LIBDIR)
+	$(CC) $(CFLAGS) -shared -o $@ libutil.c
+
+$(APP): app.c libutil.h $(LIB)
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ app.c -L$(LIBDIR) -lutil -Wl,-rpath,$(RPATH_ARG)
+
+clean:
+	rm -rf $(BINDIR) $(LIBDIR)
+
+.PHONY: all clean

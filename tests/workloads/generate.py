@@ -273,6 +273,52 @@ S("linux-dlopen-missing", "dlopen_user.c", "linkage",
   argv=["{LIBDIR}/libnotpresent.so", "fail"], stage="dlopen",
   expect={"DLOPEN": "fail", "OUTCOME_AS_DECLARED": "yes"},
   notes="Same binary as linux-dlopen-plugin; only the argument differs.")
+# The three specimens above bake an ABSOLUTE path into the binary -- {STAGELIB}
+# for the two rpath/runpath entries, {LIBDIR} for symbol versioning -- so the
+# file is not relocatable and cannot start anywhere but the directory it was
+# built in. That is a legitimate shape and worth keeping: it is how a great deal
+# of locally built software links. But it also HIDES the property those
+# specimens exist to test, because a binary that never reaches main covers
+# nothing, and symbol versioning in particular was therefore untested by the
+# corpus rather than merely untested by accident.
+#
+# So each gets a $ORIGIN-relative twin below. The absolute ones stay. This is an
+# added case, not a replaced one, and the pair is more informative than either
+# alone: the difference between the twins is exactly one link-line argument.
+S("linux-link-rpath-origin", "uses_libs.c", "linkage",
+  "DT_RPATH (the old tag) with a relocatable $ORIGIN value",
+  cflags=["-L{LIBDIR}", "-lgamma", "-lbeta", "-lalpha",
+          "-Wl,--disable-new-dtags", "-Wl,-rpath,$ORIGIN/../lib"],
+  stage="origin", elf={"rpath": "$ORIGIN/../lib", "runpath": None},
+  expect=LIBCHAIN, caps=["relocatable-directory-tree"],
+  notes="The twin of linux-link-rpath. Two independent properties meet here and "
+        "nowhere else in the corpus: DT_RPATH cannot be overridden by "
+        "LD_LIBRARY_PATH, and $ORIGIN survives the tree being moved.")
+S("linux-link-symbol-versioning-origin", "symver_user.c", "linkage",
+  "a versioned symbol resolved through a relocatable $ORIGIN path",
+  cflags=["-L{LIBDIR}", "-lver", "-Wl,--enable-new-dtags",
+          "-Wl,-rpath,$ORIGIN/../lib"],
+  stage="origin",
+  elf={"runpath": "$ORIGIN/../lib", "needed_contains": ["libver.so"]},
+  expect={"VER_VALUE": "22", "RESOLVED_TO_DEFAULT_V2": "yes"},
+  caps=["relocatable-directory-tree"],
+  notes="The twin of linux-link-symbol-versioning, whose DT_RUNPATH is the "
+        "absolute build-tree lib directory. Symbol versioning is the property "
+        "under test, and it cannot be tested by a binary that never starts.")
+S("linux-dlopen-plugin-origin", "dlopen_user.c", "linkage",
+  "dlopen of a bare soname resolved through the caller's own $ORIGIN RUNPATH",
+  cflags=["-Wl,--enable-new-dtags", "-Wl,-rpath,$ORIGIN/../lib"],
+  argv=["libplugin.so", "ok"], stage="origin",
+  elf={"runpath": "$ORIGIN/../lib"},
+  expect={"DLOPEN": "ok", "DLSYM_PROBE": "yes", "PROBE_14": "43",
+          "PLUGIN_NAME": "lexe-workload-plugin", "OUTCOME_AS_DECLARED": "yes"},
+  caps=["dlopen-at-runtime", "relocatable-directory-tree"],
+  notes="The twin of linux-dlopen-plugin, which names the library by an absolute "
+        "build-tree path in argv. Here the argument is a bare soname and glibc "
+        "resolves it through the RUNPATH of the object that called dlopen, so "
+        "the whole tree moves and the dlopen still succeeds. Note the stage: "
+        "unlike the dlopen stage this one sets no LD_LIBRARY_PATH, so $ORIGIN "
+        "is the only thing that can be finding the library.")
 S("linux-cxx-shared-runtime", "cxx_runtime.cpp", "linkage",
   "C++ program against the shared C++ runtime",
   elf={"needed_contains": ["libstdc++.so.6"]},
@@ -425,6 +471,100 @@ S("linux-io-binary-stdout", "io_binary_stdout.c", "io",
   bulk={"stream": "stdout", "bytes_key": "BINARY_BYTES", "fnv_key": "BINARY_FNV1A"},
   expect={"BINARY_BYTES": "256"},
   notes="Anything that treats stdout as text will corrupt this.")
+# ---- output volume and concurrency ---------------------------------------
+# One property each, and all of them about the SIZE and the TIMING of output
+# rather than its content. linux-io-bulk-stdout above covers 8 MiB; these cover
+# what 8 MiB does not: hundreds of megabytes, two bulk streams at once, bulk
+# followed by a non-zero exit, output that arrives slowly, and bulk binary.
+#
+# Every one of them attests to what it wrote with a SHA-256 it computes itself
+# (specs/orc_bulk.h), and the runner recomputes that digest over the stream it
+# captured. A byte count alone cannot tell a truncated stream from a reordered
+# one, or from one whose NUL bytes were eaten.
+#
+# The sizes were chosen to make the property observable and for no other reason:
+# 4 MiB is smaller than any plausible buffer, 64 MiB is larger than any, and
+# 256 MiB is large enough that holding the whole stream in memory has to be a
+# decision somebody made on purpose. None of them is tuned to what anything can
+# currently cope with.
+S("linux-io-stream-4mib", "io_stream.c", "io",
+  "4 MiB on stdout with both digests attested", argv=["4"], oracle="stderr",
+  bulk={"stream": "stdout", "bytes_key": "STREAM_BYTES",
+        "sha_key": "STREAM_SHA256", "fnv_key": "STREAM_FNV1A"},
+  expect={"STREAM_REQUESTED_BYTES": "4194304", "STREAM_BYTES": "4194304",
+          "STREAM_COMPLETE": "yes", "EXIT_CODE": "0"}, timeout=120.0,
+  notes="The small end of the parameterised family, and the only one where both "
+        "digests are verified: FNV-1a has to be recomputed a byte at a time in "
+        "Python, which is seconds at 8 MiB and minutes at 256 MiB.")
+S("linux-io-stream-64mib", "io_stream.c", "io", "64 MiB on stdout",
+  argv=["64"], oracle="stderr",
+  bulk={"stream": "stdout", "bytes_key": "STREAM_BYTES", "sha_key": "STREAM_SHA256"},
+  expect={"STREAM_BYTES": "67108864", "STREAM_COMPLETE": "yes"}, timeout=300.0,
+  caps=["a consumer that does not hold the whole stream in memory"],
+  notes="The same source and the same stream as the 4 MiB entry, and 4 MiB is a "
+        "byte-for-byte prefix of this one -- verified directly -- which is what "
+        "makes the family a size experiment rather than unrelated blobs.")
+S("linux-io-stream-256mib", "io_stream.c", "io", "256 MiB on stdout",
+  argv=["256"], oracle="stderr", duration="seconds",
+  bulk={"stream": "stdout", "bytes_key": "STREAM_BYTES", "sha_key": "STREAM_SHA256"},
+  expect={"STREAM_BYTES": "268435456", "STREAM_COMPLETE": "yes"}, timeout=600.0,
+  caps=["a consumer that does not hold the whole stream in memory"],
+  notes="Measured directly: 2.55 s wall and a peak RSS of 1536 kB for the "
+        "specimen itself. The memory cost of 256 MiB of output belongs entirely "
+        "to whatever is reading it, which is the point of having this size.")
+S("linux-io-stream-both-128mib", "io_stream_both.c", "io",
+  "128 MiB on stdout and 128 MiB on stderr, interleaved 64 KiB at a time",
+  argv=["128"], oracle="stderr", duration="seconds",
+  bulk={"stream": "stdout", "bytes_key": "OUT_BYTES", "sha_key": "OUT_SHA256",
+        "also": [{"stream": "stderr", "offset_key": "ERR_PAYLOAD_OFFSET",
+                  "bytes_key": "ERR_PAYLOAD_BYTES",
+                  "sha_key": "ERR_PAYLOAD_SHA256"}]},
+  expect={"OUT_BYTES": "134217728", "ERR_PAYLOAD_BYTES": "134217728",
+          "BOTH_STREAMS_COMPLETE": "yes"}, timeout=600.0,
+  caps=["both streams read concurrently"],
+  notes="The deadlock shape, and measured directly: a reader that drains stdout "
+        "to EOF before touching stderr stops after exactly 65536 bytes -- one "
+        "pipe buffer -- and never resumes, because the specimen is then blocked "
+        "writing to stderr and will never close stdout. A polling reader takes "
+        "1.9 s for all 256 MiB. Both streams are bulk, so the oracle is appended "
+        "to stderr after the payload and the specimen reports where the payload "
+        "starts; bulk_check verifies that slice.")
+S("linux-io-stream-fail-64mib", "io_stream.c", "io",
+  "64 MiB on stdout and then a non-zero exit", argv=["64", "3"],
+  oracle="stderr", exit=3,
+  bulk={"stream": "stdout", "bytes_key": "STREAM_BYTES", "sha_key": "STREAM_SHA256"},
+  expect={"STREAM_BYTES": "67108864", "STREAM_COMPLETE": "yes",
+          "STREAM_DECLARED_EXIT": "3", "EXIT_CODE": "3"}, timeout=300.0,
+  notes="Bulk output and a failing exit status are independent facts. Anything "
+        "that abandons the stream once the status is non-zero loses 64 MiB the "
+        "program successfully wrote and reported the digest of.")
+S("linux-io-stream-slow-paced", "io_stream_slow.c", "io",
+  "output that arrives slowly, in bursts, with a silent tail",
+  argv=["16", "150", "1000"], oracle="stderr", duration="seconds",
+  bulk={"stream": "stdout", "bytes_key": "SLOW_BYTES", "sha_key": "SLOW_SHA256"},
+  expect={"SLOW_TICKS_REQUESTED": "16", "SLOW_TICKS_WRITTEN": "16",
+          "SLOW_GAP_MS": "150", "SLOW_TAIL_MS": "1000",
+          "SLOW_BYTES": "524288", "SLOW_TAIL_ELAPSED": "yes"}, timeout=120.0,
+  notes="Sixteen 32 KiB bursts 150 ms apart, then a full second of silence with "
+        "both streams still open. Measured directly at 3.26 s wall with bursts "
+        "landing at 0, 151, 301 ... 2257 ms. Each burst begins with an ASCII "
+        "TICK-nnnn marker, so which burst was lost is visible in the stream "
+        "itself rather than only in the total.")
+S("linux-io-binary-bulk-16mib", "io_binary_bulk.c", "io",
+  "16 MiB of binary on stdout: every byte value, NULs, CRLF, 0x1A, bad UTF-8",
+  argv=["16"], oracle="stderr",
+  bulk={"stream": "stdout", "bytes_key": "BINARY_BYTES", "sha_key": "BINARY_SHA256"},
+  expect={"BINARY_BYTES": "16777216", "BINARY_VALUES_SEEN": "256",
+          "BINARY_ALL_256_VALUES": "yes", "BINARY_HAS_NUL": "yes",
+          "BINARY_ALL_HAZARDS_PLACED": "yes", "BINARY_NUL_COUNT": None,
+          "BINARY_HAZARD_OFFSETS":
+              "crlf@1024,cr@4096,nul@65534,doseof@1048576,badutf8@1048640"},
+  timeout=300.0,
+  notes="linux-io-binary-stdout covers all 256 values in 256 bytes. At volume "
+        "the failures are different ones: newline translation, stopping at a "
+        "NUL, decoding to text and re-encoding, treating 0x1A as end of file. "
+        "The eight-NUL run at offset 65534 deliberately straddles a 64 KiB "
+        "boundary. Measured directly: 256 distinct values present, 65866 NULs.")
 S("linux-io-tty-detect", "io_tty.c", "io", "reports whether its fds are terminals",
   expect={"STDIN_ISATTY": "no", "STDOUT_ISATTY": "no", "STDERR_ISATTY": "no",
           "ALL_FDS_OPEN": "yes"},
@@ -690,6 +830,17 @@ DIFFERENTIALS = [
      "ABI and the same exception unwinder."),
     ("linux-format-static", ["clang-O2"],
      "Static linking pulls in different libc startup paths per toolchain."),
+    ("linux-io-stream-4mib", ["clang-O2"],
+     "The xorshift stream and the SHA-256 in specs/orc_bulk.h are hand-written "
+     "integer code. If one byte of the stream or one digit of the digest differs "
+     "under another toolchain, the header has undefined behaviour in it and every "
+     "specimen that includes it is worthless. 4 MiB is the cheapest size that "
+     "would show it."),
+    ("linux-io-binary-bulk-16mib", ["clang-O2"],
+     "The histogram and the hazard placement write over the stream at absolute "
+     "offsets across chunk boundaries, with mixed integer widths. Agreement "
+     "under a second toolchain is what says that arithmetic is defined rather "
+     "than merely working here."),
 ]
 
 
@@ -835,6 +986,12 @@ def build_one(spec, out):
 BASE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
             "TERM": "dumb", "SHELL": "/bin/sh"}
 
+# The largest stream over which run_once computes a per-run FNV-1a. 8 MiB is not
+# an arbitrary round number: it is the size of linux-io-bulk-stdout, the only
+# specimen that had a bulk stream before the volume family existed, so every
+# value the index recorded before this limit existed is still recorded now.
+FNV_STREAM_LIMIT = 8 * 1024 * 1024
+
 
 def parse_oracle(text):
     kv, order, det, repeats = {}, [], [], []
@@ -896,7 +1053,14 @@ def run_once(spec, out, rundir, binary, run_index):
         "stderr_bytes": len(se),
         "stdout_sha256": sha256_bytes(so),
         "stderr_sha256": sha256_bytes(se),
-        "stdout_fnv1a64": "%016x" % fnv1a64(so),
+        # FNV-1a is a byte-at-a-time Python loop: about half a second per MiB.
+        # It was free when the largest stream in the corpus was 8 MiB and it is
+        # minutes per run at 256 MiB, so it is computed only up to the size that
+        # already had one. Nothing is lost: stdout_sha256 above covers the same
+        # stream at C speed, and every bulk specimen attests to its own SHA-256.
+        "stdout_fnv1a64": ("%016x" % fnv1a64(so)
+                           if len(so) <= FNV_STREAM_LIMIT else None),
+        "stdout_fnv1a64_skipped_over_limit": len(so) > FNV_STREAM_LIMIT,
         "oracle": kv,
         "oracle_repeated_keys": sorted(set(repeats)),
         "oracle_deterministic_lines": det,
@@ -950,6 +1114,72 @@ def check_elf(declared, actual):
     return problems
 
 
+def _stream_bytes(last, name):
+    return last["_stdout"] if name == "stdout" else last["_stderr"]
+
+
+def check_bulk(bulk, last):
+    """Verify a specimen's own attestation about a bulk stream against the bytes
+    the runner actually captured.
+
+    `fnv_key` is the original form and still works. `sha_key` was added because
+    FNV-1a has to be recomputed a byte at a time in Python -- a few seconds at
+    8 MiB, minutes at 256 MiB -- while hashlib computes SHA-256 at C speed, and
+    the index already records a SHA-256 of every captured stream, so the
+    specimen's claim and the runner's observation are directly comparable. A
+    specimen may attest with either or both; only the keys it declares are
+    checked.
+
+    `also` exists for the one specimen where BOTH streams are bulk and there is
+    therefore no spare stream to report on. Its oracle is appended to stderr
+    after the payload, so what is checkable is a SLICE: the specimen reports
+    where its payload starts and how long it is, and the digest must match that
+    slice of what arrived.
+    """
+    problems = []
+    oracle = last["oracle"]
+    raw = _stream_bytes(last, bulk["stream"])
+    if bulk.get("bytes_key"):
+        want_len = oracle.get(bulk["bytes_key"])
+        if want_len is None or int(want_len) != len(raw):
+            problems.append("%s stream is %d bytes, specimen claimed %r"
+                            % (bulk["stream"], len(raw), want_len))
+    if bulk.get("fnv_key"):
+        want_fnv = oracle.get(bulk["fnv_key"])
+        got_fnv = "%016x" % fnv1a64(raw)
+        if want_fnv != got_fnv:
+            problems.append("%s FNV-1a: specimen claimed %r, runner computed %s"
+                            % (bulk["stream"], want_fnv, got_fnv))
+    if bulk.get("sha_key"):
+        want_sha = oracle.get(bulk["sha_key"])
+        got_sha = sha256_bytes(raw)
+        if want_sha != got_sha:
+            problems.append("%s SHA-256: specimen claimed %r, runner computed %s"
+                            % (bulk["stream"], want_sha, got_sha))
+    for extra in bulk.get("also", []):
+        stream = _stream_bytes(last, extra["stream"])
+        off, length = oracle.get(extra["offset_key"]), oracle.get(extra["bytes_key"])
+        if off is None or length is None:
+            problems.append("%s slice: specimen did not report %s and %s"
+                            % (extra["stream"], extra["offset_key"],
+                               extra["bytes_key"]))
+            continue
+        off, length = int(off), int(length)
+        if len(stream) < off + length:
+            problems.append("%s is %d bytes: too short for the %d-byte payload "
+                            "the specimen says starts at offset %d"
+                            % (extra["stream"], len(stream), length, off))
+            continue
+        want_sha = oracle.get(extra["sha_key"])
+        got_sha = sha256_bytes(stream[off:off + length])
+        if want_sha != got_sha:
+            problems.append("%s payload SHA-256 over [%d:%d]: specimen claimed "
+                            "%r, runner computed %s"
+                            % (extra["stream"], off, off + length,
+                               want_sha, got_sha))
+    return problems
+
+
 def verdict_for(spec, runs, post_state):
     d = spec["declared"]
     problems = []
@@ -997,16 +1227,7 @@ def verdict_for(spec, runs, post_state):
 
     bulk = d.get("bulk_check")
     if bulk:
-        raw = last["_stdout"] if bulk["stream"] == "stdout" else last["_stderr"]
-        want_len = last["oracle"].get(bulk["bytes_key"])
-        want_fnv = last["oracle"].get(bulk["fnv_key"])
-        if want_len is None or int(want_len) != len(raw):
-            problems.append("%s stream is %d bytes, specimen claimed %r"
-                            % (bulk["stream"], len(raw), want_len))
-        got_fnv = "%016x" % fnv1a64(raw)
-        if want_fnv != got_fnv:
-            problems.append("%s FNV-1a: specimen claimed %r, runner computed %s"
-                            % (bulk["stream"], want_fnv, got_fnv))
+        problems += check_bulk(bulk, last)
 
     for name, needles in d["post_files"].items():
         content = post_state.get(name)
