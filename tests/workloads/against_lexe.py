@@ -114,9 +114,13 @@ USAGE
                       divergences just measured, for a human to write reasons
                       into. It is never written with reasons invented.
       --audit-baselines  do not test `.LEXE` at all: re-run the specimens
-                      DIRECTLY and check the corpus's recorded baselines. ELF
-                      only. A baseline nobody re-derived is an assumption, and
-                      every finding here rests on one.
+                      DIRECTLY and check the corpus's recorded baselines. A
+                      baseline nobody re-derived is an assumption, and every
+                      finding here rests on one. Works for both corpora: the ELF
+                      side re-runs the binaries, the PE side replays the `wine`
+                      cells against the corpus's own prefix (reusing the prefix
+                      is what auditing means; creating one is what the generator
+                      does).
       --allow-corpus-drift  run even though the generator on disk differs from
                       the one that produced this corpus (then say so).
 
@@ -937,8 +941,9 @@ def audit_baselines(a, index, corpus_root, specs):
     status against what the index recorded. It exists so that a runtime defect
     cannot turn out to have been a fixture defect.
 
-    ELF only: the PE layers need their own Wine prefixes, and re-creating those
-    would be re-running the generator rather than auditing it.
+    The PE corpus is audited by `audit_pe_baselines` below, which reuses the
+    corpus's OWN Wine prefix: re-creating the prefix would be re-running the
+    generator rather than auditing it.
     """
     # The generator runs every specimen in a REPLACED environment, not an
     # inherited one, and records only the keys it added (`env_extra`). Auditing
@@ -1015,6 +1020,145 @@ def audit_baselines(a, index, corpus_root, specs):
     return 1 if bad else 0
 
 
+def audit_pe_baselines(a, index, corpus_root, specs):
+    """Re-derive the PE corpus's `wine` baselines, without `.LEXE`.
+
+    Same purpose as audit_baselines: every PE finding this harness reports rests
+    on a recorded baseline, and a baseline nobody re-derived is an assumption. It
+    replays each specimen the way generate_pe.py did -- the recorded command, the
+    reconstructed layer environment, the same staging of DLLs beside the
+    executable, a FRESH working directory -- and compares the resulting `.oracle`
+    FILE and exit code against what the index recorded.
+
+    It reuses the corpus's own Wine prefix rather than making one. Creating a
+    prefix is what the generator does; reusing it is what auditing the generator
+    means. The `wine` layer only: `proton-wine` would need Proton's prefix on top,
+    and `native` is an ordinary ELF already covered by the ELF audit.
+
+    A specimen whose property is a window on a screen is SKIPPED, not failed --
+    its baseline was recorded on a private X server and this mode brings no
+    display.
+    """
+    OUT = corpus_root
+    # generate_pe.py's own BASE_ENV. Note it sets a UTF-8 locale: that is why the
+    # recorded baselines have intact UTF-8, and why a runtime that supplies no
+    # usable locale diverges from them.
+    BASE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+                "HOME": os.path.expanduser("~")}
+    CXX_DLLS = ["libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll"]
+    cxx_found = ((index.get("support_binaries") or {}).get("cxx_runtime_dlls") or {})
+    prefix = os.path.join(OUT, "prefix-wine")
+    if not os.path.isdir(prefix):
+        die(f"the corpus's wine prefix is missing ({prefix}); regenerate the "
+            f"corpus with generate_pe.py")
+    if not shutil.which("wine"):
+        die("wine is not installed, so the wine baselines cannot be re-derived")
+
+    scratch = os.path.join(a.out, "pe-baseline-audit")
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.makedirs(scratch, exist_ok=True)
+
+    ok, bad, skipped, problems = 0, 0, 0, []
+    for s in specs:
+        fid = s["id"]
+        b = (s.get("baselines") or {}).get("wine")
+        if not b or not b.get("repeats"):
+            skipped += 1
+            problems.append((fid, "SKIP", "no wine baseline recorded"))
+            continue
+        if s.get("gui"):
+            skipped += 1
+            problems.append((fid, "SKIP", "its property is a window on a screen; "
+                                          "this mode brings no display"))
+            continue
+        rep = b["repeats"][0]
+        rundir = os.path.join(scratch, fid)
+        os.makedirs(rundir, exist_ok=True)
+        Packager.write_staged_files(rundir, s.get("staged_files"))
+
+        # Reproduce generate_pe.py's stage_run_dir: WHICH DLLs sit beside the
+        # executable is several specimens' whole property.
+        exe = s["build"]["target"]
+        stage = s["stage"]
+        if stage in ("bundle_wlib", "isolate_exe", "bundle_cxx_dlls"):
+            shutil.copy2(exe, rundir)
+            if stage == "bundle_wlib":
+                for lib in ("wlib.dll", "wlib32.dll"):
+                    src = os.path.join(OUT, "dll", lib)
+                    if os.path.exists(src):
+                        shutil.copy2(src, rundir)
+            elif stage == "bundle_cxx_dlls":
+                for nm in CXX_DLLS:
+                    src = cxx_found.get(nm)
+                    if src and os.path.exists(src):
+                        shutil.copy2(src, rundir)
+            exe = os.path.join(rundir, os.path.basename(exe))
+
+        env = dict(BASE_ENV)
+        env["FIXTURE_ID"] = fid
+        env["WINEDEBUG"] = "-all"
+        env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+        env["WINEPREFIX"] = prefix
+        env.update(s.get("env") or {})
+        stdin = STDIN_4K if s["stdin"]["bytes"] == 4096 else b""
+
+        last = None
+        try:
+            for _ in range(len(rep["launches"])):
+                last = subprocess.run(["wine", exe] + s["argv"], cwd=rundir, env=env,
+                                      input=stdin, capture_output=True,
+                                      timeout=float(s.get("timeout_s", 120) or 120) + 60)
+        except subprocess.TimeoutExpired:
+            bad += 1
+            problems.append((fid, "FAIL", "timed out on re-run; the baseline "
+                                          f"recorded exit "
+                                          f"{rep['launches'][-1]['exit_code']}"))
+            continue
+
+        recorded = rep["launches"][-1]
+        ps = []
+        # Honour the instability the corpus DECLARED for this layer; a specimen
+        # measured as nondeterministic must not be re-reported as a mismatch.
+        allowed = {recorded["exit_code"]}
+        allowed.update((s["declared"].get("exit_one_of_by_layer") or {})
+                       .get("wine", []) or [])
+        if last.returncode not in allowed:
+            ps.append(f"exit: recorded {sorted(allowed)}, got {last.returncode}")
+
+        want_file = recorded.get("oracle_file")
+        text = ""
+        found = [f for f in os.listdir(rundir) if f.endswith(".oracle")]
+        if want_file and os.path.exists(os.path.join(rundir, want_file)):
+            text = open(os.path.join(rundir, want_file),
+                        encoding="utf-8", errors="replace").read()
+        elif found:
+            text = open(os.path.join(rundir, found[0]),
+                        encoding="utf-8", errors="replace").read()
+        elif recorded.get("oracle_file_present"):
+            ps.append(f"oracle file {want_file} was recorded present, not produced")
+
+        det, vals, _ = parse_oracle(text)
+        exp = det_map(recorded["oracle_deterministic_lines"])
+        unstable = set(b.get("unstable_lines") or [])
+        for k in sorted(set(exp) | set(vals)):
+            if exp.get(k) != vals.get(k) and k not in unstable:
+                ps.append(f"{k}: recorded {exp.get(k)!r}, got {vals.get(k)!r}")
+
+        if ps:
+            bad += 1
+            problems.append((fid, "FAIL", "; ".join(ps[:5])))
+        else:
+            ok += 1
+
+    w = sys.stdout.write
+    w("\n  PE BASELINE AUDIT -- re-running the wine cells WITHOUT .LEXE\n\n")
+    for fid, kind, why in problems:
+        w(f"  {kind:5} {fid}: {why}\n")
+    w(f"\n  re-derived {ok + bad} wine baselines: {ok} reproduced, {bad} did NOT, "
+      f"{skipped} skipped\n\n")
+    return 1 if bad else 0
+
+
 # --------------------------------------------------------------------------- #
 #                                  driver                                     #
 # --------------------------------------------------------------------------- #
@@ -1087,10 +1231,8 @@ def main():
 
     specs = select(index, a)
     if a.audit_baselines:
-        if a.corpus != "elf":
-            die("--audit-baselines is ELF only: re-deriving a PE layer baseline "
-                "means re-creating its Wine prefix, which is re-running the "
-                "generator rather than auditing it.")
+        if a.corpus == "pe":
+            return audit_pe_baselines(a, index, corpus_root, specs)
         return audit_baselines(a, index, corpus_root, specs)
     total_in_corpus = len(index["specimens"])
     unusable = [s["id"] for s in index["specimens"]

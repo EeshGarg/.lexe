@@ -220,5 +220,79 @@ if build_and_install linux-run-bounded-3s 3.0.0 3000; then
                 "$(head -8 "$W/long.out")"
 fi
 
+# ------------------------------------------- the dependency contract, both ways #
+note "the launch-time dependency contract: it must refuse what cannot run, and"
+note "only that"
+#
+# The contract check is the right idea and it catches a real breakage: a package
+# whose libraries exist nowhere but its build tree genuinely cannot start, and
+# refusing it with a stated reason beats exec'ing into a silent exit 127.
+#
+# It is also the check most able to refuse something legitimate, so it is tested
+# in BOTH directions with the same program:
+#
+#   A. NEEDED libz.so.1, plus a DANGLING absolute rpath. The sandbox resolves the
+#      soname from /usr. Must be accepted, and must run.
+#   B. the same, but the rpath directory EXISTS on this host and holds a copy. The
+#      sandbox still resolves from /usr -- /usr is mounted, that directory is not --
+#      so this must ALSO be accepted and run. If it is refused, the check is keyed
+#      on where the host loader happened to look first, which is a property of the
+#      build machine and not of the launch.
+#
+# B is the case that fails today. It is written as a check rather than left in a
+# report so that "the N5/N6 fix subsumes it" becomes something measured.
+if command -v gcc >/dev/null 2>&1 && [[ -e /usr/lib/x86_64-linux-gnu/libz.so.1 ]]; then
+    DEP="$W/dep"; mkdir -p "$DEP/src" "$DEP/elsewhere/lib"
+    cp /usr/lib/x86_64-linux-gnu/libz.so.1 "$DEP/elsewhere/lib/libz.so.1"
+    cat > "$DEP/src/main.c" <<'EOF'
+#include <stdio.h>
+#include <zlib.h>
+int main(void) {
+    printf("CRC=%lu\nRESULT=PASS\n",
+           (unsigned long)crc32(0L, (const unsigned char *)"lexe", 4));
+    return 0;
+}
+EOF
+    dep_case() {  # label, appid, rpath, expect(accept|refuse)
+        local label="$1" id="$2" rpath="$3" expect="$4"
+        local p="$W/p-$id"
+        rm -rf "$p"; mkdir -p "$p/bin"
+        gcc -O2 -o "$p/bin/prog" "$DEP/src/main.c" -lz -Wl,-rpath,"$rpath" \
+            2>/dev/null || { fail "$label: could not build the probe"; return; }
+        python3 - "$W/dep.json" "$PUB" "$id" <<'PYEOF'
+import json, sys
+json.dump({"lexeVersion": "0.1", "id": sys.argv[3], "name": "dep probe",
+           "version": "1.0.0",
+           "publisher": {"name": "workload-corpus", "publicKey": sys.argv[2]},
+           "applicationType": "native", "architectures": ["x86_64"],
+           "entrypoint": {"executable": "bin/prog", "arguments": []},
+           "launch": {"mode": "console"},
+           "install": {"scope": "user", "mode": "bundled"},
+           "permissions": []}, open(sys.argv[1], "w"), indent=2)
+PYEOF
+        "$LEXE_BIN" pack "$p" --manifest "$W/dep.json" --key "$W/key.json" \
+            -o "$W/$id.lexe" >/dev/null 2>&1 || { fail "$label: pack failed"; return; }
+        "$LEXE_BIN" install "$W/$id.lexe" --yes --trust >/dev/null 2>&1
+        local out rc
+        out="$("$LEXE_BIN" run "$id" 2>"$W/$id.err")"; rc=$?
+        local got=refuse
+        [[ "$rc" -eq 0 && "$out" == *"RESULT=PASS"* ]] && got=accept
+        if [[ "$got" == "$expect" ]]; then
+            pass "$label"
+        else
+            fail "$label (expected to $expect, did $got; exit $rc)" \
+                 "$(head -1 "$W/$id.err")"
+        fi
+        "$LEXE_BIN" remove "$id" --purge-data --yes >/dev/null 2>&1
+    }
+    dep_case "a dangling absolute rpath does not block a launch /usr can satisfy" \
+             wl.depdangling /nonexistent-rb/lib accept
+    dep_case "an rpath that EXISTS on this host does not block one /usr can satisfy" \
+             wl.depshadow "$DEP/elsewhere/lib" accept
+else
+    blocked "no gcc or no system libz: the dependency-contract probe needs both" \
+            "it builds a one-file program against a system library on purpose"
+fi
+
 acc_summary
 exit $?
