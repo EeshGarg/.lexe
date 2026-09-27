@@ -20,7 +20,12 @@ if [[ $# -gt 0 ]]; then
         done
     done
 else
-    for candidate in "$ACC_DIR"/0*.sh; do
+    # `[0-9]*` and not `0*`: the glob used to be `0*.sh`, which silently stopped
+    # at 09. The tenth acceptance script was added, passed when run by hand, and
+    # was invisible to the lane -- the suite reported "all 10 ... passed" over 11
+    # scripts and nobody was any the wiser. A test the runner cannot see is worse
+    # than no test, because it looks like coverage.
+    for candidate in "$ACC_DIR"/[0-9]*.sh; do
         [[ -f "$candidate" ]] && scripts+=("$candidate")
     done
 fi
