@@ -262,6 +262,16 @@ chain, while its private compatibility prefix is built:
 | later launches, `wine` chain | **18 s** |
 | first launch, `proton` chain | **150–170 s** |
 | later launches, `proton` chain | **22 s** |
+| disk, per wine application | **~1.3 GB** |
+| disk, per proton application | **~645 MB** |
+
+And it is **per application**, not per user: two different applications in the
+same `LEXE_HOME` each pay the full cold cost and each keep their own prefix, at
+`data/<app-id>/.wine` or `data/<app-id>/.proton`. That is deliberate — a shared
+prefix is shared mutable state between applications, which §9.6 forbids — but it
+means the cost above is multiplied by the number of Windows applications
+installed, and it is the reason this section gives the disk figures rather than
+only the time.
 
 The cost itself is Wine's and Proton's, not this runtime's, and it is not
 avoidable. What was this runtime's fault is that it said **nothing** for those
