@@ -67,6 +67,16 @@ struct Dependency {
     DependencyKind kind = DependencyKind::Unresolved;
     /// Where `resolved_path` came from. Never infer this from `kind`.
     DependencyOrigin origin = DependencyOrigin::None;
+    /// Set when the object's DT_RPATH/DT_RUNPATH led OUTSIDE both the package
+    /// and the system directories, and the soname was nevertheless satisfiable
+    /// from one of those: this is the out-of-package path that was found first
+    /// and then disregarded, because a sandboxed launch will not have it.
+    ///
+    /// Kept because it is a real smell worth showing a publisher — usually an
+    /// absolute build-tree path left in by the link step — while `origin` and
+    /// `resolved_path` go on describing what the sandbox will actually use.
+    /// Empty in the ordinary case.
+    std::filesystem::path out_of_package_search_path;
     std::string reason;                    // why it was classified this way
     std::string recommendation;            // recommended handling, in plain words
     /// SHA-256 of the file at `resolved_path`, when one was computed.

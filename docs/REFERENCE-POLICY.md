@@ -243,6 +243,46 @@ flakiest test there is — one had already cost this suite three false failures 
 so the assertion is on a property of the code, which is stable under load and is
 what actually regressed.
 
+## 2.1.1 Why a captured console launch used to cost 1.3 seconds
+
+Recorded because the cause was not where anyone looked for it, including the
+person who measured it.
+
+A console launch whose stdout is not a terminal measured **1303 ms**, against
+38 ms for a GUI launch, 26 ms for a service and 39 ms for the same console
+launch with `--attached-terminal`. It was flat in output size (80 bytes, 1291 ms;
+8 MiB, 1340 ms) and flat in dependency count, so it looked exactly like a fixed
+timer — a one-second poll or a settle delay — and the capture code was the
+obvious suspect.
+
+The capture code has no timer in it. A syscall-*time* profile found the answer:
+**1634 ms spent in 511 `newfstatat` calls**, every one of them under `/mnt/c`,
+looking for `alacritty`, `xfce4-terminal`, `ptyxis` and seven other terminal
+emulators. A console application with no terminal is *given* one (§14.4), and
+finding one means searching `PATH` — which on a WSL host carries the whole
+Windows `PATH`, about fifty directories on a DrvFS mount where one failed stat
+costs roughly 10 ms.
+
+Nothing was wrong with the search except where it was looking, and two things
+follow from that:
+
+* a Windows executable cannot host a Linux console application, so those
+  directories could never contain an answer — the terminal search now skips
+  `PATH` entries under `/mnt/`;
+* a terminal emulator needs somewhere to draw, so on a host with no display the
+  search can only fail — it is now skipped entirely, which is exactly the
+  scripted and CI case that was paying most for it and could never use the
+  result.
+
+Measured after: **67 ms**, and 141 `newfstatat` calls totalling 9 ms. The output
+still arrives.
+
+The general point, and the reason this is in a document rather than just a commit:
+a cost that is flat in every input looks like a timer, and this one was a loop
+over a slow filesystem. The syscall *count* was the tell and the syscall-time
+summary was where it showed up; a profile of CPU time would have shown almost
+nothing, because waiting on a stat is not CPU.
+
 ## 2.2 The execution context of a launch
 
 Format 0.1 §9.5.2 requires a writable working directory that is not the
@@ -329,17 +369,25 @@ happened, and no package can observe them.
   that had taken the obvious verb would have shipped a launcher that hangs
   headless, hangs on stdin, and can be wedged by pressing Ctrl-C once.
 
-  **What `runinprefix` does not fix, stated rather than glossed.** Putting 72
-  Windows programs through the Proton chain twice produced a different set of
-  failures each time: output delivery failed for 16 specimens in one pass and 17
-  in the other, and the specimens affected included several that exited 0. So on
-  the Proton chain, whether a successful program's output reaches the caller
-  varies between runs of an identical corpus. This is not the relay defect fixed
-  in the launcher — that was deterministic and is now covered by
-  `tests/acceptance/10_output_relay.sh` — and it does not reproduce on the
-  `wine` chain, where the same corpus fails identically every time.
-  Undiagnosed, recorded as a known limitation of this chain, and a reason not to
-  treat Proton output as reliable for anything scripted.
+  **A nondeterminism that turned out to be the same defect.** Recorded because
+  the wrong conclusion was written here first. Putting 72 Windows programs
+  through the Proton chain twice produced a different set of failures each time —
+  output delivery failed for 16 specimens in one pass and 17 in the other,
+  including several that exited 0 — so this section said whether a successful
+  program's output reaches the caller varies between runs, and called it an
+  undiagnosed limitation of the chain.
+
+  It was not. Re-measured after the launcher's output relay was fixed: the eight
+  specimens that had flapped were run five times each on the Proton chain, with
+  **8 of 8 delivered and zero delivery failures in all five passes, membership
+  identical across repeats**. The relay defect was the whole of it; what looked
+  like chain nondeterminism was a deterministic bug interacting with which
+  specimens happened to emit a NUL or exit non-zero.
+
+  The lesson is worth more than the entry: "undiagnosed and probably
+  environmental" is the most comfortable thing to write about a flaky result, and
+  it was wrong. A fixed defect documented as live tells the next person not to
+  rely on something they can rely on.
 
 * **Other compatibility chains** (Wine, FEX, Box64) are how this runtime
   executes payloads it cannot run natively. The format defines the *vocabulary*

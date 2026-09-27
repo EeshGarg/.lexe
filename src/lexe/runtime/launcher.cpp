@@ -30,12 +30,15 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <system_error>
 
 #ifndef _WIN32
+#include <langinfo.h>
+#include <locale.h>
 #include <unistd.h>
 #endif
 
@@ -54,19 +57,95 @@ bool strictly_inside(const fs::path& root, const fs::path& p) {
     return rel.begin()->string() != "..";             // must not walk up
 }
 
+/// Can this locale name actually carry UTF-8 text on THIS host?
+///
+/// Two questions, and a value that fails either is worse than no value at all,
+/// because a present-but-useless value suppresses the fallback:
+///
+///   * **Does it resolve?** A name the host has no locale data for degrades
+///     silently to C, which is ASCII. `en_US.UTF-8` is the commonest desktop
+///     locale in the world and is *not* generated on minimal, container or WSL
+///     images — the host this was measured on has exactly three locales: `C`,
+///     `C.utf8`, `POSIX`.
+///   * **Is its codeset UTF-8?** A legacy 8-bit locale resolves perfectly well
+///     and still cannot represent the entry paths a `.lexe` carries, which
+///     §2.1 of the format requires to be UTF-8.
+///
+/// Measured, after the launcher started forwarding locale at all: with the
+/// caller's `LANG=en_US.UTF-8` on this host, a package's `café` argument reached
+/// the application as `caf\x43\x29` — the high bit stripped from every
+/// non-ASCII byte. That is exactly the corruption forwarding the locale was
+/// meant to FIX, reintroduced by trusting the value.
+///
+/// Which is the lesson worth keeping: `LANG` is not a preference the caller is
+/// entitled to have honoured. It is a claim about what the host supports, and
+/// it can be false. Every other variable in this function is forwarded because
+/// the caller said so; this one has to be checked.
+bool locale_handles_utf8(const std::string& name) {
+#ifdef _WIN32
+    (void)name;
+    return true;
+#else
+    if (name.empty()) return false;
+    // newlocale rather than setlocale: it answers the question without touching
+    // this process's global locale, which the rest of the runtime depends on.
+    const ::locale_t loc = ::newlocale(LC_CTYPE_MASK, name.c_str(), nullptr);
+    if (loc == nullptr) return false; // no locale data for it on this host
+    const char* codeset = ::nl_langinfo_l(CODESET, loc);
+    std::string cs = codeset == nullptr ? std::string() : codeset;
+    ::freelocale(loc);
+    for (char& c : cs) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return cs == "UTF-8" || cs == "UTF8";
+#endif
+}
+
 /// The caller's environment, as a map, so isolation policy can decide what (if
-/// anything) to forward. Reading it here keeps isolation's pure functions pure.
+/// anything) to forward. Reading it here keeps isolation's pure functions pure —
+/// including the locale check above, which is a host query and would not belong
+/// in the plan builder.
 std::map<std::string, std::string> caller_environment() {
     std::map<std::string, std::string> env;
     for (const char* name :
          {"WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE",
-          "XDG_CURRENT_DESKTOP", "GDK_BACKEND", "QT_QPA_PLATFORM", "LANG",
-          "LC_ALL", "LC_MESSAGES"}) {
+          "XDG_CURRENT_DESKTOP", "GDK_BACKEND", "QT_QPA_PLATFORM"}) {
         if (const std::optional<std::string> value = util::get_env(name)) {
             if (!value->empty()) env[name] = *value;
         }
     }
+    // Locale is forwarded only when it is USABLE here. Dropping an unusable one
+    // is what lets the sandbox's C.UTF-8 fallback apply — with the bad value
+    // present, the fallback never fired and the application got ASCII.
+    //
+    // LC_MESSAGES is held to the same rule. It only selects message
+    // translations, so its codeset matters less, but a name the host cannot
+    // resolve is useless for that too, and one rule is easier to keep true than
+    // two.
+    for (const char* name : {"LANG", "LC_ALL", "LC_MESSAGES"}) {
+        const std::optional<std::string> value = util::get_env(name);
+        if (!value.has_value() || value->empty()) continue;
+        if (locale_handles_utf8(*value)) env[name] = *value;
+    }
     return env;
+}
+
+/// Is there a display a terminal emulator could actually map a window on?
+///
+/// Gate on this before hunting for one. A terminal emulator with nowhere to draw
+/// cannot give a console application a terminal, so on a headless host — a CI
+/// job, a cron entry, a container, an ssh session without forwarding — the search
+/// can only ever fail, and the launch falls through to capture-and-relay either
+/// way. The answer is the same and the work is not: see which_executable for why
+/// that search is expensive, and note that the scripted invocation which pays
+/// most for it is exactly the one that can never use the result.
+bool display_available() {
+    for (const char* name : {"WAYLAND_DISPLAY", "DISPLAY"}) {
+        if (const std::optional<std::string> value = util::get_env(name)) {
+            if (!value->empty()) return true;
+        }
+    }
+    return false;
 }
 
 /// Is our stdout a terminal? Decides whether a console application already has
@@ -128,7 +207,23 @@ constexpr TerminalSpec kTerminals[] = {
     {"foot", "-e"},           {"xterm", "-e"},
 };
 
-std::string which_executable(const std::string& name) {
+/// Find `name` on PATH.
+///
+/// `skip_foreign_mounts` drops PATH entries under `/mnt/`, which is where a
+/// Linux host mounts a foreign OS's filesystem. It exists for a measured
+/// reason. On a WSL host the inherited PATH carries the whole Windows PATH —
+/// around fifty directories on a 9p/DrvFS mount where a single failed stat costs
+/// about 10 ms — so a lookup that misses walks all of them. Searching for ten
+/// terminal emulators across that PATH was measured at **1634 ms in 511
+/// `newfstatat` calls**, which was the entire cost of a captured console launch:
+/// 1.3 s against 38 ms for every launch mode that does not look for a terminal.
+///
+/// Nothing was wrong with the search except where it was looking. A Windows
+/// executable cannot host a Linux console application, so those directories can
+/// never contain an answer, and the cost bought nothing. Left off for ordinary
+/// lookups, where PATH means what the caller says it means.
+std::string which_executable(const std::string& name,
+                             bool skip_foreign_mounts = false) {
     const std::optional<std::string> path_env = util::get_env("PATH");
     if (!path_env.has_value()) return {};
     std::size_t start = 0;
@@ -136,6 +231,11 @@ std::string which_executable(const std::string& name) {
         const std::size_t sep = path_env->find(':', start);
         const std::string dir = path_env->substr(
             start, sep == std::string::npos ? std::string::npos : sep - start);
+        if (skip_foreign_mounts && dir.rfind("/mnt/", 0) == 0) {
+            if (sep == std::string::npos) break;
+            start = sep + 1;
+            continue;
+        }
         if (!dir.empty()) {
             const fs::path candidate = fs::path(dir) / name;
             std::error_code ec;
@@ -189,7 +289,8 @@ void relay_stream(const std::string& text, std::FILE* to) {
 std::vector<std::string> terminal_argv(const std::string& id,
                                        const std::vector<std::string>& args) {
     for (const TerminalSpec& spec : kTerminals) {
-        const std::string terminal = which_executable(spec.executable);
+        const std::string terminal =
+            which_executable(spec.executable, /*skip_foreign_mounts=*/true);
         if (terminal.empty()) continue;
         std::vector<std::string> argv = {terminal, spec.exec_flag};
         // Re-enter through the .LEXE runtime, never through the payload: the
@@ -551,7 +652,8 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // §14.4: presentation is DECLARED. A console application launched with no
     // terminal is given one by .LEXE — the desktop is never asked to infer it.
     if (manifest.launch_mode == LaunchMode::Console && !request.attached_terminal &&
-        !stdout_is_terminal() && request.allow_terminal_spawn) {
+        !stdout_is_terminal() && request.allow_terminal_spawn &&
+        display_available()) {
         const std::vector<std::string> argv = terminal_argv(id, request.args);
         if (!argv.empty()) {
             util::RunOptions options;

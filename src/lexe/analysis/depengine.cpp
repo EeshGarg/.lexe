@@ -280,6 +280,19 @@ struct Resolver {
         return dirs;
     }
 
+    /// The directories a SANDBOXED launch will actually be able to search: the
+    /// package's own content, and the read-only system view the sandbox mounts.
+    ///
+    /// Deliberately excludes DT_RPATH / DT_RUNPATH and any caller-supplied extra
+    /// paths, because those can name directories that exist only on the machine
+    /// running this analysis.
+    std::vector<fs::path> sandbox_search_dirs(const elf::ElfInfo& info) {
+        std::vector<fs::path> dirs = opts.payload_search_paths;
+        const std::vector<fs::path> sys = default_search_dirs(info.machine);
+        dirs.insert(dirs.end(), sys.begin(), sys.end());
+        return dirs;
+    }
+
     void visit(const fs::path& object, const elf::ElfInfo& info,
                const std::string& self_label) {
         if (report.dependencies.size() >= opts.max_nodes) return;
@@ -320,24 +333,67 @@ struct Resolver {
                 // Recorded from the machine of the file actually found, so a
                 // wrong-arch library cannot be filed under the wrong origin.
                 dep.origin = origin_of(resolved, opts, child_info.machine);
+
+                // If it was found only through a path the sandbox will not have,
+                // ask the question that actually matters -- CAN THE SANDBOX
+                // SATISFY THIS SONAME? -- and if it can, report what the sandbox
+                // will use.
+                //
+                // Getting this wrong made the runtime refuse a package it could
+                // have run. The first version treated "resolved via a host-only
+                // rpath" as unsatisfiable, which is false whenever the same
+                // soname also sits in /usr: the loader inside the sandbox finds
+                // the rpath directory missing and falls through to the default
+                // paths, exactly as it does when the rpath dangles.
+                //
+                // The proof that it was a defect rather than a policy was an
+                // inconsistency, and it is worth keeping in view: a DANGLING
+                // absolute rpath was already accepted and ran, so the runtime
+                // had always considered "rpath unavailable, resolve from /usr"
+                // acceptable. It refused only when the rpath directory happened
+                // to EXIST on the build machine -- a property of the build
+                // machine with no bearing on what the sandbox can do. The same
+                // package, byte for byte, installed or refused depending on a
+                // directory outside it.
+                if (dep.origin == DependencyOrigin::Elsewhere) {
+                    const fs::path in_sandbox =
+                        resolve(soname, sandbox_search_dirs(info));
+                    if (!in_sandbox.empty()) {
+                        const elf::ElfInfo sandbox_info = elf::read(in_sandbox);
+                        dep.resolved_path = in_sandbox;
+                        dep.machine = sandbox_info.machine;
+                        child_info = sandbox_info;
+                        dep.origin =
+                            origin_of(in_sandbox, opts, sandbox_info.machine);
+                        dep.out_of_package_search_path = resolved;
+                    }
+                }
                 dep.version_needs = child_info.version_needs;
                 if (opts.hash_bundles && dep.kind == DependencyKind::Bundle) {
                     try {
-                        dep.sha256 = crypto::sha256_file_hex(resolved);
+                        // dep.resolved_path, not `resolved`: the two differ when
+                        // a host-only search path was disregarded above, and
+                        // hashing the disregarded file would publish a digest of
+                        // something no launch will ever load.
+                        dep.sha256 =
+                            crypto::sha256_file_hex(dep.resolved_path);
                     } catch (const std::exception&) {
                     }
                 }
             }
 
             const std::size_t idx = report.dependencies.size();
+            const fs::path walk = dep.resolved_path;
             index.emplace(soname, idx);
             report.dependencies.push_back(std::move(dep));
 
-            // Recurse only into resolvable bundle libraries.
-            if (opts.recurse && !resolved.empty() &&
+            // Recurse only into resolvable bundle libraries, and walk the file
+            // the SANDBOX will load -- its own DT_NEEDED set is what matters,
+            // and a host-only copy can differ from the one in /usr.
+            if (opts.recurse && !walk.empty() &&
                 report.dependencies[idx].kind == DependencyKind::Bundle) {
                 on_path.insert(soname);
-                visit(resolved, child_info, soname);
+                visit(walk, child_info, soname);
                 on_path.erase(soname);
             }
         }

@@ -65,7 +65,7 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 # "blocked" instead of "skip" when the obstacle is the environment rather than
 # applicability), and a `<lane>_run`.
 
-ALL_LANES=(evidence unit acceptance integration gui lifecycle concurrency session conformance security windows proton sanitizers)
+ALL_LANES=(evidence unit acceptance integration gui lifecycle concurrency session conformance security windows proton workloads sanitizers)
 
 lane_desc() {
     case "$1" in
@@ -81,6 +81,7 @@ lane_desc() {
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;
+    workloads)  echo "184 programs .LEXE did not write: every specimen packaged, installed, run, and compared against its direct-execution baseline" ;;
     sanitizers) echo "a separate ASan + UBSan build of the unit suite" ;;
     esac
 }
@@ -140,6 +141,22 @@ session_check() {
             echo "skip: no systemd --user session here ($err)"; return 1 ;;
     esac
     return 0
+}
+
+# The corpora are generated artifacts and are deliberately NOT committed, so on
+# a fresh clone this lane has nothing to run. That must read as BLOCKED, never
+# as PASS: the lane's own summary exits 0 when every specimen was blocked, so if
+# this check passed the run through, `--all` would report a green lane having
+# executed none of the 184 specimens. Fake coverage is worse than a missing lane,
+# because it is indistinguishable from real coverage in the summary.
+workloads_check() {
+    acceptance_check || return 1
+    have python3 || { echo "skip: no python3, and the workload engine is Python"; return 1; }
+    local elf_index="${LEXE_WORKLOAD_ELF_INDEX:-/tmp/lexe-workloads/index.json}"
+    [[ -f "$elf_index" ]] || {
+        echo "blocked: the ELF workload corpus is not generated (python3 tests/workloads/generate.py); an unexecuted specimen is not coverage"
+        return 1
+    }
 }
 
 conformance_check() {
@@ -216,6 +233,10 @@ session_run() {
 # tree, nothing more. That is why it is the first lane.
 evidence_run() {
     bash "$REPO/tests/evidence/run_all.sh"
+}
+
+workloads_run() {
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/workloads/against_lexe.sh"
 }
 
 conformance_run() {
