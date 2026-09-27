@@ -119,9 +119,16 @@ key_like="$(git -C "$ACC_REPO" grep -l 'secretKey' -- '*.json' 2>/dev/null || tr
 acc_equals "$key_like" "" "no committed JSON file carries a secretKey"
 
 # Wine/Proton prefixes and build trees are machine state, not source.
-for junk in 'build/' 'build-linux/' 'pfx/' 'compatdata/'; do
-    hits="$(printf '%s\n' "$tracked" | grep -F "$junk" | head -1 || true)"
-    acc_equals "$hits" "" "no $junk is committed"
+#
+# Matched as whole PATH COMPONENTS, not as substrings. The substring form fired
+# on `tests/workloads/specs_portable/slow_build/...` -- a committed recipe source
+# directory whose name merely ends in "build" -- and would equally have fired on
+# anything ending in "pfx". A check that cries wolf about legitimate files is not
+# a stricter check, it is a check people learn to ignore, and this one had to be
+# investigated before it could be dismissed.
+for junk in build build-linux pfx compatdata; do
+    hits="$(printf '%s\n' "$tracked" | grep -E "(^|/)${junk}/" | head -1 || true)"
+    acc_equals "$hits" "" "no $junk/ directory is committed"
 done
 
 acc_summary
