@@ -390,6 +390,145 @@ TEST_CASE("removing an application removes its unit file") {
     CHECK(IntegrationState::load(paths).scope(manifest.id).empty());
 }
 
+TEST_CASE("a recorded path outside the runtime's tree is never deleted") {
+    // REGRESSION. `remove_app` removed every path a scope recorded, and
+    // `integration.json` is local, unsigned state that records ABSOLUTE paths.
+    // `doctor --repair` calls `remove_app` for every owner no longer installed,
+    // so two records appended by hand -- pointing at files in the user's home --
+    // were deleted, and the report said only "Re-established 6 registration(s)".
+    //
+    // It is not a privilege boundary: an attacker able to write that file can
+    // usually write elsewhere. What makes it worth confining is that it turns
+    // "can write one file inside LEXE_HOME" into "delete any file this user can
+    // delete, at a moment the user chooses" -- and `doctor --repair` is exactly
+    // what somebody runs when their system is already misbehaving. The likelier
+    // route is not malice at all: a truncated record with a mangled path reaches
+    // the same remove().
+    //
+    // And HARDENING.md already named the rule this broke. Its single-source
+    // table assigns "filesystem ownership (may Lexe delete this?)" to the
+    // registry, and names the anti-pattern outright: "direct remove_all on
+    // computed paths".
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+
+    // A file that is emphatically not ours, in a directory the runtime does not
+    // write to.
+    const fs::path outsider = home.path() / "not-ours" / "keep-me.txt";
+    util::spit(outsider, std::string_view("this file must survive"));
+    REQUIRE(fs::exists(outsider));
+
+    IntegrationState state = IntegrationState::load(paths);
+    IntegrationArtifact planted;
+    planted.kind = ArtifactKind::AppDesktopEntry;
+    planted.path = outsider.string();
+    planted.owner_app = "com.example.gone";
+    state.replace_scope("com.example.gone", {planted});
+    state.save(paths);
+
+    DesktopIntegration integration(paths);
+
+    // FIRST: while the record still exists, verify() must NAME it. A record
+    // naming a path this runtime would never have written is a finding in its
+    // own right, not merely something to decline to act on.
+    {
+        const IntegrationReport report = integration.verify();
+        bool named = false;
+        for (const std::string& problem : report.unrepaired) {
+            if (problem.find(outsider.string()) != std::string::npos) {
+                named = true;
+            }
+        }
+        INFO("verify must name the out-of-tree record rather than ignore it");
+        CHECK(named);
+        CHECK_FALSE(report.ok);
+    }
+
+    // THEN: removal must leave the file alone. (remove_app also forgets the
+    // record, so verify() afterwards has nothing left to see — which is why the
+    // check above comes first, and why repair() reports the refusal separately.)
+    integration.remove_app("com.example.gone");
+    INFO("a path outside the runtime's own directories must survive removal");
+    CHECK(fs::exists(outsider));
+    CHECK(util::slurp_text(outsider) == "this file must survive");
+}
+
+TEST_CASE("a file the runtime DOES own is still removed") {
+    // The control. A containment rule that refused everything would "fix" the
+    // case above by breaking uninstall, and nothing in the test above would
+    // notice.
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+
+    const fs::path ours =
+        paths.applications_dir() / "lexe-com.example.owned.desktop";
+    util::spit(ours, std::string_view("[Desktop Entry]\n"));
+    REQUIRE(fs::exists(ours));
+
+    IntegrationState state = IntegrationState::load(paths);
+    IntegrationArtifact mine;
+    mine.kind = ArtifactKind::AppDesktopEntry;
+    mine.path = ours.string();
+    mine.owner_app = "com.example.owned";
+    state.replace_scope("com.example.owned", {mine});
+    state.save(paths);
+
+    DesktopIntegration(paths).remove_app("com.example.owned");
+    INFO("removal must still work for the directories the runtime writes");
+    CHECK_FALSE(fs::exists(ours));
+}
+
+TEST_CASE("a conditional artifact stays tracked when its condition goes false") {
+    // REGRESSION. `AppDesktopEntry` and `AppMimeTypes` are written only when the
+    // manifest asks for them, and `install_app` rewrites an application's WHOLE
+    // scope -- so an update that turned `integration.desktopEntry` off dropped
+    // the RECORD while leaving the file in the desktop's directories. `AppIcon`
+    // and `SessionUnit` already carried forward; these two did not.
+    //
+    // The cost is narrower than the surrounding comments feared, and the narrow
+    // version is the one worth pinning: uninstall removes the files anyway, so
+    // nothing is left behind forever. What was lost is DETECTION -- `doctor`
+    // reported "healthy" while untracked files sat in the desktop's directories,
+    // which is the one guarantee integration.json exists to provide.
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+
+    Manifest with_entry = service_manifest("com.example.conditional", "Cond");
+    with_entry.launch_mode = LaunchMode::Gui; // a GUI app gets a menu entry
+    with_entry.integration_desktop_entry = true;
+
+    DesktopIntegration integration(paths);
+    integration.install_app(with_entry, paths.home() / "no-icons");
+
+    const auto tracked = [&](ArtifactKind kind) {
+        for (const IntegrationArtifact& a :
+             IntegrationState::load(paths).scope(with_entry.id)) {
+            if (a.kind == kind) return true;
+        }
+        return false;
+    };
+    REQUIRE(tracked(ArtifactKind::AppDesktopEntry));
+    const fs::path entry =
+        paths.applications_dir() / ("lexe-" + with_entry.id + ".desktop");
+    REQUIRE(fs::exists(entry));
+
+    // The next version declares no menu entry.
+    Manifest without_entry = with_entry;
+    without_entry.integration_desktop_entry = false;
+    integration.install_app(without_entry, paths.home() / "no-icons");
+
+    INFO("the file is still on disk, so it must still be tracked -- an "
+         "untracked file is an undetectable one");
+    CHECK(fs::exists(entry));
+    CHECK(tracked(ArtifactKind::AppDesktopEntry));
+
+    // And once the file is genuinely gone, the record goes with it rather than
+    // being carried forward forever.
+    fs::remove(entry);
+    integration.install_app(without_entry, paths.home() / "no-icons");
+    CHECK_FALSE(tracked(ArtifactKind::AppDesktopEntry));
+}
+
 TEST_CASE("the artifact kind round-trips through its recorded name") {
     // integration.json is durable state read by later runtimes; a kind that
     // did not round-trip would make every recorded unit unreadable.

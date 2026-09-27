@@ -40,6 +40,76 @@ rather than a silently CLI-only build.
 Vendored code in `third_party/` is compiled with warnings silenced and exposed
 as SYSTEM includes precisely so that stays true.
 
+## 1.5 Three roles, deliberately not merged
+
+Testing this project is split across three responsibilities that are kept
+independent on purpose. The split is not organisational tidiness — it exists
+because the failure mode it prevents has happened repeatedly here.
+
+| | asks | owns |
+|---|---|---|
+| **Implementation / Format** | *What should `.LEXE` do?* | production code, Format 0.1, runtime, installer, verifier, CLI, schemas |
+| **Independent Test** | *Where does it break?* | hypotheses, assertions, adversarial and differential testing, fuzzing, fault injection, auditing the tests themselves |
+| **Workload / Fixture** | *What can I make `.LEXE` deal with?* | specimen programs (Linux, Windows, portable source), build and compiler matrices, fixture metadata, reproducibility |
+
+The failure mode:
+
+```
+        BAD                                   WANTED
+implementation chooses behaviour          the SPEC
+        ↓                                 /      \
+test reads implementation          reference     independent
+        ↓                          impl.          tests
+test copies behaviour                 \          /
+        ↓                              observable behaviour
+       PASS
+```
+
+A test written from the implementation agrees with the implementation by
+construction, and proves nothing about the format. This is not a theoretical
+concern: building a 181-case conformance corpus **from the specification instead**
+found that the `permissions` vocabulary existed only in a freeze record and that
+§5.5 contradicted itself — neither of which any test derived from the code could
+have surfaced.
+
+Two rules keep the split real:
+
+**The workload engineer does not decide whether `.LEXE` is correct.** It
+manufactures programs and records what they do *on their own*. Deciding what
+`.LEXE` should do with them is a different job, and a fixture that carried its
+own verdict would be marking its own homework.
+
+**Verify outside `.LEXE` first.** A specimen enters the corpus only once its
+direct-execution behaviour is recorded:
+
+```
+source → compiler → binary → DIRECT EXECUTION → known behaviour → corpus → .LEXE
+```
+
+Without that baseline, `.LEXE → program fails` is unattributable: it could be a
+runtime defect or a broken executable, and there is no way to tell them apart
+after the fact.
+
+## 1.6 Evidence integrity
+
+`scripts/test.sh` records the commit and a fingerprint of the source tree when it
+starts, and checks it again at the end. A run whose sources changed underneath it
+is reported as **EVIDENCE INVALID** and exits non-zero whatever the lanes said.
+
+This is mechanical rather than a convention because the convention failed three
+times, and once it failed in the most misleading way available: the sanitizer lane
+reported eight failures that looked exactly like logic bugs — three unrelated
+booleans in one struct reading `false` while set `true` — because a field had been
+added to that struct and the build tree held object files from two layouts. The
+same tests passed in the ordinary build, and passed again under sanitizers from a
+clean tree. The failure was indistinguishable from a real defect and sent the
+investigation after a bug that did not exist.
+
+A green run that cannot be attributed to a commit is worse than a red one,
+because it invites trust it has not earned. The guard therefore fails closed: an
+unrelated file appearing mid-run also invalidates the run, and the cost of that
+is one re-run against a still tree.
+
 ## 2. Test lanes
 
 | Lane | What it is | Needs |

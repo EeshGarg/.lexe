@@ -106,6 +106,33 @@ ProcessResult run_process(const std::vector<std::string>& argv,
                           const RunOptions& opts = {});
 
 /// Options for spawn_detached().
+///
+/// The detached process gets **fresh stdio**: stdin, stdout and stderr are all
+/// reopened on `/dev/null` before it starts. That is not tidiness, it is the
+/// difference between returning and appearing to hang.
+///
+/// A detached child inherits the caller's descriptors, so when the caller's
+/// stdout is a PIPE the pipe stays open for as long as the child lives -- which
+/// for a service is forever. The process returned; the observable effect did
+/// not. Measured:
+///
+///   stdout to a file          rc=0 in 30 ms, payload survives
+///   stdout to a pipe          never returned (30 s timeout, 2/2)
+///   OUT=$(lexe run svc)       never returned (30 s timeout, 2/2)
+///
+/// So `OUT=$(lexe run svc)`, `lexe run svc | tee log`, and every script, CI job,
+/// GUI or supervisor that captures output hung, while the same command with
+/// stdout redirected to a file returned in 30 ms. FORMAT-0.1 §5.6 says the
+/// runtime RETURNS once a service is running; for any consumer that is not a
+/// terminal or a file, it did not.
+///
+/// `/dev/null` rather than a log file, deliberately. §5.6 establishes that a
+/// detached direct run is unsupervised and has no status to report, so
+/// discarding its output is consistent rather than a loss -- and inventing a log
+/// file here would invent unbounded state with it, which is a defect this
+/// project has already had to fix once (`locks/` grew without limit). The
+/// supported way to capture a service's output is session management, where
+/// systemd gives the unit the journal.
 struct DetachOptions {
     std::optional<std::filesystem::path> cwd;
     /// A lock file the SUPERVISOR should hold (shared) for as long as the

@@ -921,10 +921,21 @@ TEST_CASE("update flow: --check, apply, up to date, --all, rollback") {
     CHECK(registry.current_version(kId) == "1.1.0");
     CHECK(fs::is_directory(registry.version_dir(kId, "1.0.0")));
 
-    // Nothing newer: clean no-op with exit 0.
+    // Nothing newer: clean no-op with exit 0, and the report ATTRIBUTES its
+    // claim to the source.
+    //
+    // This used to assert the words "up to date". FORMAT-0.1 §7.1 forbids that
+    // sentence: "up to date" is a claim about what exists, and what was verified
+    // is only what the source offered. 0.1 does not protect update freshness, so
+    // a runtime that says "up to date" is reassuring a user about precisely the
+    // thing it cannot check. The wording changed deliberately, so the assertion
+    // changed with it.
     const auto again = run_cli({"update", kId});
     CHECK(again.exit_code == 0);
-    CHECK(contains(again.stdout_text, "up to date"));
+    CHECK(contains(again.stdout_text, "no newer version offered"));
+    CHECK(contains(again.stdout_text, "update source"));
+    INFO("the report must not make an unattributed claim: " << again.stdout_text);
+    CHECK_FALSE(contains(again.stdout_text, "up to date"));
 
     // --all iterates installed apps (this one is up to date now).
     const auto all = run_cli({"update", "--all"});

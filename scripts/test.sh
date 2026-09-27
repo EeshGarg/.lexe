@@ -262,6 +262,66 @@ sanitizers_run() {
         --reporters=console --no-intro=true
 }
 
+# ------------------------------------------------- evidence integrity
+#
+# A run is EVIDENCE about a particular state of the source tree. If the tree
+# changes while the run is in flight, the result describes no state at all: some
+# lanes tested the old code, some the new, and the object files may be a mixture
+# of both.
+#
+# This is not hypothetical and it is not a style rule. It has happened three
+# times in this project, and once it was maximally misleading: the sanitizer lane
+# reported eight failures that looked exactly like logic bugs -- three unrelated
+# booleans in one struct reading false while set true -- because a field had been
+# added to that struct and the tree held object files from two layouts. The same
+# tests passed in the ordinary build and passed again from a clean tree. Hours
+# went into a defect that did not exist.
+#
+# So the runner records what it was testing and checks at the end that nothing
+# moved. A run whose sources changed underneath it is reported as EVIDENCE
+# INVALID and exits non-zero regardless of the lane results, because a green run
+# that cannot be attributed to a commit is worse than a red one: it invites
+# trust it has not earned.
+#
+# Cheap by construction: path, size and mtime of every source file, hashed. It
+# catches an edit, which is the thing that matters, without reading the tree
+# twice.
+#
+# `find -printf` rather than `find | xargs stat`, and the reason is a defect this
+# project has now hit in three unrelated places: this repository lives under a
+# path containing a space. `xargs` splits on whitespace, so every `stat` received
+# two fragments of a path and failed, every failure went to /dev/null, and the
+# fingerprint came back EMPTY — which made the guard silently approve everything.
+# Found by testing that the guard FIRES rather than assuming it would: the first
+# version did not fire when a source file was touched mid-run.
+source_fingerprint() {
+    {
+        git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "no-git"
+        git -C "$REPO" status --porcelain 2>/dev/null
+        # `tests/workloads/` is pruned: it holds SPECIMEN sources manufactured
+        # for .LEXE to consume, and no lane compiles or runs them — the unit
+        # binary globs `tests/*.cpp` only. Fingerprinting them would invalidate
+        # every run the workload engineer happened to be working through, for a
+        # change that cannot alter a single lane's result.
+        #
+        # The rule is "cover what can change a result", not "cover everything".
+        # When a workload LANE exists, its inputs stop being inert and belong
+        # back in here — that is a deliberate decision to revisit, not an
+        # exclusion to forget.
+        find "$REPO/src" "$REPO/tests" "$REPO/scripts" "$REPO/tools" \
+             "$REPO/schema" \
+             -path "$REPO/tests/workloads" -prune -o -type f \
+             \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.sh' \
+                -o -name '*.py' -o -name '*.json' \) \
+             -printf '%p %s %T@\n' 2>/dev/null \
+            | LC_ALL=C sort
+    } | sha256sum | cut -d' ' -f1
+}
+
+RUN_COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+RUN_DIRTY="$(git -C "$REPO" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+RUN_FINGERPRINT_BEFORE=""
+
 # --------------------------------------------------------------- driver
 
 usage() {
@@ -418,6 +478,9 @@ fi
 [[ ${#LANES[@]} -eq 0 ]] && { usage >&2; exit 2; }
 
 printf '%s.LEXE test runner%s\n' "$C_BOLD" "$C_OFF"
+RUN_FINGERPRINT_BEFORE="$(source_fingerprint)"
+printf '  commit:     %s%s\n' "$RUN_COMMIT" \
+    "$([[ "$RUN_DIRTY" != "0" ]] && printf ' (+%s uncommitted file(s))' "$RUN_DIRTY")"
 printf '  repository: %s\n' "$REPO"
 printf '  build dir:  %s\n' "$BUILD_DIR"
 printf '  lanes:      %s\n' "${LANES[*]}"
@@ -449,6 +512,18 @@ if [[ $blocked -gt 0 ]]; then
     printf '\n  %sBlocked lanes are not passes.%s The reasons above are recorded in\n' \
         "$C_BOLD" "$C_OFF"
     printf '  docs/TESTING.md §6 along with what would settle each one.\n'
+fi
+
+RUN_FINGERPRINT_AFTER="$(source_fingerprint)"
+if [[ -n "$RUN_FINGERPRINT_BEFORE" &&
+      "$RUN_FINGERPRINT_BEFORE" != "$RUN_FINGERPRINT_AFTER" ]]; then
+    printf '\n  %sEVIDENCE INVALID: the source tree changed during this run.%s\n' \
+        "$C_RED" "$C_OFF"
+    printf '  Some lanes tested the code before the change and some after, and the\n'
+    printf '  object files may be a mixture. Whatever the results above say, they\n'
+    printf '  describe no single state of the tree — discard them and run again\n'
+    printf '  against a still tree.\n'
+    exit 1
 fi
 
 if [[ $failed -gt 0 ]]; then

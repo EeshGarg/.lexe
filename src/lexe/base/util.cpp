@@ -773,6 +773,28 @@ void spawn_detached(const std::vector<std::string>& argv,
             }
         }
 
+        // Fresh stdio for the supervisor AND everything it starts.
+        //
+        // Without this the detached child inherits the caller's descriptors, so
+        // a caller whose stdout is a pipe never observes the launch returning --
+        // the pipe stays open for the child's whole lifetime, which for a service
+        // is forever. `OUT=$(lexe run svc)` hung; the same command redirected to
+        // a file returned in 30 ms. See DetachOptions in util.hpp.
+        //
+        // Done in the SUPERVISOR before the spawn, not only via file actions, so
+        // the supervisor itself also stops holding the caller's pipe: it
+        // outlives the caller by design, and a supervisor holding the pipe is
+        // the same hang with one more process in the chain.
+        {
+            const int devnull = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+            if (devnull >= 0) {
+                ::dup2(devnull, STDIN_FILENO);
+                ::dup2(devnull, STDOUT_FILENO);
+                ::dup2(devnull, STDERR_FILENO);
+                if (devnull > STDERR_FILENO) ::close(devnull);
+            }
+        }
+
         posix_spawn_file_actions_t fa;
         ::posix_spawn_file_actions_init(&fa);
         if (!cwd_str.empty()) {

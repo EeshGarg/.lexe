@@ -183,6 +183,58 @@ void validate_staged_tree(const fs::path& version_dir,
 /// output. A failed compile without the compiler diagnostics is not a
 /// diagnosis, and the person installing may have no terminal to have seen them
 /// on.
+/// Resolve `version_dir / relative` and refuse it if it escapes `version_dir`.
+///
+/// Repair validates the payload KEY -- `payload_relative()` rejects `..`,
+/// backslashes, `:`, NUL and empty segments -- and then never resolved the
+/// DESTINATION. So a symlink already inside the version directory redirected the
+/// write: with `versions/1.0.0/lib -> /tmp/escape` in place, repairing
+/// `payload/lib/data.dat` created `/tmp/escape/data.dat` and reported `rc=0,
+/// Repaired 1 file(s)`.
+///
+/// The galling part is that the guard existed one function away and was simply
+/// not applied: `extract_payload` resolves every destination with
+/// `weakly_canonical` + `lexically_relative` (security invariant #1), which is
+/// what protects the staging tree two lines above the copy that was not
+/// protected.
+///
+/// What the primitive actually was, stated precisely rather than inflated: the
+/// content written is AUTHENTIC package bytes -- the package is re-verified for
+/// id, version and pinned publisher key before anything is copied, and that
+/// check holds -- so it created or overwrote a file at an arbitrary path with
+/// content drawn from a verified package. It also needed a symlink pre-planted
+/// inside the version directory, and whoever can do that can already write
+/// there.
+///
+/// Fixed anyway, for the reason `remove_app`'s containment was: it is a confused
+/// deputy that turns "can write inside this application's version directory"
+/// into "write somewhere else entirely", it is triggered by the command a user
+/// runs BECAUSE something is already wrong, and it reported success. Malice is
+/// not required either -- a user or a backup tool that replaced a bulky payload
+/// subdirectory with a symlink gets silent out-of-tree writes on the next repair.
+///
+/// Returns nullopt when the destination escapes; the caller reports that rather
+/// than skipping quietly, because a payload path resolving outside the version
+/// directory is itself a finding.
+std::optional<fs::path> contained_destination(const fs::path& version_dir,
+                                              const fs::path& relative) {
+    std::error_code ec;
+    const fs::path root = fs::weakly_canonical(version_dir, ec);
+    const fs::path base = ec ? version_dir : root;
+
+    const fs::path candidate = base / relative;
+    std::error_code resolve_ec;
+    const fs::path resolved = fs::weakly_canonical(candidate, resolve_ec);
+    const fs::path target = resolve_ec ? candidate : resolved;
+
+    const fs::path inside = target.lexically_relative(base);
+    if (inside.empty() || inside == fs::path(".")) return std::nullopt;
+    if (inside.begin() != inside.end() && inside.begin()->string() == "..") {
+        return std::nullopt;
+    }
+    return target;
+}
+
 void compile_staged_payload(const Paths& paths, const fs::path& build_tree,
                             const fs::path& meta_dir, const Manifest& manifest,
                             bool approved) {
@@ -1252,9 +1304,22 @@ RepairReport Installer::repair(const std::string& id,
                     if (!fs::is_regular_file(from, file_ec)) {
                         continue; // absent from the package: stays corrupt
                     }
-                    const fs::path to = version_dir / entry.relative;
-                    fs::create_directories(to.parent_path());
-                    fs::copy_file(from, to, fs::copy_options::overwrite_existing);
+                    const std::optional<fs::path> to =
+                        contained_destination(version_dir, entry.relative);
+                    if (!to.has_value()) {
+                        // See contained_destination: a destination that resolves
+                        // outside the version directory is reported, not written
+                        // and not silently skipped.
+                        report.corrupt_files.push_back(
+                            entry.key + " (its destination resolves outside " +
+                            version_dir.string() +
+                            ", most likely through a symlink; refusing to write "
+                            "there)");
+                        continue;
+                    }
+                    fs::create_directories(to->parent_path());
+                    fs::copy_file(from, *to,
+                                  fs::copy_options::overwrite_existing);
                     report.repaired_files.push_back(entry.key);
                 }
                 // A portable application cannot be repaired by copying: the
@@ -1299,9 +1364,16 @@ RepairReport Installer::repair(const std::string& id,
                             const fs::path from = staging / *relative;
                             std::error_code build_ec;
                             if (!fs::is_regular_file(from, build_ec)) continue;
-                            const fs::path to = version_dir / *relative;
-                            fs::create_directories(to.parent_path());
-                            fs::copy_file(from, to,
+                            const std::optional<fs::path> to =
+                                contained_destination(version_dir, *relative);
+                            if (!to.has_value()) {
+                                report.corrupt_files.push_back(
+                                    key + " (its destination resolves outside " +
+                                    version_dir.string() + ")");
+                                continue;
+                            }
+                            fs::create_directories(to->parent_path());
+                            fs::copy_file(from, *to,
                                           fs::copy_options::overwrite_existing);
                             report.repaired_files.push_back(key);
                         }
@@ -1335,15 +1407,27 @@ RepairReport Installer::repair(const std::string& id,
             throw;
         } catch (const CompileError&) {
             throw; // likewise: we know exactly why it cannot be repaired
-        } catch (const Error&) {
+        } catch (const Error& e) {
             if (explicit_package) throw;
-            // The cached source turned out unusable — report health only.
+            // The cached source turned out unusable — report health only, but
+            // KEEP the reason. Discarding it is what made a tampered local
+            // record and a foreign-key source arrive as the same sentence.
+            report.blocked_reason = e.what();
+            report.blocked_hint = e.hint();
             report.repaired_files.clear();
         }
     }
 
-    report.corrupt_files =
-        keys_of(corrupt_payload_files(version_dir, expected));
+    // APPENDED, not assigned. The restore loop records destinations it refused
+    // to write (see contained_destination), and assigning here discarded them --
+    // so a refusal that mattered was replaced by the digest scan's own list.
+    for (const std::string& key :
+         keys_of(corrupt_payload_files(version_dir, expected))) {
+        if (std::find(report.corrupt_files.begin(), report.corrupt_files.end(),
+                      key) == report.corrupt_files.end()) {
+            report.corrupt_files.push_back(key);
+        }
+    }
     report.ok = report.corrupt_files.empty();
     return report;
 }

@@ -261,6 +261,50 @@ bool icon_content_is_plausible(const fs::path& file, bool is_svg) {
            whole.find("<!ENTITY") == std::string::npos;
 }
 
+/// Whether this runtime is allowed to DELETE `file`.
+///
+/// `integration.json` records absolute paths, and it is local, unsigned state. A
+/// removal that trusted those paths turned "can write one file inside LEXE_HOME"
+/// into "delete any file this user can delete, at a moment the user chooses" --
+/// and `doctor --repair` is precisely what somebody runs when their system is
+/// already misbehaving. Demonstrated: two artifact records appended for an
+/// application that was not installed, pointing at files in `$HOME`, and
+/// `doctor --repair` deleted both and reported `Re-established 6 registration(s)`.
+///
+/// It does not cross a privilege boundary -- an attacker who can write that file
+/// can usually write elsewhere -- and the likelier route is not malice at all: a
+/// truncated or garbled record with a mangled path reaches the same `remove`.
+/// What makes it worth confining is that HARDENING.md already names the rule it
+/// broke. Its single-source table assigns *"filesystem ownership ('may Lexe
+/// delete this?')"* to the registry and names the anti-pattern outright: *"direct
+/// `remove_all` on computed paths"*. This was a `remove` on a path read from a
+/// file, with no owner consulted.
+///
+/// So deletion is confined to the five directories this runtime writes into. A
+/// record naming anything else is not silently obeyed and not silently ignored:
+/// it is REPORTED, because an artifact record pointing outside the tree is
+/// itself a finding.
+bool may_delete(const Paths& paths, const fs::path& file) {
+    std::error_code ec;
+    const fs::path resolved = fs::weakly_canonical(file, ec);
+    const fs::path candidate = ec ? file : resolved;
+    for (const fs::path& root : {paths.applications_dir(), paths.icons_dir(),
+                                 paths.mime_dir(), paths.launch_dir(),
+                                 paths.systemd_user_dir()}) {
+        std::error_code root_ec;
+        const fs::path canonical_root = fs::weakly_canonical(root, root_ec);
+        const fs::path base = root_ec ? root : canonical_root;
+        const fs::path relative = candidate.lexically_relative(base);
+        if (relative.empty() || relative == fs::path("..")) continue;
+        if (relative.begin() != relative.end() &&
+            relative.begin()->string() == "..") {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 std::string icon_name(const std::string& id) { return "lexe-" + id; }
 
 } // namespace
@@ -579,6 +623,50 @@ DesktopIntegration::install_app(const Manifest& manifest,
                                  sha256_of_file(mime_file), manifest.id});
         }
 
+        // The two CONDITIONAL artifacts, carried forward when their condition
+        // has gone false but the file is still on disk.
+        //
+        // `AppDesktopEntry` and `AppMimeTypes` are written only when the manifest
+        // asks for them, and `replace_scope` below rewrites this application's
+        // whole scope -- so an update that flips `integration.desktopEntry` to
+        // false, or drops its `fileAssociations`, dropped the RECORD while
+        // leaving the file in the desktop's directories. `AppIcon` and
+        // `SessionUnit` already had this branch; these two did not.
+        //
+        // What that cost is narrower than it looks, and worth stating precisely:
+        // uninstall removes the files anyway, so they are not left behind
+        // forever. What was lost is DETECTION -- `lexe doctor` reported "healthy"
+        // while two untracked files sat in the desktop's directories, which is
+        // the one guarantee integration.json exists to provide -- and a stale
+        // menu entry plus a stale MIME association outlived the update that
+        // removed them, so the desktop honoured a declaration the application no
+        // longer made.
+        //
+        // Carried forward rather than deleted here, deliberately: this function
+        // registers, and making it also retract would give one function two
+        // jobs. The record keeps them visible to `doctor`, which is what the
+        // user needs in order to decide.
+        for (const IntegrationArtifact& existing : state.scope(manifest.id)) {
+            const bool conditional =
+                existing.kind == ArtifactKind::AppDesktopEntry ||
+                existing.kind == ArtifactKind::AppMimeTypes;
+            if (!conditional) continue;
+            const bool already_listed =
+                std::any_of(artifacts.begin(), artifacts.end(),
+                            [&](const IntegrationArtifact& a) {
+                                return a.kind == existing.kind;
+                            });
+            if (already_listed) continue;
+            std::error_code ec;
+            if (!fs::is_regular_file(fs::path(existing.path), ec)) continue;
+            artifacts.push_back(existing);
+            report.notes.push_back(
+                std::string("kept tracking ") + to_string(existing.kind) + " " +
+                existing.path +
+                ": this version no longer declares it, but the file is still "
+                "present and an untracked file is an undetectable one");
+        }
+
         // §15.1 — the first-class launch artifact. This is what makes
         // "double-click run.lexe" a supported path instead of the user being
         // handed a raw ELF.
@@ -723,7 +811,14 @@ void DesktopIntegration::remove_app(const std::string& id) {
     state = IntegrationState::load(paths_); // disable() may have rewritten it
     std::error_code ec;
     for (const IntegrationArtifact& artifact : state.scope(id)) {
-        fs::remove(fs::path(artifact.path), ec); // missing is fine
+        const fs::path file(artifact.path);
+        if (!may_delete(paths_, file)) {
+            // Deliberately not deleted, and deliberately not silent. See
+            // may_delete: a recorded path is not a licence to remove a file.
+            outside_tree_.push_back(artifact.path);
+            continue;
+        }
+        fs::remove(file, ec); // missing is fine
     }
     state.replace_scope(id, {});
     state.save(paths_);
@@ -739,6 +834,19 @@ DesktopIntegration::check_state(const IntegrationState& state) const {
         ArtifactCheck check;
         check.artifact = artifact;
         const fs::path path(artifact.path);
+        // A record naming a path this runtime would never write is a finding in
+        // its own right: either the state file is damaged, or something put it
+        // there. It is reported rather than acted upon — see may_delete.
+        if (!may_delete(paths_, path)) {
+            check.health = ArtifactHealth::Modified;
+            check.detail = "this record names a path outside the directories "
+                           ".LEXE writes; it will not be repaired or removed";
+            report.checks.push_back(std::move(check));
+            report.unrepaired.push_back(
+                "refusing to act on a recorded path outside the runtime's own "
+                "directories: " + artifact.path);
+            continue;
+        }
         if (!fs::is_regular_file(path, ec)) {
             check.health = ArtifactHealth::Missing;
             check.detail = "not present on disk";
@@ -900,6 +1008,13 @@ IntegrationReport DesktopIntegration::repair() {
                                        e.what());
         }
     }
+
+    for (const std::string& path : outside_tree_) {
+        after.unrepaired.push_back(
+            "refused to delete a recorded path outside the runtime's own "
+            "directories: " + path);
+    }
+    outside_tree_.clear();
 
     const IntegrationReport confirm = verify();
     after.checks = confirm.checks;

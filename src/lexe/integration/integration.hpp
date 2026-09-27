@@ -165,6 +165,16 @@ public:
 
 private:
     IntegrationReport check_state(const IntegrationState& state) const;
+
+    /// Artifact records naming a path this runtime may not delete.
+    ///
+    /// `integration.json` is local, unsigned state that records absolute paths,
+    /// and a removal that trusted them would delete any file the user can
+    /// delete. `may_delete` confines removal to the five directories the runtime
+    /// writes; anything else lands here and is REPORTED — a record pointing
+    /// outside the tree is a finding, not something to obey or to ignore.
+    mutable std::vector<std::string> outside_tree_;
+
     Paths paths_;
 };
 

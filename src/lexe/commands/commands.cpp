@@ -754,21 +754,57 @@ int cmd_update(const std::vector<std::string>& args) {
 
     const auto update_one = [&](const std::string& id) {
         const UpdateCheck chk = updater.check(id);
+
+        // FORMAT-0.1 §7.1: a runtime MUST NOT describe this state in a way that
+        // implies more than was verified. "Up to date" is a claim about what
+        // exists; what was verified is only what the SOURCE offered.
+        //
+        // `lexe update` used to say "up to date (1.0.0)" with no attribution at
+        // all -- exactly the sentence §7.1 forbids, and on the command a user
+        // actually runs rather than on `--check`.
+        //
+        // And a source offering a version LOWER than the installed one was
+        // reported identically to the healthy case. That is the one externally
+        // visible symptom of the freeze/rollback attack §7.1 documents as
+        // undefended: a source that has started advertising older releases is
+        // behaving anomalously, and saying "up to date" about it is the runtime
+        // reassuring a user about the thing they should be suspicious of.
+        // Detection costs nothing here, and it is the only detection 0.1 offers.
+        const auto report_no_update = [&] {
+            const int rel = compare_versions(chk.available_version,
+                                             chk.installed_version);
+            if (rel < 0) {
+                std::cout << id << ": the update source offers "
+                          << chk.available_version << ", which is OLDER than the "
+                          << "installed " << chk.installed_version << "\n"
+                          << "  This is not an update and was not applied. A "
+                             "source that advertises an older\n"
+                          << "  release than you have is behaving oddly: it may "
+                             "be misconfigured, or it may\n"
+                          << "  be holding you back from a newer one. Format 0.1 "
+                             "does not protect update\n"
+                          << "  freshness, so this report is the only signal "
+                             "there is.\n";
+                return;
+            }
+            // Attributed, not asserted: this says what the source offered.
+            std::cout << id << ": no newer version offered by its update source "
+                      << "(installed " << chk.installed_version
+                      << ", source offers " << chk.available_version << ")\n";
+        };
+
         if (check_only) {
             if (chk.update_available) {
                 std::cout << id << ": update available: "
                           << chk.installed_version << " -> "
                           << chk.available_version << "\n";
             } else {
-                std::cout << id << ": up to date (installed "
-                          << chk.installed_version << ", channel offers "
-                          << chk.available_version << ")\n";
+                report_no_update();
             }
             return;
         }
         if (!chk.update_available) {
-            std::cout << id << ": up to date (" << chk.installed_version
-                      << ")\n";
+            report_no_update();
             return;
         }
         const InstallResult result = updater.apply(id, accept_perms);
@@ -889,11 +925,31 @@ int cmd_repair(const std::vector<std::string>& args) {
         }
         return 0;
     }
+    // WHY, when repair knows why.
+    //
+    // This used to be one sentence for every failure, with the generic
+    // package-verification hint attached — so a repair blocked by locally
+    // TAMPERED digest records told the user to re-download a package that had
+    // verified perfectly, and a `source.txt` redirected at a foreign-key package
+    // said nothing about the key at all. The second is the fingerprint of
+    // somebody having edited that file, and it is exactly the kind of event
+    // reported well elsewhere in this runtime.
+    std::string message = id + " has " +
+                          std::to_string(report.corrupt_files.size()) +
+                          " corrupt or missing file(s) that could not be "
+                          "repaired: " +
+                          join(report.corrupt_files, ", ");
+    if (!report.blocked_reason.empty()) {
+        message += "\n  repair could not proceed: " + report.blocked_reason;
+    }
     throw VerificationError(
-        id + " has " + std::to_string(report.corrupt_files.size()) +
-        " corrupt or missing file(s) that could not be repaired: " +
-        join(report.corrupt_files, ", ") +
-        " (reinstall from the original package to repair)");
+        message,
+        !report.blocked_hint.empty()
+            ? report.blocked_hint
+            : (report.blocked_reason.empty()
+                   ? "Reinstall from the original package to repair."
+                   : "The reason above is why the repair stopped; it is not "
+                     "necessarily a problem with the package itself."));
 }
 
 // A directory plus every subdirectory under it (bounded), used as dependency

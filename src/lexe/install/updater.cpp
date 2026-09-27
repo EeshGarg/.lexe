@@ -210,8 +210,23 @@ UpdateCheck Updater::check(const std::string& id) {
     }
     const std::string url =
         require_string(*package, "url", where + " package");
-    const std::string sha256 = ascii_lowercase(
-        require_string(*package, "sha256", where + " package"));
+    // LOWERCASE required, not normalised (FORMAT-0.1 §7).
+    //
+    // This used to ASCII-lowercase the value before checking it, so an uppercase
+    // digest was accepted and the update applied. §3.6 already settled the same
+    // question for `hashes.json` digests, and its reasoning transfers unchanged:
+    // a reader that compared digests case-sensitively is conforming, so a
+    // document with an uppercase digest would be read differently by different
+    // implementations -- which is exactly what a format rule exists to prevent.
+    // One document, one spelling.
+    const std::string sha256 = require_string(*package, "sha256",
+                                              where + " package");
+    if (sha256 != ascii_lowercase(sha256)) {
+        fail(where + " package \"sha256\" must be lowercase hexadecimal; an "
+                     "uppercase digest is malformed, not merely unusual, "
+                     "because a case-sensitive reader would reject what a "
+                     "case-folding one accepts");
+    }
     if (!is_sha256_hex(sha256)) {
         fail("update.json: " + where +
              " package \"sha256\" must be 64 hexadecimal characters");

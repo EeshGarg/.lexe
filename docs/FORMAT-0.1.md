@@ -966,7 +966,7 @@ fetches `update.json` and its detached signature at the same URL + `".sig"`
       "version": "1.4.3",
       "package": { "url": "https://example.com/releases/App-1.4.3.lexe",
                     "sha256": "…" },
-      "minimumRuntime": "0.1"
+      "lexeVersion": "0.1"
     }
   }
 }
@@ -986,7 +986,38 @@ Applying an update MUST enforce **all** of:
 
 The previous version directory is retained for `lexe rollback`.
 
-### 7.0 Transport
+### 7.0 Field rules
+
+These were enforced by the reference implementation and stated nowhere, which a
+conformance corpus built from this document found by producing a definite runtime
+behaviour the document did not authorise. A second implementer would have had to
+guess at every one.
+
+**`lexeVersion`** is OPTIONAL in `update.json`, and when present MUST be exactly
+`"0.1"`. The asymmetry is deliberate: absent means the document does not claim a
+format version, and a reader that already knows which format it speaks can
+proceed; a *wrong* version is an explicit claim to be a document this reader does
+not understand, and MUST be refused. (`lexe.json` differs — there the field is
+required, because a package must say what it is.)
+
+**`package.sha256`** MUST be 64 **lowercase** hexadecimal characters. An
+uppercase digest is malformed, not merely unusual, for the reason §3.6 already
+gives about `metadata/hashes.json`: a reader comparing digests case-sensitively
+is conforming, so a document with an uppercase digest would be read differently
+by different implementations. The reference runtime used to lowercase the value
+before comparing it, and therefore accepted such a document and applied the
+update.
+
+**`minimumRuntime`** is **not a field of Format 0.1.** It appeared only in §7's
+example, nothing has ever read it, and §5.0 requires readers to ignore unknown
+members — so a publisher who set it got no gate and no warning. That is the
+`healthCheck` situation (see `HARDENING.md` §E) and the
+`metadata/permissions.json` one (Appendix A row 41): a member with no semantics
+is a trap, because somebody will believe it is doing something. It has been
+removed from the example rather than specified, because gating on a runtime
+version needs a version-ordering rule for *runtimes* that 0.1 does not define.
+
+### 7.0.1 Transport
 
 `manifest.updates.manifest` MUST be an `https://` URL. A reader MUST refuse a
 plaintext `http://` source, and MUST NOT allow a redirect to downgrade the
@@ -1482,6 +1513,13 @@ reader to assume otherwise.
 | 59 | **§5.5's table said `allowedChains` must be non-empty while a paragraph below it said an absent or empty array means `["native"]`.** A self-contradiction introduced by this very freeze | **FIXED (spec)** — the table was the wrong half. The reader substitutes `["native"]` and the package launches natively, which was verified rather than assumed: the reported consequence, that such a package "can never be launched", did not hold |
 | 60 | **The `permissions` vocabulary existed only in this appendix.** Row 8 claimed it was "closed and checked at stage 2" and row 38 that duplicates are rejected, but §5.7 said only "informational in 0.1" and the document **named no valid permission anywhere** | **FIXED** — §5.7.1 states the closed vocabulary, lists both members, and gives the reason duplicates are refused. This was the sharpest test of the claim that the document is implementable without reading the implementation, and it failed it: a validator written from the prose correctly accepted `["telepathy"]`. A rule that exists only in a freeze record is not a rule |
 | 61 | **§5.0 required integer TOKENS while 0.1 declared no field as an integer** — a rule with no subject | **FIXED** — `install.estimatedSize` is now declared a non-negative integer |
+| 68 | **`doctor --repair` deleted any absolute path named in `integration.json`** — local, unsigned state. Two records appended by hand, pointing at files in the user's home, were removed, and the report said only "Re-established 6 registration(s)" | **FIXED** — deletion is confined to the five directories this runtime writes, and a record naming anything else is REPORTED rather than obeyed or ignored. Not a privilege crossing, but it turned "can write one file inside LEXE_HOME" into "delete any file this user can delete" — and corruption is a likelier route than malice. It also broke a rule the project had already adopted: `HARDENING.md`'s single-source table assigns filesystem ownership to the registry and names "direct `remove_all` on computed paths" as the anti-pattern |
+| 69 | **Two conditional artifacts were de-registered instead of carried forward.** `AppDesktopEntry` and `AppMimeTypes` are written only when the manifest asks for them, and `install_app` rewrites a whole scope — so an update that turned `integration.desktopEntry` off dropped the RECORD while leaving the file in the desktop's directories. `AppIcon` and `SessionUnit` already carried forward | **FIXED**, and the severity is narrower than the surrounding comments feared: uninstall removes the files anyway, so nothing is left behind forever. What was lost is DETECTION — `doctor` reported "healthy" while untracked files sat in the desktop's directories, which is the one guarantee `integration.json` exists to provide — plus a stale menu entry and MIME association outliving the update that removed them |
+| 63 | **A detached launch inherited the caller's stdio**, so a caller whose stdout was a pipe never observed the launch returning: `OUT=$(lexe run svc)` and `lexe run svc \| tee log` hung forever, while the same command redirected to a file returned in 30 ms | **FIXED** — the detached supervisor reopens stdin, stdout and stderr on `/dev/null`. `/dev/null` rather than a log file, because §5.6 already establishes that a detached direct run is unsupervised with no status to report, and inventing a log file would invent unbounded state with it. The systemd path was never affected: the unit gets the journal |
+| 64 | **`lexe update` said "up to date (1.0.0)" with no attribution**, violating the §7.1 MUST NOT that had just been added — and on the command a user actually runs, not on `--check`. Worse, a source offering a version LOWER than installed was reported identically to the healthy case | **FIXED** — the report now says what the SOURCE offered, and an older offer is called out explicitly as anomalous. That is the only externally visible symptom of the freeze attack §7.1 documents as undefended, and detection there costs nothing |
+| 65 | **`update.json`'s `package.sha256` accepted an uppercase digest** and applied the update, because the value was lowercased before being compared | **FIXED** — §7.0 requires lowercase, for the reason §3.6 already gives about `hashes.json`: a case-sensitive reader is conforming, so an uppercase digest would be read differently by different implementations |
+| 66 | **`lexeVersion` in `update.json` was enforced and undocumented, and asymmetrically** — absent tolerated, wrong refused | **FIXED (spec)** — §7.0 states both halves and why the asymmetry is deliberate |
+| 67 | **`minimumRuntime` sat in §7's example and was read by nothing** | **REMOVED from the example** — the third instance of this shape, after `healthCheck` and `metadata/permissions.json`. A member with no semantics is a trap, because somebody will believe it is doing something. Specifying it would need a version-ordering rule for *runtimes* that 0.1 does not define |
 | 62 | **§1 forbade a writer emitting an unnecessary ZIP64 record and said nothing about what a reader does with one** | **FIXED** — stated as a reader MAY, with the reference implementation's answer named. It remains the one corpus case the spec deliberately does not determine |
 | 57 | **`write_atomic` used one temporary name for every writer**, so two concurrent writers of the same file collided — and the loser removed the DESTINATION before retrying, deleting the record the winner had just written | **FIXED** — a unique temporary per writer, and the destination is never removed unless our own temporary is still there to replace it. Introduced by the fix for an *unobserved* torn read, and caught by the concurrency lane added in the same tranche, on `installation.json` during simultaneous launches. A reminder that "strictly better, and free" is a claim to test rather than assert |
 
@@ -1495,5 +1533,5 @@ package.
 |---|---|
 | Is execution-chain layer **order** normative? §5.5 says `fex+proton` "is not a chain", and nothing checks it. Order is a naming convention today | Resolving it toward "normative" would change which packages are valid, so it needs the compatibility work first |
 | Should the manifest's payload-path grammar and the archive's entry-path grammar be the same grammar? They differ on `.` segments today | They are enforced in different places for different reasons; unifying them is a code change, not a format decision |
+| **A session-managed service whose program is replaced underneath it.** `ExecStart` is version-independent (`lexe run <id> --wait`), so after an update the unit keeps executing the OLD version until something unrelated restarts it, at which point it silently switches — and `service status` reports it healthy throughout | §9.4 permits this (it forbids disturbing a running version) and §5.6 says detaching is not supervision, but neither covers the case where the runtime IS the supervisor and the program changed. The likely answer is a REPORT rather than a restart — `service status` saying "running 1.0.0, installed version is 2.0.0" — because restarting a service because a file changed is a policy decision that belongs to the user. Recorded as open rather than decided quietly |
 | `build.json` vocabularies: legal values of `hostIsa`, `approval.authority`, and a timestamp grammar | All three are free strings today. Tightening them is POLICY work, not format work |
-| `update.json`'s `minimumRuntime` appears in the §7 example and is read nowhere | Either specify it or remove it from the example; it is currently a third instance of the `healthCheck` shape |

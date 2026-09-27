@@ -98,6 +98,28 @@ struct RepairReport {
     /// mismatched — populated by a report-only run (no usable package) and
     /// by anything a repair attempt could not fix.
     std::vector<std::string> corrupt_files;
+    /// WHY a repair could not proceed, when something specific went wrong.
+    ///
+    /// Repair used to swallow this. The catch-all around the restore attempt
+    /// discarded the exception whenever the package came from the recorded
+    /// source rather than the command line, so two quite different situations
+    /// arrived at the user as the same sentence — "N corrupt or missing file(s)
+    /// that could not be repaired":
+    ///
+    ///   the recorded digests had been tampered with, so the comparison failed
+    ///   against LOCAL records while the package itself verified perfectly
+    ///
+    ///   `source.txt` had been redirected at a package signed by a key that is
+    ///   not the pinned publisher key — which is exactly the fingerprint of
+    ///   somebody having edited it, and is the kind of event this runtime
+    ///   reports well everywhere else
+    ///
+    /// Worse, the generic verification hint was attached to the first case,
+    /// telling the user to re-download a package that was never the problem.
+    /// Empty when the repair simply had nothing usable to work from.
+    std::string blocked_reason;
+    /// The actionable step for `blocked_reason`, when its throw site had one.
+    std::string blocked_hint;
 };
 
 /// Result of Installer::check_health (HARDENING.md §D). A structured result, not
