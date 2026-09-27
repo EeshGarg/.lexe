@@ -652,14 +652,27 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     // deadlock as soon as the child filled the pipe we are not reading.
     std::string output;
     std::string errors;
+    std::uint64_t result_stdout_total = 0;
+    std::uint64_t result_stderr_total = 0;
+    bool result_stdout_truncated = false;
+    bool result_stderr_truncated = false;
     {
         struct Stream {
             int fd;
             std::string* sink;
+            std::FILE* tee;          // write through as bytes arrive, or null
+            std::uint64_t* total;    // everything the child wrote
+            bool* truncated;         // retention hit the cap
         };
         std::vector<Stream> streams;
-        if (opts.capture_stdout) streams.push_back({pipefd[0], &output});
-        if (opts.capture_stderr) streams.push_back({errfd[0], &errors});
+        if (opts.capture_stdout) {
+            streams.push_back({pipefd[0], &output, opts.tee_stdout,
+                               &result_stdout_total, &result_stdout_truncated});
+        }
+        if (opts.capture_stderr) {
+            streams.push_back({errfd[0], &errors, opts.tee_stderr,
+                               &result_stderr_total, &result_stderr_truncated});
+        }
         while (!streams.empty()) {
             std::vector<pollfd> fds;
             fds.reserve(streams.size());
@@ -674,10 +687,43 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
                 if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
                     continue;
                 }
-                char buf[4096];
+                char buf[65536];
                 const ssize_t n = ::read(streams[i].fd, buf, sizeof(buf));
                 if (n > 0) {
-                    streams[i].sink->append(buf, static_cast<std::size_t>(n));
+                    const std::size_t got = static_cast<std::size_t>(n);
+                    *streams[i].total += got;
+                    // Through to the caller FIRST, in full. This is the byte
+                    // path that must never lose anything; the retained copy
+                    // below is only a diagnostic sample.
+                    if (streams[i].tee != nullptr) {
+                        std::fwrite(buf, 1, got, streams[i].tee);
+                        std::fflush(streams[i].tee);
+                    }
+                    if (opts.max_retained_bytes == 0) {
+                        streams[i].sink->append(buf, got);
+                    } else {
+                        // A rolling TAIL, not a head-capped prefix.
+                        //
+                        // Keeping the first N bytes looks equivalent and is
+                        // not. The diagnostics layer clamps a captured stream
+                        // by keeping its tail, deliberately — "the end of the
+                        // output is where the failure is" — so a head-capped
+                        // sample handed to it produces a record holding neither
+                        // the beginning of the output nor the end of it, but an
+                        // arbitrary window in the middle. Measured on a 12.8 MiB
+                        // stream: the record held bytes 192–256 KiB and the
+                        // program's final line was nowhere in it.
+                        //
+                        // The memmove is bounded by the cap and happens at most
+                        // once per read, which is nothing beside the I/O.
+                        streams[i].sink->append(buf, got);
+                        if (streams[i].sink->size() > opts.max_retained_bytes) {
+                            streams[i].sink->erase(
+                                0, streams[i].sink->size() -
+                                       opts.max_retained_bytes);
+                            *streams[i].truncated = true;
+                        }
+                    }
                 } else if (n == 0 || (n < 0 && errno != EINTR &&
                                       errno != EAGAIN)) {
                     ::close(streams[i].fd);
@@ -702,6 +748,10 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     }
     result.stdout_text = std::move(output);
     result.stderr_text = std::move(errors);
+    result.stdout_total_bytes = result_stdout_total;
+    result.stderr_total_bytes = result_stderr_total;
+    result.stdout_truncated = result_stdout_truncated;
+    result.stderr_truncated = result_stderr_truncated;
     return result;
 }
 

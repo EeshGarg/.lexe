@@ -52,21 +52,42 @@ fi
 printf '  baseline: %s\n' "$base"
 
 fail=0
+
+# Each probe takes its OWN before-reading rather than comparing against one
+# baseline captured at the start.
+#
+# Not a refinement — the single-baseline version reported two false WRONGs the
+# first time another agent happened to be writing specimen files while this ran.
+# Concurrent work in the tree is the normal condition here, not an anomaly, and
+# a check that misreports under the exact circumstance it exists to police is
+# worthless. A per-probe before/after pair is immune to drift between probes,
+# and drift DURING a probe is reported as its own outcome (DRIFTED) rather than
+# being blamed on the fingerprint.
+verdict_for() { # expect, before, now, after -> prints verdict, sets fail
+    local expect="$1" before="$2" now="$3" after="$4"
+    local moved="same"; [[ "$now" != "$before" ]] && moved="change"
+    local verdict="ok"
+    [[ "$moved" == "$expect" ]] || { verdict="WRONG"; fail=1; }
+    # Must return to where it started, or the fingerprint is not a function of
+    # the tree and comparing two readings proves nothing.
+    if [[ "$after" != "$before" ]]; then
+        verdict="DRIFTED (tree changed under the probe; rerun on a quiet tree)"
+        fail=1
+    fi
+    printf '%s|%s' "$moved" "$verdict"
+}
+
 check() { # label, expect(change|same), path-to-create
     local label="$1" expect="$2" path="$3"
+    local before; before="$(source_fingerprint)"
     mkdir -p "$(dirname "$path")" 2>/dev/null
     printf 'probe\n' > "$path"
     local now; now="$(source_fingerprint)"
     rm -f "$path"
     local after; after="$(source_fingerprint)"
-
-    local moved="same"; [[ "$now" != "$base" ]] && moved="change"
-    local verdict="ok"
-    [[ "$moved" == "$expect" ]] || { verdict="WRONG"; fail=1; }
-    # And it must return to the baseline, or the fingerprint is not a function
-    # of the tree and comparing two of them proves nothing.
-    [[ "$after" == "$base" ]] || { verdict="${verdict}/NOT-RESTORED"; fail=1; }
-    printf '  %-48s expect %-6s got %-6s  %s\n' "$label" "$expect" "$moved" "$verdict"
+    local r; r="$(verdict_for "$expect" "$before" "$now" "$after")"
+    printf '  %-48s expect %-6s got %-6s  %s\n' \
+        "$label" "$expect" "${r%%|*}" "${r#*|}"
 }
 
 printf '\n  must CHANGE the fingerprint:\n'
@@ -79,6 +100,45 @@ check "a conformance lane script"           change "tests/conformance/zz_evidenc
 printf '\n  must NOT change the fingerprint (the documented exclusions):\n'
 check "docs/ — cannot alter a lane result"  same   "docs/ZZ_EVIDENCE_PROBE.md"
 check "a specimen source — hashed by lane"  same   "tests/workloads/specs_pe/zz_probe.c"
+
+# Every probe above creates a NEW, UNTRACKED file — which `git status` reports on
+# its own. So none of them can tell whether the `find` half of the fingerprint
+# works at all, and the `find` half is where the real bug was: the old
+# `tests/workloads/` prune looked effective while doing nothing, because git
+# status was quietly covering for it.
+#
+# The case that isolates `find` is a TRACKED file whose mtime moves and whose
+# content does not. git status says nothing about it — there is nothing to say —
+# so if the fingerprint still notices, that can only be `find`.
+touch_check() { # label, expect, tracked-path
+    local label="$1" expect="$2" path="$3"
+    if [[ ! -f "$path" ]]; then
+        printf '  %-48s SKIP (no such tracked file)\n' "$label"
+        fail=1
+        return
+    fi
+    # Restore the mtime EXACTLY, or this probe leaves the tree looking changed to
+    # every later run, including the one being collected as evidence. `cp -p`
+    # keeps full sub-second precision and `touch -r` copies it back verbatim;
+    # round-tripping through `stat -c %y` and `touch -d` does not, and loses
+    # nanoseconds, which the fingerprint reads.
+    local ref; ref="$(mktemp)"
+    cp -p "$path" "$ref"
+    local before; before="$(source_fingerprint)"
+    touch "$path"
+    local now; now="$(source_fingerprint)"
+    touch -r "$ref" "$path"
+    rm -f "$ref"
+    local after; after="$(source_fingerprint)"
+    local r; r="$(verdict_for "$expect" "$before" "$now" "$after")"
+    printf '  %-48s expect %-6s got %-6s  %s\n' \
+        "$label" "$expect" "${r%%|*}" "${r#*|}"
+}
+
+printf '\n  the find half specifically — a tracked file touched, content unchanged\n'
+printf '  (git status cannot see this, so only find can):\n'
+touch_check "touch a tracked src/ file"          change "src/lexe/base/util.cpp"
+touch_check "touch a tracked specimen (pruned)"  same   "tests/workloads/specs_pe/t_common.h"
 
 # The probe above creates `CMakeLists.txt.zz_probe`, which is not the real file.
 # Prove the real one is matched by name, without touching it: it lives at the

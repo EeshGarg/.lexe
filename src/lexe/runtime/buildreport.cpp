@@ -63,9 +63,21 @@ void list_kind(std::ostringstream& os, const DependencyReport& deps,
         case DependencyOrigin::None:
             break;
         }
+        // The rpath that was found first and then disregarded. Printed because
+        // it is usually an absolute build-tree path left in by the link step,
+        // and the publisher is the only person who can remove it — they will
+        // otherwise be told the library came from the host with no hint that
+        // their binary is carrying a dead search path at all.
+        if (!d->out_of_package_search_path.empty()) {
+            os << "\n        its DT_RPATH/DT_RUNPATH points at "
+               << d->out_of_package_search_path.string()
+               << ", outside the package — disregarded, as a sandboxed launch "
+                  "will not have it";
+        }
         os << "\n";
     }
 }
+
 
 } // namespace
 
@@ -175,6 +187,13 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
                         {"kind", to_string(d.kind)},
                         {"origin", to_string(d.origin)},
                         {"resolvedPath", d.resolved_path.string()},
+                        // Empty in the ordinary case. Non-empty means the
+                        // binary carries a DT_RPATH/DT_RUNPATH pointing outside
+                        // the package that was found first and disregarded --
+                        // almost always an absolute build-tree path left in by
+                        // the link step, and a publisher's gate wants to see it.
+                        {"outOfPackageSearchPath",
+                         d.out_of_package_search_path.string()},
                         {"reason", d.reason},
                         {"recommendation", d.recommendation},
                         {"sha256", d.sha256},

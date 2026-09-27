@@ -56,6 +56,24 @@ inline constexpr std::uint64_t kMaxExpansionRatio = 200;
 inline constexpr std::uint64_t kRatioGraceBytes =
     256ull * 1024 * 1024; // 256 MiB
 
+// ------------------------------------------------------- captured output
+/// How much of a launched application's stdout/stderr is RETAINED for its error
+/// record. The caller receives every byte regardless — retention is only the
+/// diagnostic copy.
+///
+/// Unbounded retention was a real defect, not a theoretical one: the launcher
+/// held the whole of a program's output in memory and its RSS grew to roughly
+/// twice the output size, so 512 MiB of output cost about 1 GB while the program
+/// itself used 1.5 MB. A program that legitimately streams — an archiver, a
+/// database dump, a transcode — took the launcher down with it, and a hostile
+/// package could exhaust the session on purpose. It also meant a failing launch
+/// could write a multi-hundred-megabyte error record to disk.
+///
+/// 256 KiB is far more than any diagnostic needs and small enough that the cost
+/// is irrelevant. Truncation is always REPORTED, never silent: the record says
+/// how much the application actually wrote.
+inline constexpr std::size_t kMaxRetainedOutputBytes = 256u * 1024;
+
 // ------------------------------------------------------------------- paths
 /// Maximum bytes in a whole entry path.
 inline constexpr std::size_t kMaxPathBytes = 1024;

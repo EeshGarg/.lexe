@@ -619,6 +619,9 @@ public:
         // is requested only when .LEXE has to record the output itself.
         o.capture_stdout = plan.capture_output;
         o.capture_stderr = plan.capture_output;
+        o.tee_stdout = plan.tee_stdout;
+        o.tee_stderr = plan.tee_stderr;
+        o.max_retained_bytes = plan.max_retained_bytes;
         IsolationResult result;
         try {
             const util::ProcessResult process = util::run_process(argv, o);
@@ -626,6 +629,10 @@ public:
             result.stdout_text = process.stdout_text;
             result.stderr_text = process.stderr_text;
             result.signal = process.signal;
+            result.stdout_total_bytes = process.stdout_total_bytes;
+            result.stderr_total_bytes = process.stderr_total_bytes;
+            result.stdout_truncated = process.stdout_truncated;
+            result.stderr_truncated = process.stderr_truncated;
         } catch (const Error& e) {
             throw IsolationError(
                 std::string("isolation: backend execution failed: ") + e.what());

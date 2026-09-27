@@ -264,26 +264,6 @@ std::string detect_terminal_emulator() {
 
 namespace {
 
-/// Write a captured stream through to the caller VERBATIM: every byte, however
-/// many, NUL bytes included.
-///
-/// The relay this replaces used `std::fputs`, which takes a C string and
-/// therefore stopped at the application's first NUL byte. An application that
-/// wrote 8 MiB of binary data to stdout had 163 bytes delivered, and one that
-/// wrote all 256 byte values had NONE, because byte zero is NUL. The data was
-/// captured correctly in full and discarded at the very last step, with no
-/// error and no warning — the worst shape a data-loss bug can take.
-///
-/// A launched program's stdout is a byte stream, not text, and the only correct
-/// way to forward it is by length.
-void relay_stream(const std::string& text, std::FILE* to) {
-    if (text.empty()) return;
-    std::fwrite(text.data(), 1, text.size(), to);
-    // Flushed here so the application's own output cannot be reordered behind
-    // a diagnostic the CLI prints afterwards.
-    std::fflush(to);
-}
-
 /// The argv that re-invokes `lexe run <id>` inside a terminal emulator.
 /// Returns an empty vector when no terminal is available on this host.
 std::vector<std::string> terminal_argv(const std::string& id,
@@ -756,6 +736,9 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     bool detached = false;
     std::string captured_stdout;
     std::string captured_stderr;
+    bool output_truncated = false;
+    std::uint64_t stdout_total = 0;
+    std::uint64_t stderr_total = 0;
     std::map<IsolationControl, ControlState> enforced;
 
     try {
@@ -771,11 +754,19 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
             options.cwd = root;
             options.capture_stdout = capture_output;
             options.capture_stderr = capture_output;
+            if (capture_output) {
+                options.tee_stdout = stdout;
+                options.tee_stderr = stderr;
+                options.max_retained_bytes = limits::kMaxRetainedOutputBytes;
+            }
             const util::ProcessResult result = util::run_process(argv, options);
             exit_code = result.exit_code;
             signal = result.signal;
             captured_stdout = result.stdout_text;
             captured_stderr = result.stderr_text;
+            output_truncated = result.stdout_truncated || result.stderr_truncated;
+            stdout_total = result.stdout_total_bytes;
+            stderr_total = result.stderr_total_bytes;
         } else if (caps.status == CapabilityStatus::Unavailable ||
                    caps.status == CapabilityStatus::SetupFailed) {
             // Isolation is expected here but the backend does not work — FAIL
@@ -795,6 +786,11 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
                 plan.app_argv = std::move(argv);
             }
             plan.capture_output = capture_output;
+            if (capture_output) {
+                plan.tee_stdout = stdout;
+                plan.tee_stderr = stderr;
+                plan.max_retained_bytes = limits::kMaxRetainedOutputBytes;
+            }
             plan.detach = detach;
             // The lease the SUPERVISOR takes, so the version's files cannot be
             // removed under a detached application after this process — and
@@ -806,6 +802,9 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
             signal = result.signal;
             captured_stdout = result.stdout_text;
             captured_stderr = result.stderr_text;
+            output_truncated = result.stdout_truncated || result.stderr_truncated;
+            stdout_total = result.stdout_total_bytes;
+            stderr_total = result.stderr_total_bytes;
             enforced = result.enforced;
             detached = result.detached;
         }
@@ -839,35 +838,37 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
     // there is no outcome to judge. Reporting one would be an invention, and
     // whatever the application does from here is its own business until the
     // next time something looks. (Nothing supervises it; see §5.)
-    // Hand the caller whatever the application wrote, ALWAYS, and by length.
+    // The application's output has already reached the caller by now, streamed
+    // through as it was produced (RunOptions::tee_stdout). Three separate
+    // defects lived in what used to be here, and they are worth keeping in view
+    // because each was silent:
     //
-    // This relay used to be the ELSE of the non-zero-exit branch below, and it
-    // wrote only stdout, only on success, only up to the first NUL. Three
-    // silent failures came out of that one arrangement:
-    //
-    //   * `captured_stderr` was never written to our stderr in ANY branch. An
-    //     application that reports on stderr and exits 0 therefore produced
-    //     nothing at all — and no error record either, since those are only
-    //     made for a failing exit. FORMAT-0.1 §5.6 forbids exactly this, in
-    //     these words: a launch must not leave the application "silently
+    //   * the relay wrote only stdout, and `captured_stderr` never reached our
+    //     stderr in ANY branch. An application reporting on stderr and exiting 0
+    //     therefore produced nothing at all, and no error record either, since
+    //     those are written only for a failing exit. FORMAT-0.1 §5.6 forbids
+    //     precisely that: a launch must not leave the application "silently
     //     appearing to do nothing".
     //
-    //   * Output was withheld from the caller precisely WHEN the application
-    //     exited non-zero. A non-zero exit is a normal, documented outcome for
-    //     a large class of programs — `diff`, `grep`, `test`, every compiler —
-    //     and for those the output IS the result. It survived only inside an
-    //     error record the caller had to know to go and ask for.
+    //   * the relay was the ELSE of the non-zero-exit branch below, so output
+    //     was withheld exactly WHEN the application exited non-zero — normal
+    //     and documented for `diff`, `grep`, `test` and every compiler, where
+    //     the output IS the result. It survived only inside a record the caller
+    //     had to know to ask for.
     //
-    //   * `fputs` truncated at the first NUL (see relay_stream).
+    //   * it wrote with `fputs`, which takes a C string, so it stopped at the
+    //     application's first NUL byte. 8 MiB of binary output arrived as 163
+    //     bytes; output beginning with a NUL arrived as nothing.
     //
-    // The error record below is ADDITIONAL, never a substitute. It is durable
-    // and machine-readable for `lexe errors`; this relay is what the caller's
-    // pipe is waiting for. Writing one was never a reason to skip the other.
-    if (capture_output) {
-        relay_stream(captured_stdout, stdout);
-        relay_stream(captured_stderr, stderr);
-    }
-
+    // And a fourth that the fix for those three introduced: relaying at exit
+    // meant holding the whole output, so the launcher's memory grew with it.
+    // Streaming fixes that and improves something else on the way — output now
+    // appears as it is produced rather than being withheld until exit.
+    //
+    // The error record below is ADDITIONAL, never a substitute, and it now
+    // carries a bounded SAMPLE (limits::kMaxRetainedOutputBytes) rather than the
+    // whole stream. Truncation is stated in the record; a sample presented as
+    // the whole thing would be a quieter version of losing the output.
     if (detached) {
         // nothing to record beyond "it started", which report.detached says
     } else if (exit_code != 0 || signal.has_value()) {
@@ -888,9 +889,43 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
         failure.runtime_profile = record.runtime_source;
         failure.exit_code = exit_code;
         failure.signal = signal;
-        report.error = ErrorStore(paths).record(std::move(failure),
-                                                captured_stdout,
-                                                captured_stderr);
+        // Say so when the retained copy is a sample. Without this the record
+        // reads as the application's complete output and a reader would draw
+        // conclusions from a truncated tail -- which is the failure this whole
+        // area has produced twice already, in different clothes.
+        const auto note_truncation =
+            [](std::string text, bool truncated, std::uint64_t total,
+               const char* stream) {
+                if (!truncated) return text;
+                // Says what is TRUE and nothing more, and says it at the END.
+                //
+                // The first version of this note claimed to be "showing the
+                // first N bytes", which was wrong twice over, and finding that
+                // out is the reason it now says so little. The diagnostics
+                // layer already clamps a captured stream and keeps its TAIL
+                // with its own marker (diagnostics.cpp, clamp_stream) — so the
+                // record holds the end, not the beginning, and a smaller amount
+                // than this cap. A note describing the wrong end of a different
+                // quantity is worse than no note, because it is the kind of
+                // detail a reader would act on.
+                //
+                // What this layer alone knows, and what the layer below cannot
+                // recover once it has been handed a sample, is the TOTAL the
+                // application wrote. So that is all it contributes. It is
+                // appended rather than prepended because a tail-clamp would
+                // throw away anything at the front.
+                text += "\n[.LEXE: the application wrote " +
+                        std::to_string(total) + " bytes to " + stream +
+                        ". Every byte was delivered to the caller; this "
+                        "diagnostic copy is a bounded excerpt.]\n";
+                return text;
+            };
+        report.error = ErrorStore(paths).record(
+            std::move(failure),
+            note_truncation(captured_stdout, output_truncated, stdout_total,
+                            "stdout"),
+            note_truncation(captured_stderr, output_truncated, stderr_total,
+                            "stderr"));
     }
 
     return report;

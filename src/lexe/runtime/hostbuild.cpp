@@ -368,7 +368,26 @@ CompileResult compile_for_host(const Paths& paths, const CompileRequest& req) {
                         "\", but those bytes are not an ELF object — a "
                         "portable package must compile to a native executable "
                         "for this host",
-                    "");
+                    // Hint, not silence. Without one this inherits the generic
+                    // verification hint — "re-download it from the original
+                    // source" — which is wrong in the most misleading way
+                    // available: the package DID verify, its signature is good,
+                    // and re-downloading it will produce the same result
+                    // forever. Nothing is wrong with the download; the recipe
+                    // built the wrong kind of file.
+                    //
+                    // Found by compiling a portable recipe whose toolchain was
+                    // a Windows cross-compiler: the refusal was correct and the
+                    // advice attached to it sent the user after a non-existent
+                    // download problem.
+                    "The package is intact and its signature verified — this is "
+                    "about what the build PRODUCED. The recipe compiled "
+                    "something that is not a Linux binary at all, which usually "
+                    "means it named a cross-compiler in build.toolchain. A "
+                    "portable package is source compiled for THIS host; a "
+                    "package that ships a foreign-OS binary must declare "
+                    "applicationType \"windows\" and a foreign-OS execution "
+                    "chain instead.");
     }
     if (info.type != elf::Type::Executable &&
         info.type != elf::Type::SharedObject) {
@@ -377,7 +396,16 @@ CompileResult compile_for_host(const Paths& paths, const CompileRequest& req) {
                         elf::to_string(info.type) +
                         " object, which is not runnable (expected an "
                         "executable or a position-independent executable)",
-                    "");
+                    // Same reason as above: the generic "re-download it" hint is
+                    // wrong here too. The commonest cause is a link line that
+                    // passed -shared where it meant to link an executable, which
+                    // produces a perfectly valid ELF with no program interpreter
+                    // — it compiles, it installs as far as this check, and it
+                    // dies with SIGSEGV if anything execs it.
+                    "The package verified; this is about the build product. An "
+                    "ELF object without a program interpreter cannot be "
+                    "executed — check the recipe's link step for -shared, or a "
+                    "missing -o target, and make sure it links an executable.");
     }
     const std::string produced_isa = info.arch();
     const std::string host_isa = host_architecture();

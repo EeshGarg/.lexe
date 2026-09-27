@@ -219,7 +219,14 @@ Measured on the development host (WSL2, ext4 scratch tree, warm cache):
 | the payload executed directly | 2–3 ms |
 | bare `bwrap … /bin/true` | 5–6 ms |
 | `lexe list`, `lexe info` | 17–19 ms |
-| `lexe run` (native, sandboxed) | **35 ms** |
+| `lexe run` (native, sandboxed, `launch.mode: service`) | **27 ms** |
+| `lexe run` (native, sandboxed, `launch.mode: gui`) | **57 ms** |
+| `lexe run` (native, sandboxed, `launch.mode: console`) | **64 ms** |
+
+A single figure used to stand here for all of them, and that is partly why the
+defect in §2.1.1 went unnoticed for so long: one number, measured on one path,
+read as though it covered every launch. Launch modes do different work and the
+table now says so.
 
 `lexe run` was **1800 ms** before the fix described below, and the difference was
 not in the sandbox, the registry, or the payload — those together account for

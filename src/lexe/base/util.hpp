@@ -94,11 +94,48 @@ struct ProcessResult {
     /// exiting. Diagnostics must distinguish "exited 1" from "killed by
     /// SIGSEGV" (Definitive Architecture §9).
     std::optional<int> signal;
+    /// Total bytes the child wrote to each stream, which is NOT the size of the
+    /// strings above when `max_retained_bytes` capped them. Recorded so a
+    /// diagnostic can say "first 256 KiB of 8 MiB" rather than presenting a
+    /// sample as the whole thing — a truncation nobody is told about is just a
+    /// quieter version of losing the output.
+    std::uint64_t stdout_total_bytes = 0;
+    std::uint64_t stderr_total_bytes = 0;
+    bool stdout_truncated = false;
+    bool stderr_truncated = false;
 };
 struct RunOptions {
     std::optional<std::filesystem::path> cwd; // child working directory
     bool capture_stdout = true; // false: child inherits our stdout (launcher)
     bool capture_stderr = false; // false: child inherits our stderr
+
+    /// Write captured bytes THROUGH to these streams as they arrive, rather than
+    /// only returning them at the end. Null (the default) keeps the old
+    /// collect-then-return behaviour.
+    ///
+    /// This is how a launcher relays a program's output without holding it.
+    /// Capturing and then relaying at exit meant the launcher's memory grew with
+    /// the program's output — measured at roughly twice its size, so 512 MiB of
+    /// output cost about 1 GB of RSS while the program itself used 1.5 MB. A
+    /// program that legitimately streams (an archiver, a dump, a transcode) took
+    /// the launcher down with it, and a hostile package could exhaust the
+    /// session deliberately.
+    ///
+    /// It also changes WHEN output appears, which is a fix in itself: a
+    /// long-running program's output now arrives as it is produced instead of
+    /// being withheld until exit.
+    std::FILE* tee_stdout = nullptr;
+    std::FILE* tee_stderr = nullptr;
+
+    /// Cap on how much of each stream is RETAINED in the result. 0 means no cap.
+    ///
+    /// Retention exists for diagnostics — an error record carries the output of
+    /// a failed run — and diagnostics do not need gigabytes. With a tee set, the
+    /// caller has already had every byte, so the retained copy is a sample and
+    /// the cap is what makes the memory bounded. It also stops a multi-hundred-
+    /// megabyte error record being written to disk, which was the same bug
+    /// wearing a different hat.
+    std::size_t max_retained_bytes = 0;
 };
 /// Spawn argv[0] (searched on PATH) with argv[1..] as arguments, wait for
 /// exit. stderr is inherited. Throws Error if the process cannot be started.

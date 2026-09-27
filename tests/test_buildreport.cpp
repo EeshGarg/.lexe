@@ -170,4 +170,43 @@ TEST_CASE("a resolved library's origin is stated, never left to inference") {
     CHECK(has(text, "a sandboxed launch will not have"));
 }
 
+TEST_CASE("a disregarded out-of-package rpath is actually shown to the publisher") {
+    // This exists because the field it covers was introduced WITH a stated
+    // purpose -- "a real smell worth showing a publisher" -- assigned in the
+    // engine, and then read by nothing at all. Not the text report, not --json,
+    // not the builder, not a test. It was dead on arrival and nothing would have
+    // noticed if the assignment had broken, which is the same failure as a
+    // passing test that never runs: it reports like a feature and is not one.
+    //
+    // The shape it describes: the binary's DT_RPATH points at a build-tree
+    // directory that still exists on the analysing host and shadows the system
+    // copy, so the library IS satisfiable from /usr and the package installs and
+    // runs -- while the binary quietly carries a search path that means nothing
+    // anywhere else. Only the publisher can remove it, and only if told.
+    DependencyReport deps;
+    deps.root_info.is_elf = true;
+    deps.root_info.machine = elf::Machine::X86_64;
+    deps.dependencies = {dep("libz.so.1", DependencyKind::Bundle,
+                             std::string(64, 'd'), DependencyOrigin::System)};
+    deps.dependencies[0].resolved_path = "/usr/lib/x86_64-linux-gnu/libz.so.1";
+    deps.dependencies[0].out_of_package_search_path =
+        "/home/someone/build/stale/lib/libz.so.1";
+
+    const BuildReport r =
+        assemble_report(std::move(deps), RuntimeProfile::CorePortable);
+
+    const std::string text = render_build_report_text(r);
+    CHECK(has(text, "/home/someone/build/stale/lib/libz.so.1"));
+    CHECK(has(text, "outside the package"));
+    // And it must reach the machine-readable surface too, or a publisher's gate
+    // cannot act on it.
+    const nlohmann::ordered_json j = build_report_json(r);
+    CHECK(j.at("dependencies").at(0).at("outOfPackageSearchPath") ==
+          "/home/someone/build/stale/lib/libz.so.1");
+    // The ordinary case stays quiet rather than printing an empty note.
+    CHECK_FALSE(has(render_build_report_text(assemble_report(
+                        DependencyReport{}, RuntimeProfile::CorePortable)),
+                    "outside the package"));
+}
+
 } // TEST_SUITE("buildreport")

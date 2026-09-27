@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstdio>
+
 #include "lexe/base/paths.hpp"
 
 #include <filesystem>
@@ -164,6 +166,17 @@ struct IsolationPlan {
     /// record (Definitive Architecture §9) — e.g. a console application
     /// launched from the desktop with no terminal available.
     bool capture_output = false;
+    /// With capture_output, write the child's bytes THROUGH to these streams as
+    /// they arrive instead of holding them until exit. Null keeps them held.
+    ///
+    /// The launcher sets these to its own stdout/stderr. Holding the output
+    /// meant the launcher's memory grew with it — 512 MiB of output cost about
+    /// 1 GB of RSS — so a program that legitimately streams took the launcher
+    /// with it. See util::RunOptions::tee_stdout.
+    std::FILE* tee_stdout = nullptr;
+    std::FILE* tee_stderr = nullptr;
+    /// Cap on the copy RETAINED for the error record. 0 means no cap.
+    std::size_t max_retained_bytes = 0;
     /// Start and return, instead of waiting for the application to exit
     /// (`launch.mode: "service"`, §5). The sandbox must then NOT die with the
     /// process that started it, so the rendered argv omits `--die-with-parent`
@@ -179,8 +192,13 @@ struct IsolationPlan {
 struct IsolationResult {
     int exit_code = -1;
     std::map<IsolationControl, ControlState> enforced;
-    std::string stdout_text; // only when the plan requested capture
+    std::string stdout_text; // only when the plan requested capture; a SAMPLE
+                             // when max_retained_bytes capped it
     std::string stderr_text;
+    std::uint64_t stdout_total_bytes = 0; // what the child actually wrote
+    std::uint64_t stderr_total_bytes = 0;
+    bool stdout_truncated = false;
+    bool stderr_truncated = false;
     std::optional<int> signal; // set when the child was killed by a signal
     /// The application was STARTED and deliberately not waited for. There is
     /// no exit code to report and none is invented: `exit_code` stays 0
