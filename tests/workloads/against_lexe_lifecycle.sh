@@ -292,21 +292,33 @@ PYEOF
 
     # --------------------------------------------------- analyze vs the launch #
     #
-    # "What should I bundle?" and "will this start?" are two different questions.
-    # The engine has historically answered both with one function, and the answers
-    # disagree about the same bytes: the launch contract asks whether the LOADER
-    # can reach the library, while `analyze` treats the payload directory as
-    # implicitly searchable -- true for bundling advice, false for the runtime.
+    # "What should I bundle?" and "will this start?" are two different questions,
+    # and they are now answered separately: `dependencySummary.unresolved` is the
+    # ADVISORY answer -- is there anywhere this library could come from, which is
+    # what a builder about to bundle wants -- and `runtimeContract.satisfied` is
+    # the STARTABILITY answer, which is whether the loader can reach it at launch.
     #
-    # So `analyze` reports `0 unresolved` for a package the runtime then refuses
-    # to launch. That is the reassuring direction, and `analyze` is the check a
-    # publisher runs BEFORE shipping, which is what makes it worth a test rather
-    # than a note. Both shapes below are NATIVE, not portable: the first instance
-    # was found in a portable package and it would have been easy to conclude the
-    # portable build path was the problem.
+    # This check reads `runtimeContract.satisfied`, and that choice is worth
+    # stating because the lazy version of it would be wrong. The property asserted
+    # here has always been "does analyze's startability verdict match what the
+    # runtime actually does" -- when there was no field that answered that, the
+    # test read the only field there was. There is one now, so it reads it. What
+    # it must never become is a test repointed at whichever field makes the
+    # implementation pass; the guard against that is below, and it is that
+    # agreement is required in BOTH directions and that one shape must PASS.
     #
-    # The assertion is agreement, not a particular verdict: whatever `analyze`
-    # says about a package, the runtime must not then contradict it.
+    # Demanding that `unresolved` mean startability would collapse the two
+    # questions back into one, which is the thing that was wrong in the first
+    # place.
+    #
+    # All three shapes are NATIVE. The first instance of this was found in a
+    # portable package, and it would have been easy to conclude the portable build
+    # path was at fault rather than the question being conflated.
+    #
+    # The $ORIGIN shape is the control and it is not decoration: a contract check
+    # that condemned $ORIGIN -- the one relocatable idiom this runtime documents
+    # and recommends -- would look like caution and be a false negative, and that
+    # is exactly the defect this control caught when the split was first written.
     dep_agree() {   # label, appid, rpath-or-empty, ship-libs(yes/no)
         local label="$1" id="$2" rpath="$3" p="$W/pa-$2"
         rm -rf "$p"; mkdir -p "$p/bin" "$p/lib"
@@ -332,13 +344,21 @@ json.dump({"lexeVersion": "0.1", "id": sys.argv[3], "name": "dep agreement",
            "install": {"scope": "user", "mode": "bundled"},
            "permissions": []}, open(sys.argv[1], "w"), indent=2)
 PYEOF
-        local unresolved
-        unresolved="$("$LEXE_BIN" analyze "$p" --json 2>/dev/null | python3 -c '
+        local verdict advisory
+        read -r verdict advisory <<<"$("$LEXE_BIN" analyze "$p" --json 2>/dev/null \
+            | python3 -c '
 import json, sys
 try:
-    print(json.load(sys.stdin)["dependencySummary"]["unresolved"])
+    d = json.load(sys.stdin)
+    rc = d.get("runtimeContract")
+    s = d.get("dependencySummary") or {}
+    # An ABSENT runtimeContract is not a pass. A check that did not run must not
+    # render as all-clear, which is the whole failure class this session has been
+    # chasing; so it reports "absent" and the comparison below fails on it.
+    print("absent" if rc is None else ("yes" if rc.get("satisfied") else "no"),
+          s.get("unresolved", "?"))
 except Exception:
-    print("?")
+    print("absent ?")
 ')"
         "$LEXE_BIN" pack "$p" --manifest "$W/dep.json" --key "$W/key.json" \
             -o "$W/$id.lexe" >/dev/null 2>&1
@@ -347,13 +367,24 @@ except Exception:
         out="$("$LEXE_BIN" run "$id" 2>/dev/null)"; rc=$?
         local launches=no
         [[ "$rc" -eq 0 && "$out" == *"RESULT=PASS"* ]] && launches=yes
-        if [[ "$launches" == "no" && "$unresolved" == "0" ]]; then
+        # Agreement in BOTH directions. A one-directional check would pass a
+        # contract that condemns everything, which is how a false negative hides.
+        if [[ "$verdict" == "$launches" ]]; then
+            pass "$label (contract=$verdict, starts=$launches, advisory unresolved=$advisory)"
+        elif [[ "$verdict" == "absent" ]]; then
             fail "$label" \
-                 "analyze reports 0 unresolved dependencies, and then the runtime" \
-                 "refuses to launch the same package — the pre-ship check says fine" \
-                 "about a package that cannot start"
+                 "analyze reports no runtime contract at all, so there is nothing to" \
+                 "compare — a check that did not run must not read as all-clear"
+        elif [[ "$verdict" == "yes" ]]; then
+            fail "$label" \
+                 "analyze says the runtime contract IS satisfied and the package then" \
+                 "fails to start — the pre-ship check gave an all-clear to something" \
+                 "that cannot run"
         else
-            pass "$label (analyze unresolved=$unresolved, launches=$launches)"
+            fail "$label" \
+                 "analyze says the runtime contract is NOT satisfied and the package" \
+                 "starts anyway — the check condemns a package that works, which is" \
+                 "the false negative that looks like caution"
         fi
         "$LEXE_BIN" remove "$id" --purge-data --yes >/dev/null 2>&1
     }
