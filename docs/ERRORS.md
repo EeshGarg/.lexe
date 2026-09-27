@@ -280,6 +280,18 @@ Two practices follow, and they are the ones worth keeping:
   found by someone other than the author, and the sixth by its author only
   because they ran it instead of reading it.
 
+* **A check cannot detect what it holds constant.** The third practice, and the
+  least obvious. A test fixture's baseline is repeated execution under the *same*
+  conditions — which is what makes it a baseline — so a value derived from those
+  conditions is perfectly stable across every baseline run and across a
+  regeneration into a different directory. Both of the checks relied on were
+  satisfied. A specimen published a byte offset into its own output that silently
+  included an environment-derived header line; it diverged only when a consumer
+  cleared the environment, which is precisely what this runtime does by design.
+  Nothing was applied carelessly — the method had a blind spot exactly the shape
+  of the thing it was holding fixed. Where a check pins a variable to get a
+  stable answer, that variable is where to look.
+
 A corollary worth stating because it cost real time: a check that cannot
 distinguish "did not run" from "passed" must be made to fail when it did not run.
 `BuildReport::runtime_contract_checked` exists for exactly that reason — an empty
