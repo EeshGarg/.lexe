@@ -305,6 +305,11 @@ def S(fid, src, family, prop, **kw):
             "instability_expected": kw.get("instability_expected", None),
             "warmup_launch": kw.get("warmup", False),
             "post_files": dict(kw.get("post", {})),
+            # What FIXTURE_BUILD_ID must say. The fixture id for an ordinary
+            # specimen, which is built for that fixture alone; the NODE name for
+            # a process-tree specimen, whose binaries are built once and shared
+            # by every mode and can therefore only identify themselves.
+            "build_id_expected": kw.get("build_id_expected", fid),
             # {filename: terminal line}. Turns settle_s from a fixed sleep --
             # which is a race -- into a condition with settle_s as its ceiling.
             "post_files_complete_when": dict(kw.get("post_complete_when", {})),
@@ -1813,8 +1818,11 @@ TREE_SOURCES = [src for src, _flags in TREE_BUILD]
 
 
 def tree(fid, mode, prop, **kw):
+    # The runner reads t_launcher.oracle, and t_launcher.exe is one binary shared
+    # by all eighteen modes -- so its compiled-in identity is the node's name.
     return S(fid, TREE_SOURCES, "process-tree", prop, stage="tree",
              argv=[mode], oracle_file="t_launcher.oracle",
+             build_id_expected="t_launcher",
              procbeh=kw.pop("procbeh", "process-tree"), **kw)
 
 
@@ -1833,7 +1841,8 @@ tree("pe-tree-chain-wait", "chain-wait",
            "the launcher's exit really does mean the application has finished.")
 tree("pe-tree-launcher-exits", "launcher-exits",
      "the launcher exits immediately and the tree keeps running",
-     settle=6.0, timeout=180.0,
+     settle=30.0, timeout=180.0,
+     post_complete_when={"t_worker.oracle": "RESULT=PASS"},
      expect={"MODE": "launcher-exits", "WILL_WAIT_FOR_CHILD": "no",
              "BOOTSTRAP_STARTED": "yes", "LAUNCHER_OUTLIVED_TREE": "no",
              "TREE_STILL_RUNNING_AT_LAUNCHER_EXIT": "yes", "LAUNCHER_EXIT": "0"},
@@ -1846,7 +1855,8 @@ tree("pe-tree-launcher-exits", "launcher-exits",
            "post-run files are the proof of what happened afterwards.")
 tree("pe-tree-bootstrap-only", "bootstrap-only",
      "each parent exits as soon as its child is started",
-     settle=6.0, timeout=180.0,
+     settle=30.0, timeout=180.0,
+     post_complete_when={"t_worker.oracle": "RESULT=PASS"},
      expect={"MODE": "bootstrap-only", "WILL_WAIT_FOR_CHILD": "no",
              "BOOTSTRAP_STARTED": "yes", "LAUNCHER_OUTLIVED_TREE": "no"},
      post={"t_bootstrap.oracle": ["BOOTSTRAP_OUTLIVED_MAIN=no"],
@@ -1870,7 +1880,8 @@ tree("pe-tree-fanout", "fanout",
            "the same parent. The parent must survive all three and report each.")
 tree("pe-tree-detach-helper", "detach-helper",
      "a detached helper outlives the application that started it",
-     settle=7.0, timeout=180.0,
+     settle=30.0, timeout=180.0,
+     post_complete_when={"t_helper.oracle": "RESULT=PASS"},
      expect={"MODE": "detach-helper", "LAUNCHER_OUTLIVED_TREE": "yes"},
      post={"t_main.oracle": ["HELPER_LEFT_RUNNING=yes", "MAIN_EXITS_FIRST=yes",
                              "MAIN_WAITED_FOR_HELPER=no"],
@@ -1881,7 +1892,8 @@ tree("pe-tree-detach-helper", "detach-helper",
            "that work survived the exit of the process that started it.")
 tree("pe-tree-orphan-tree", "orphan-tree",
      "every parent exits immediately and a detached helper finishes alone",
-     settle=8.0, timeout=180.0,
+     settle=30.0, timeout=180.0,
+     post_complete_when={"t_helper.oracle": "RESULT=PASS"},
      expect={"MODE": "orphan-tree", "WILL_WAIT_FOR_CHILD": "no",
              "TREE_STILL_RUNNING_AT_LAUNCHER_EXIT": "yes"},
      post={"t_main.oracle": ["HELPER_LEFT_RUNNING=yes"],
@@ -1935,7 +1947,9 @@ tree("pe-tree-deep-chain", "deep-chain",
            "place a supervisor's parent-pid bookkeeping can lose the thread.")
 tree("pe-tree-deep-orphan", "deep-orphan",
      "six levels and not one wait anywhere; the deepest node writes the state",
-     settle=7.0, timeout=240.0,
+     settle=40.0, timeout=240.0,
+     post_complete_when={"t_grandchild.oracle": "RESULT=PASS",
+                         "tree_state.dat": "STATE_GRANDCHILD=yes"},
      expect={"MODE": "deep-orphan", "WILL_WAIT_FOR_CHILD": "no",
              "BOOTSTRAP_STARTED": "yes", "LAUNCHER_OUTLIVED_TREE": "no",
              "TREE_STILL_RUNNING_AT_LAUNCHER_EXIT": "yes", "LAUNCHER_EXIT": "0"},
@@ -1961,7 +1975,8 @@ tree("pe-tree-deep-orphan", "deep-orphan",
            "they drop on the way out, rather than inferring it from a sleep.")
 tree("pe-tree-grandchild-survives", "grandchild-survives",
      "a grandchild outlives its parent AND its grandparent, under a clean launcher",
-     settle=6.0, timeout=240.0,
+     settle=40.0, timeout=240.0,
+     post_complete_when={"t_grandchild.oracle": "RESULT=PASS"},
      expect={"MODE": "grandchild-survives", "BOOTSTRAP_WAIT": "signalled",
              "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
              "LAUNCHER_EXIT": "0"},
@@ -2070,8 +2085,8 @@ tree("pe-tree-crash-at-depth", "crash-at-depth",
            "deepest thing anybody is watching.")
 tree("pe-tree-gui-leaf", "gui-leaf",
      "the visible window is owned by a detached leaf that outlives its starter",
-     settle=30.0, timeout=600.0, gui=True, warmup=True,
-     post_complete_when={"t_window.oracle": "WINDOW_LIFECYCLE_COMPLETED=",
+     settle=60.0, timeout=600.0, gui=True, warmup=True,
+     post_complete_when={"t_window.oracle": "RESULT=PASS",
                          "t_main.oracle": "MAIN_EXITS_FIRST="},
      layers=["wine", "proton-wine"],
      expect={"MODE": "gui-leaf", "BOOTSTRAP_WAIT": "signalled",
@@ -2127,7 +2142,8 @@ tree("pe-tree-gui-top", "gui-top",
            "it happened that way rather than on a timeout.")
 tree("pe-tree-wait-timeout", "wait-timeout",
      "a parent waits with a timeout, gives up, and exits while the child works on",
-     settle=7.0, timeout=240.0,
+     settle=40.0, timeout=240.0,
+     post_complete_when={"t_helper.oracle": "RESULT=PASS"},
      expect={"MODE": "wait-timeout", "BOOTSTRAP_WAIT": "signalled",
              "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
              "LAUNCHER_EXIT": "0"},
@@ -2231,6 +2247,14 @@ def expand_differentials():
             clone["differential_of"] = base_id
             clone["differential_reason"] = reason
             clone["property"] = base["property"] + " [%s]" % tc
+            # A differential is its OWN binary, compiled with its own id, so the
+            # compiled-in identity it must report is the clone's -- not the
+            # base's, which the deep copy above brought along. The exception is a
+            # process-tree base, whose binaries are shared and therefore identify
+            # themselves by node name; that value is already correct and copying
+            # it is what we want.
+            if base["declared"].get("build_id_expected") == base_id:
+                clone["declared"]["build_id_expected"] = clone["id"]
             pe = clone["declared"]["pe"]
             if TOOLCHAINS[tc]["target"] != "x86_64":
                 # A 32-bit build cannot satisfy a 64-bit declaration, and the
@@ -2367,6 +2391,12 @@ def compile_cmd(spec, out, target, res_objs=()):
     cxx = spec["language"] == "c++"
     driver = tc["cxx"] if cxx else tc["cc"]
     flags = (COMMON_CXX if cxx else COMMON_C) + tc["opt"] + tc["extra"]
+    # The specimen's identity, COMPILED IN. FIXTURE_ID arrives through the
+    # environment, which a conforming runtime must reset (FORMAT-0.1 §9.5.2), and
+    # here that value also NAMES the oracle file -- so with the environment
+    # cleared, every specimen built from one source would write to one file and
+    # overwrite the others, silently. See oracle_win.h.
+    flags = flags + ['-DLEXE_FIXTURE_BUILD_ID="%s"' % spec["id"]]
     srcs = [os.path.join(SPECS, s) for s in spec["sources"] if not s.endswith(".rc")]
     cmd = ([driver] + flags + srcs + list(res_objs) + ["-o", target]
            + spec["cflags"] + LINK_REPRODUCIBLE)
@@ -2401,8 +2431,16 @@ def build_support(out):
     tc = TOOLCHAINS["mingw64-O2"]
     for src, extra in TREE_BUILD:
         target = os.path.join(treedir, src[:-2] + ".exe")
-        cmd = ([tc["cc"]] + COMMON_C + tc["opt"] + [os.path.join(SPECS, src),
-                                                    "-o", target] + list(extra)
+        # The tree binaries are built ONCE and shared by every tree mode, so the
+        # most they can honestly carry as a compiled-in identity is their own
+        # NODE name -- t_launcher, t_window and so on. Which tree FIXTURE a run
+        # belongs to comes from the mode argument and the run directory, not from
+        # the binary, and pretending otherwise would be a compiled-in claim that
+        # is false for seventeen of the eighteen modes.
+        node = src[:-2]
+        cmd = ([tc["cc"]] + COMMON_C + tc["opt"]
+               + ['-DLEXE_FIXTURE_BUILD_ID="%s"' % node]
+               + [os.path.join(SPECS, src), "-o", target] + list(extra)
                + LINK_REPRODUCIBLE)
         r = sh(cmd)
         record["tree"].append({"name": os.path.basename(target),
@@ -2451,7 +2489,13 @@ def build_native_twin(spec, out):
     says so rather than pretending."""
     target = os.path.join(out, "native", spec["id"])
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    cmd = (["gcc"] + COMMON_C + ["-O2"] + [os.path.join(SPECS, s) for s in spec["sources"]]
+    # The same compiled-in identity the Windows build gets. Missing it here is
+    # what broke the entire native layer once: oracle_win.h named the oracle file
+    # from it, every twin wrote "(not-compiled-in).oracle", and the runner found
+    # no oracle file for any native specimen.
+    cmd = (["gcc"] + COMMON_C + ["-O2"]
+           + ['-DLEXE_FIXTURE_BUILD_ID="%s"' % spec["id"]]
+           + [os.path.join(SPECS, s) for s in spec["sources"]]
            + ["-o", target])
     r = sh(cmd)
     return {"command": " ".join(cmd), "ok": r.returncode == 0 and os.path.exists(target),
@@ -2581,12 +2625,15 @@ def setup_layers(out, layers, probe_exe):
         boot = sh(["wineboot", "-u"], env=env)
         reg = sh(["wine", "reg", "add", WINEDBG_KEY, "/v", "ShowCrashDialog",
                   "/t", "REG_DWORD", "/d", "0", "/f"], env=env)
-        # Keep the server up for the whole generation. MEASURED: a wineserver that
-        # shuts down when its last client leaves can be mid-shutdown when the next
-        # specimen connects, and that client dies instantly with
-        # "wine client error:0: recvmsg: Connection reset by peer" and exit 1 --
-        # observed once in five repeats, on a different specimen each generation.
-        persist = sh_detached(["wineserver", "-p"], env=env)
+        # NOT `wineserver -p`. A persistent server was tried here to stop the
+        # "wine client error:0: recvmsg: Connection reset by peer" flake (see
+        # HARNESS_FAULT_MARKERS) and it made things worse in two ways: it inherits
+        # the pipes of whatever started it, so every later capture_output call
+        # against that prefix waits for an EOF that never comes; and it survives an
+        # interrupted generation, so it poisons the prefix for the next one --
+        # exactly the trap `proton run` already sets. The flake is handled by
+        # detecting and RECORDING a harness fault instead.
+        persist = 0
         gui_env = dict(env)
         gui_env["WINEPREFIX"] = os.path.join(out, "prefix-wine-gui")
         gui_boot = sh(["wineboot", "-u"], env=gui_env)
@@ -2602,9 +2649,10 @@ def setup_layers(out, layers, probe_exe):
             "wineboot_ok": boot.returncode == 0,
             "configuration": [WINEDBG_KEY + " ShowCrashDialog = 0 (no debugger on "
                               "an unhandled fault, so a crash dies instead of hanging)",
-                              "wineserver -p (persistent), so a server shutting down "
-                              "between specimens cannot reset the next client's "
-                              "connection",
+                              "NOT wineserver -p: a persistent server inherits the "
+                              "pipes of whatever started it and survives an "
+                              "interrupted generation, so the connection-reset "
+                              "flake is detected and recorded instead",
                               "a SEPARATE prefix for GUI specimens, whose launches "
                               "are serialised and whose wineserver is killed before "
                               "each launch: per-prefix Wine services keep X11 state "
@@ -2621,7 +2669,7 @@ def setup_layers(out, layers, probe_exe):
         boot = sh([PROTON_WINE, "wineboot", "-u"], env=pfxenv, timeout=900)
         reg = sh([PROTON_WINE, "reg", "add", WINEDBG_KEY, "/v", "ShowCrashDialog",
                   "/t", "REG_DWORD", "/d", "0", "/f"], env=pfxenv, timeout=300)
-        persist = sh_detached([wineserver_for("proton-wine"), "-p"], env=pfxenv)
+        persist = 0            # see the note on the wine layer: no persistent server
         gpfx = dict(pfxenv)
         gpfx["WINEPREFIX"] = os.path.join(out, "prefix-protonwine-gui")
         os.makedirs(gpfx["WINEPREFIX"], exist_ok=True)
@@ -2638,7 +2686,7 @@ def setup_layers(out, layers, probe_exe):
             "prefix_creation_seconds": round(time.time() - t0, 1),
             "wineboot_ok": boot.returncode == 0,
             "configuration": [WINEDBG_KEY + " ShowCrashDialog = 0",
-                              "wineserver -p (persistent)",
+                              "no persistent server (see the wine layer's note)",
                               "a SEPARATE, serialised prefix for GUI specimens"],
             "configuration_ok": reg.returncode == 0 and persist == 0,
             "stdio_observable": True,
@@ -3019,6 +3067,25 @@ def _rest_of_checks(spec, layer, launches, post_state):
             problems.append("%s: RESULT is %r, expected PASS (the specimen's own "
                             "self-checks failed or it did not finish)" % (layer, result))
 
+    # The identity oracle, enforced. A specimen must say WHICH specimen it is
+    # from the value compiled into it, so a consumer can tell that without
+    # trusting an environment variable a conforming runtime has to clear -- and,
+    # here, so the oracle file lands where the runner looks for it.
+    build_id = last["oracle"].get("FIXTURE_BUILD_ID")
+    if build_id is None:
+        if last["oracle_file_present"]:
+            problems.append(
+                "%s: no FIXTURE_BUILD_ID line: this specimen cannot be identified "
+                "by anything that resets the environment, and FIXTURE_ID alone is "
+                "not an identity oracle" % layer)
+    else:
+        want_build_id = d.get("build_id_expected") or spec["id"]
+        if build_id != want_build_id:
+            problems.append("%s: FIXTURE_BUILD_ID is %r, expected %r -- the "
+                            "compiled-in identity does not match what this "
+                            "binary was built as"
+                            % (layer, build_id, want_build_id))
+
     for pair in d.get("equal_keys", []):
         a, b = pair
         va, vb = last["oracle"].get(a), last["oracle"].get(b)
@@ -3079,6 +3146,50 @@ def settle_for(spec, rundir):
     # Expired: collect whatever is there and let the declaration fail honestly.
 
 
+# --------------------------------------------------------------------------
+# Harness faults, as opposed to specimen outcomes
+# --------------------------------------------------------------------------
+#
+# Some failures are not the program's, the declaration's or even the layer's --
+# they are this harness's, and they are identifiable by an unmistakable message on
+# stderr that no legitimate specimen can produce:
+#
+#   "wine client error ... Connection reset by peer"
+#       the guest could not talk to its wineserver at all. MEASURED once in five
+#       repeats: exit 1 after 4.8 ms with no oracle file, on a different specimen
+#       in each generation. A wineserver shutting down as its last client leaves
+#       can be mid-shutdown when the next specimen connects.
+#
+#   "X Error of failed request ... X_UnmapWindow"
+#       Xlib's default error handler exited the guest MID-RUN, leaving a truncated
+#       oracle. Caused by this harness giving one Wine prefix a different private
+#       X display per launch while that prefix's services keep X11 state -- which
+#       is why GUI specimens now get a prefix of their own and are serialised.
+#
+# Such an attempt is DISCARDED AND RECORDED, never scored, and never silent: every
+# discarded attempt is kept in the repeat record with its stderr, counted in
+# counts.harness_fault_retries, and printed at the end of the run. A retry is
+# allowed only for a harness fault; a specimen that fails, crashes, times out or
+# writes nothing for its OWN reasons is never retried, because that is the
+# measurement.
+HARNESS_FAULT_MARKERS = (
+    "wine client error",
+    "Connection reset by peer",
+    "X Error of failed request",
+    "PD_UNAVAILABLE",
+)
+HARNESS_FAULT_ATTEMPTS = 3
+HARNESS_FAULTS = []          # every discarded attempt, corpus-wide, never silent
+
+
+def harness_fault(launch):
+    text = (launch.get("stderr_head") or "") + (launch.get("stdout_head") or "")
+    for marker in HARNESS_FAULT_MARKERS:
+        if marker in text:
+            return marker
+    return None
+
+
 def collect_post(spec, rundir):
     state = {}
     for name in spec["declared"]["post_files"]:
@@ -3125,6 +3236,24 @@ def process(spec, out, layers, repeats, support, display_helper):
     rec["layers_run"] = chosen
 
     problems = list(pe_problems)
+    # A specimen that ran on NO layer has no baseline, and a specimen with no
+    # baseline is not evidence -- it cannot distinguish a working program from a
+    # broken one, because nothing was observed. Without this, the layer loop
+    # below simply does not execute, `problems` stays empty, and the specimen is
+    # admitted as `baseline-ok`: zero observations and all-observations-clean
+    # render identically. An evidence audit found exactly that here --
+    # pe-io-stdin-under-proton-run was recorded baseline-ok with `layers_run: []`
+    # and `baselines: {}`, and it had no run directory on disk, so the corpus
+    # held 71 directories for 72 specimens and nothing said so.
+    #
+    # This is the same defect the corpus keeps finding in other people's code,
+    # and it was in mine: an emptiness that looks like success.
+    if not chosen:
+        problems.append(
+            "no layer was run: spec.layers=%r intersected with the requested "
+            "layers gave nothing, so this specimen has NO baseline and cannot be "
+            "evidence. A specimen that was never executed must not be admitted."
+            % (spec["layers"],))
     baselines = {}
     for layer in chosen:
         repeat_records, verdicts = [], []
@@ -3141,15 +3270,34 @@ def process(spec, out, layers, repeats, support, display_helper):
                              "this cost separately"}
             shutil.rmtree(wdir, ignore_errors=True)
         for repeat in range(repeats):
-            rundir, exe = stage_run_dir(spec, out, layer, repeat, support)
-            launches = [run_once(spec, out, layer, rundir, exe, i, display_helper)
-                        for i in range(spec["runs"])]
-            settle_for(spec, rundir)
-            post = collect_post(spec, rundir)
+            discarded = []
+            for attempt in range(HARNESS_FAULT_ATTEMPTS):
+                rundir, exe = stage_run_dir(spec, out, layer, repeat, support)
+                launches = [run_once(spec, out, layer, rundir, exe, i, display_helper)
+                            for i in range(spec["runs"])]
+                settle_for(spec, rundir)
+                post = collect_post(spec, rundir)
+                fault = next((harness_fault(l) for l in launches
+                              if harness_fault(l)), None)
+                if not fault or attempt == HARNESS_FAULT_ATTEMPTS - 1:
+                    break
+                # A fault in THIS harness, not an outcome of the specimen. The
+                # attempt is thrown away and kept: see HARNESS_FAULT_MARKERS.
+                discarded.append({
+                    "attempt": attempt, "marker": fault,
+                    "exit_codes": [l["exit_code"] for l in launches],
+                    "duration_ms": [l["duration_ms"] for l in launches],
+                    "oracle_keys": [len(l["oracle"]) for l in launches],
+                    "stderr_head": launches[-1]["stderr_head"][:600],
+                })
+                HARNESS_FAULTS.append({"specimen": spec["id"], "layer": layer,
+                                       "repeat": repeat, "attempt": attempt,
+                                       "marker": fault})
             verdicts.append(verdict_for_layer(spec, layer, launches, post))
             repeat_records.append({
                 "repeat": repeat, "run_dir": rundir, "launches": launches,
                 "post_run_files": post,
+                "discarded_harness_fault_attempts": discarded,
                 "run_dir_listing": sorted(os.listdir(rundir))[:40],
             })
         det = [r["launches"][-1]["oracle_deterministic_lines"] for r in repeat_records]
@@ -3183,6 +3331,22 @@ def process(spec, out, layers, repeats, support, display_helper):
         if len(exits) != 1 and not expected_instability:
             problems.append("%s: exit code varied across repeats: %r" % (layer, exits))
     rec["baselines"] = baselines
+    if not chosen:
+        # Never run, because the only layer it declares was not requested or
+        # cannot be baselined on this host. That is neither a pass nor a failure
+        # of the specimen, and calling it either would be a lie: `baseline-ok`
+        # was the old answer and it hid the specimen entirely, while
+        # `baseline-mismatch` would blame a fixture that was never given a
+        # chance. It is BLOCKED, it is counted as blocked, and it is printed.
+        rec["verdict"] = {
+            "status": "blocked",
+            "problems": problems,
+            "blocked_reason":
+                "declares layers %r; none of them was run, so this specimen has "
+                "no baseline and is not evidence for anything. It is kept "
+                "because the layer it needs may become baselinable later."
+                % (spec["layers"],)}
+        return rec
     rec["verdict"] = {"status": "baseline-ok" if not problems else "baseline-mismatch",
                       "problems": problems}
     return rec
@@ -3308,7 +3472,12 @@ def main():
                 return [ln for ln in
                         rec["baselines"][layer]["repeats"][0]["launches"][-1]
                         ["oracle_deterministic_lines"]
-                        if not ln.startswith("FIXTURE_ID=")]
+                        # Both identity lines, for two different reasons:
+                        # FIXTURE_ID is set per specimen by the runner, and
+                        # FIXTURE_BUILD_ID is compiled in, so a differential --
+                        # a different binary by definition -- must differ in it.
+                        if not ln.startswith(("FIXTURE_ID=",
+                                              "FIXTURE_BUILD_ID="))]
             a, b = det(base), det(r)
             only_b = [l for l in b if l not in set(a)]
             only_a = [l for l in a if l not in set(b)]
@@ -3400,8 +3569,18 @@ def main():
             "baseline_runs": sum(len(b["repeats"]) * max(1, r.get("runs", 1))
                                  for r in results if r.get("baselines")
                                  for b in r["baselines"].values()),
+            "harness_fault_retries": len(HARNESS_FAULTS),
             **counts,
         },
+        "harness_faults": HARNESS_FAULTS,
+        "harness_fault_markers": list(HARNESS_FAULT_MARKERS),
+        "harness_fault_note":
+            "An attempt DISCARDED because this harness failed, not the specimen and "
+            "not the declaration: the guest could not reach its wineserver, or "
+            "Xlib's default error handler exited it mid-run. Each one is kept with "
+            "its stderr in the repeat record and counted here, so a retry can never "
+            "be silent. A specimen that fails, crashes, times out or writes nothing "
+            "for its OWN reasons is never retried -- that is the measurement.",
         "families": sorted({r.get("family", "?") for r in results}),
         "unstable_specimens": unstable,
         "differential_divergences": divergences,
@@ -3431,6 +3610,13 @@ def main():
     print("\n%d specimens, %s, repeats=%d, %.1fs -> %s"
           % (len(results), ", ".join("%s=%d" % kv for kv in sorted(counts.items())),
              args.repeats, elapsed, index_path))
+    if HARNESS_FAULTS:
+        print("HARNESS FAULTS RETRIED (%d, discarded and recorded, not specimen "
+              "outcomes): %s" % (len(HARNESS_FAULTS),
+                                 ", ".join(sorted({"%s/%s[%s]" % (f["specimen"],
+                                                                  f["layer"],
+                                                                  f["marker"])
+                                                   for f in HARNESS_FAULTS}))))
     if unstable:
         print("UNSTABLE ACROSS REPEATS (%d): %s" % (len(unstable), ", ".join(unstable)))
     if divergences:
@@ -3438,7 +3624,19 @@ def main():
     if layer_disagreements:
         print("LAYER DIFFERENCES (recorded as properties, not failures) in %d specimens"
               % len(layer_disagreements))
-    return 0 if counts.get("baseline-ok", 0) == len(results) else 1
+    # BLOCKED specimens are named out loud rather than folded into the total.
+    # A count that reads "148 specimens, baseline-ok=147, blocked=1" is honest;
+    # one that reads "148 baseline-ok" while one of them never ran is not, and
+    # that is precisely the defect an evidence audit found here.
+    blocked = [r["id"] for r in results if r["verdict"]["status"] == "blocked"]
+    if blocked:
+        print("BLOCKED -- never run, therefore not evidence (%d): %s"
+              % (len(blocked), ", ".join(blocked)))
+        for r in results:
+            if r["verdict"]["status"] == "blocked":
+                print("    %s: %s" % (r["id"], r["verdict"]["blocked_reason"]))
+    ok = counts.get("baseline-ok", 0)
+    return 0 if ok + len(blocked) == len(results) else 1
 
 
 if __name__ == "__main__":

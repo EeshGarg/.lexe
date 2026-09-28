@@ -44,6 +44,33 @@ Process-tree nodes use `orc_begin_fixed`, which ignores `FIXTURE_ID`, so each
 node writes its own file (`t_launcher.oracle`, `t_main.oracle`, …) and the whole
 tree is reconstructible from the run directory after every process in it is gone.
 
+### The file is named from a COMPILED-IN id, not from the environment
+
+`FIXTURE_ID` reaches a specimen through the **environment**, and FORMAT-0.1
+§9.5.2 requires a conforming runtime to reset the environment. Under one, every
+specimen falls back to the literal its *source* was written with — and several
+specimens share a source.
+
+On the ELF corpus that means a wrong label, and it cost the independent
+`.LEXE` test pass **16 false violations**. Here it is worse, because **the oracle
+file is named from the same value** and the runner looks for it at
+`<fixture-id>.oracle`: with the environment cleared, every specimen built from one
+source would write to **one** file and silently overwrite the others. That would
+present as a runtime defect rather than a fixture one.
+
+So each specimen is compiled with `-DLEXE_FIXTURE_BUILD_ID="<fixture id>"`, and
+that value — not the environment's — names the file and is emitted as
+`FIXTURE_BUILD_ID` on every stream and in every file. Under the generator it is
+identical to `FIXTURE_ID`; everywhere else it is the only one that is right.
+`FIXTURE_BUILD_ID` is the **identity oracle**; treat `FIXTURE_ID` as an
+observation of what the environment claimed.
+
+The generator **checks** it: a specimen whose compiled-in identity disagrees with
+the fixture it was built as is a `baseline-mismatch`. Tree nodes keep their node
+name as their file and their `FIXTURE_ID`, and additionally report the
+`FIXTURE_BUILD_ID` of the tree fixture they belong to — which the node name alone
+cannot say, since every tree mode builds its own copy of `t_window.exe`.
+
 ## Regenerating
 
 ```sh
@@ -408,6 +435,34 @@ is visible instead of fatal.
 Disclosed for the same reason as in the ELF corpus: a fixture bug fixed silently
 is a fixture bug nobody learns from.
 
+0. **Two fixtures were measuring the host rather than the program**, and both are
+   the same mistake in different clothes — an assertion about *time*.
+
+   `pe-io-paced-output` declared `PACED_TOOK_AT_LEAST_THE_GAPS=yes`, a
+   deterministic claim about elapsed wall time, and failed on **two of five
+   identical repeats** under both Wine layers: 2560, 2766, 2729, 2664 and 2765 ms
+   against an 11 × 250 ms floor of 2690. `Sleep(n)` does not promise to take n
+   milliseconds and on a translation layer it frequently returns early, so that
+   floor is a fact about the *layer*. The entry's own notes already said "the
+   elapsed time is an observation, always" while the entry asserted it. It is an
+   observation now, beside the real number; what stays deterministic is what the
+   program controls — twelve lines asked for, twelve written, twelve landed.
+
+   `pe-tree-gui-leaf` lost the **first** of five identical repeats under Wine.
+   Its window node holds a window for 2500 ms and then writes its terminal line;
+   with a fixed `settle=6.0`, cold-start cost landed that write after the
+   post-run files were collected, and the specimen reported the host's warm-up as
+   a missing line. A bigger number would only have moved the threshold: **a fixed
+   margin is a race, not a margin.** The wait is a condition now
+   (`post_complete_when`), with `settle_s` as its ceiling. Nothing is weakened —
+   the declaration is still that the file contains its declared lines, and if the
+   work never finishes the wait expires and the specimen fails as it should.
+
+   This was the third time in one wave that a fixed margin turned out to be a
+   race, so it is worth stating as a rule: **if a margin exists to cover work
+   that continues after the launched process exits, wait for the work to say it
+   is finished and use the duration only as a ceiling.**
+
 1. **`pe-io-stdin-consumed` declared 4096 bytes and got 35.** I had written a
    POSIX expectation for a Windows program: the C runtime opens stdin in **text**
    mode, where `0x1A` (Ctrl-Z, the DOS EOF) terminates the stream, and the
@@ -546,6 +601,33 @@ Some of that debris **inherits the guest's pipes** and can therefore outlive the
 guest on the reading end as well as the running end; see finding 13 for what that
 did before the generator stopped waiting for EOF.
 
+### Harness faults are retried, and never silently
+
+Three failures in this environment belong to **this harness** rather than to a
+specimen, a declaration or even a layer, and each announces itself with a message
+no legitimate specimen can produce:
+
+| Marker on stderr | What it was |
+|---|---|
+| `wine client error … Connection reset by peer` | the guest could not reach its wineserver at all: exit 1 after **4.8 ms** with no oracle file. A wineserver shutting down as its last client leaves can be mid-shutdown when the next specimen connects. Seen once in five repeats, on a different specimen each generation |
+| `X Error of failed request … X_UnmapWindow` | Xlib's default error handler **exited the guest mid-run**, leaving a truncated oracle. Caused by giving one Wine prefix a different private X display per launch while that prefix's services keep X11 state |
+| `PD_UNAVAILABLE` | the private display could not be created at all |
+
+Such an attempt is **discarded and recorded**: kept with its stderr in the repeat
+record under `discarded_harness_fault_attempts`, counted in
+`counts.harness_fault_retries`, listed in `harness_faults`, and printed at the end
+of the run. A specimen that fails, crashes, times out or writes nothing **for its
+own reasons is never retried** — that is the measurement.
+
+The X error also has a structural fix, not only a retry: **GUI specimens now get a
+Wine prefix of their own, their launches are serialised, and that prefix's
+wineserver is killed before each launch**, so the per-prefix Wine services always
+start on the display actually in use. `wineserver -p` was tried first and made
+things worse — a persistent server inherits the pipes of whatever started it, so
+every later `capture_output` call against that prefix waits for an EOF that never
+comes, and it survives an interrupted generation and poisons the prefix for the
+next one, which is exactly the trap `proton run` already sets (finding 5).
+
 **Do not draw timing conclusions from a generation that shared the machine.** This
 corpus is developed on a host that other work runs on, and several of the numbers
 below moved by a factor of two between generations for that reason alone. Every
@@ -557,18 +639,59 @@ timing assumption had quietly been written down as a correctness check anyway.
 
 | Fact | Value |
 |---|---|
-| Specimens | 72 (63 base + 9 compiler differentials) |
-| Layer cells | 159 — `wine` 71, `proton-wine` 71, `native` 17 |
-| Baseline runs per generation | 805 (5 repeats per cell, plus the two-launch and warm-up specimens) |
-| Verdicts | **72 baseline-ok**, 0 mismatch, 0 build failures |
-| Unstable across 5 repeats | 0 undeclared; 1 declared (`pe-outcome-abnormal-raise`, with the measurement) |
-| Compiler differentials | 9, **0 substantive divergences** |
-| Recorded layer differences | 3 (`pe-io-stdin-consumed`, `pe-io-stdin-text-mode-ctrl-z`, `pe-outcome-abnormal-raise`) |
-| Cross-generation determinism | **159/159 cells identical**, **72/72 binaries byte-identical** |
-| Toolchains | mingw64-O2 (60), clang-mingw64-O2 (5), mingw32-O2 (4), mingw64-O0 (3) |
-| Wall time | ~7.3 min per generation at `--jobs 8`; prefixes ~44 s each |
-| Largest / smallest binary | 50,587,594 B / 40,960 B |
+| Specimens | **148** (127 base + 21 compiler differentials) |
+| Verdicts | **147 baseline-ok, 1 blocked**, 0 mismatch, 0 build failures |
+| Blocked | `pe-io-stdin-under-proton-run` — declares only `proton-run`, which cannot be baselined on this host, so it was never run. **Blocked is not a pass**; see below |
+| Process-tree modes | **18**, over **10** binaries |
+| Compiler differentials | 21, **1 divergence, declared** (`pe-tls-both-mechanisms--clang-mingw64-O2`, with its measurement) |
+| Recorded layer differences | 8, each declared with `expect_by_layer` or `expect_one_of` |
+| Harness faults retried | recorded per generation in `counts.harness_fault_retries`; the discarded attempts and their stderr are kept in the index and printed at the end |
+| Toolchains | `mingw64-O2`, `mingw64-O0`, `mingw32-O2`, `clang-mingw64-O2` |
 | Compiler diagnostics | none |
+
+**Do not read a wall time out of this table.** The same corpus has taken between
+583 s and 6276 s on this host depending on what else was running, and three other
+roles share the machine. A generation that shared the machine measures the
+machine. The per-generation `wall_seconds` is in `index.json` next to the load
+average it was taken at; use those together or not at all.
+
+### Open: `pe-gui-console-subsystem-window` hangs about one run in ten
+
+Under `proton-wine`, one of five identical repeats did not finish and was killed
+at the 300 s timeout. The other nine observations across two generations took
+**2.2–11.7 s**. So this is not a margin that was sized too tightly — 300 s
+against a 12 s workload is a 25× margin — it is an intermittent **hang**, and
+raising the timeout would hide it rather than fix it.
+
+It is deliberately **not** declared as expected instability. One occurrence in
+ten is not enough to attribute to the layer, and a forgiven divergence without a
+written reason is a blind spot wearing a green tick — the rule this corpus
+applies to everything else. So the specimen still fails when it hangs, the
+generator still exits non-zero, and this section is the record. Anyone who sees
+it again should add the observation here before declaring anything.
+
+The measurement, for whoever picks it up: a CONSOLE-subsystem PE that creates a
+window, under Proton's own Wine, on the private display, with the GUI prefix
+serialised. `exit_code` was `-9` and `timed_out` true, so the harness killed it;
+the guest produced no further oracle lines.
+
+### `blocked` is a third verdict, and it exists because of a defect
+
+An evidence audit found `pe-io-stdin-under-proton-run` recorded as
+`verdict: {"status": "baseline-ok", "problems": []}` with `layers_run: []` and
+`baselines: {}`. It had never been run: its only declared layer is `proton-run`,
+which is not in the default layer list, so the loop that checks a specimen simply
+did not execute and `problems` stayed empty. It had no `run/` directory either,
+so the corpus held 71 directories for 72 specimens and nothing said so.
+
+**Zero observations and all-observations-clean render identically.** That is the
+same class of defect this corpus exists to find in other people's code, and it
+was in the generator that builds it. A specimen with no baseline is now
+`blocked`: counted separately, printed with its reason, and excluded from
+`baseline-ok`. The generator still exits 0 when everything is either ok or
+blocked — nothing is broken — but the summary says `147 baseline-ok, 1 blocked`
+rather than `148 baseline-ok`, which is the difference between a true statement
+and a comfortable one. The ELF generator refuses the same emptiness.
 
 Byte-identical binaries need `-Wl,--no-insert-timestamp`, which the generator
 always passes: without it two builds of one source differ in exactly two bytes

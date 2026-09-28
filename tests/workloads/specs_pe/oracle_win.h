@@ -43,21 +43,57 @@ static FILE *orc_file ORC_UNUSED = NULL;
 static int orc_failures ORC_UNUSED = 0;
 static const char *orc_id ORC_UNUSED = "unset";
 
+/* The specimen's identity, COMPILED IN by the generator
+ * (-DLEXE_FIXTURE_BUILD_ID="<fixture id>"). FIXTURE_ID arrives through the
+ * ENVIRONMENT, and FORMAT-0.1 §9.5.2 requires a conforming runtime to reset the
+ * environment -- so under one, every specimen falls back to the literal its
+ * SOURCE was written with, and several specimens share a source. An independent
+ * test pass took 16 false violations from that on the ELF corpus.
+ *
+ * Here it is worse than a wrong label. The ORACLE FILE IS NAMED from the same
+ * value, and the runner looks for it at "<fixture id>.oracle" -- so with the
+ * environment cleared, every specimen built from one source writes to one file
+ * and overwrites the others. That is silent, and it would look like a runtime
+ * defect rather than a fixture one.
+ *
+ * So the file is named from the compiled-in id, which is identical to the
+ * environment id under the generator and correct everywhere else. */
+#ifndef LEXE_FIXTURE_BUILD_ID
+#define LEXE_FIXTURE_BUILD_ID "(not-compiled-in)"
+#endif
+
 ORC_UNUSED static void orc_begin(const char *id) {
     char path[512];
     const char *override_path = getenv("LEXE_ORACLE_FILE");
     const char *env_id = getenv("FIXTURE_ID");
+    const char *build_id = LEXE_FIXTURE_BUILD_ID;
     orc_id = (env_id && *env_id) ? env_id : id;
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
     if (override_path && *override_path) {
         snprintf(path, sizeof path, "%s", override_path);
     } else {
-        snprintf(path, sizeof path, "%s.oracle", orc_id);
+        /* The environment id when there is one -- which is exactly the current
+         * behaviour, and what the generator always provides -- and the
+         * COMPILED-IN id when there is not, instead of the source literal that
+         * several specimens share.
+         *
+         * The fallback order matters and the other way round was wrong: naming
+         * the file from build_id unconditionally broke the whole native layer at
+         * once, because the native ELF twin is built through a separate code
+         * path that did not yet pass -DLEXE_FIXTURE_BUILD_ID, so every one of
+         * those specimens wrote "(not-compiled-in).oracle" and the runner found
+         * nothing. Preferring the environment keeps a build path that forgets
+         * the flag working exactly as before, and still fixes the case this
+         * exists for: a runtime that cleared the environment. */
+        snprintf(path, sizeof path, "%s.oracle",
+                 (env_id && *env_id) ? env_id : build_id);
     }
     orc_file = fopen(path, "w");
+    printf("FIXTURE_BUILD_ID=%s\n", build_id);
     printf("FIXTURE_ID=%s\n", orc_id);
     if (orc_file) {
+        fprintf(orc_file, "FIXTURE_BUILD_ID=%s\n", build_id);
         fprintf(orc_file, "FIXTURE_ID=%s\n", orc_id);
         fflush(orc_file);
     } else {
@@ -76,8 +112,14 @@ ORC_UNUSED static void orc_begin_fixed(const char *id) {
     setvbuf(stderr, NULL, _IOLBF, 0);
     snprintf(path, sizeof path, "%s.oracle", id);
     orc_file = fopen(path, "w");
+    /* A tree node keeps its own NODE name as its file and its reported id --
+     * that is the whole point of orc_begin_fixed -- and additionally says which
+     * FIXTURE's tree it belongs to, which the node name alone cannot: every
+     * tree mode builds its own copy of t_window.exe. */
+    printf("FIXTURE_BUILD_ID=%s%c", LEXE_FIXTURE_BUILD_ID, 10);
     printf("FIXTURE_ID=%s%c", orc_id, 10);
     if (orc_file) {
+        fprintf(orc_file, "FIXTURE_BUILD_ID=%s%c", LEXE_FIXTURE_BUILD_ID, 10);
         fprintf(orc_file, "FIXTURE_ID=%s%c", orc_id, 10);
         fflush(orc_file);
     }

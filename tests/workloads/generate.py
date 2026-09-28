@@ -2324,6 +2324,14 @@ def check_stdio(spec, last):
 def verdict_for(spec, runs, post_state):
     d = spec["declared"]
     problems = []
+    if not runs:
+        # Zero observations and all-observations-clean render identically, and
+        # the loop that checks them simply does not execute. The PE generator had
+        # exactly this hole -- a specimen whose declared layer was never run was
+        # admitted as `baseline-ok` with an empty problem list -- so the same
+        # emptiness is refused here rather than waited for.
+        return ["the specimen was never executed, so it has no baseline and "
+                "cannot be evidence"]
     last = runs[-1]
 
     if last["timed_out"]:
