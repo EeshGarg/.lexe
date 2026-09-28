@@ -1923,6 +1923,30 @@ int cmd_verify(const std::vector<std::string>& args) {
                              "        Format 0.1 does not fix these limits; "
                              "another implementation may accept it.\n";
             }
+            // The actionable step, on the HUMAN surface too.
+            //
+            // VerificationStage has carried a `hint` all along and only
+            // --json printed it, so a person running the pre-ship gate --
+            // the exact audience a hint is written for -- got the
+            // diagnosis and not the remedy.
+            //
+            // Found by RUNNING the documented developer walkthrough
+            // rather than reading it: every other command in it offers a
+            // next step, and this one did not.
+            //
+            // docs/ERRORS.md section 3 is the contract being restored: a
+            // hint the detecting code attached wins, because it knows the
+            // specific reason; a type-based fallback is only ever as good
+            // as the type is specific.
+            if (failure != nullptr && !failure->hint.empty()) {
+                std::cout << "hint: " << failure->hint << "\n";
+            } else if (failure != nullptr &&
+                       failure->category == FailureCategory::FormatInvalid) {
+                std::cout << "hint: this file is not a valid 0.1 package. "
+                             "If a publisher sent it, re-download it;\n"
+                             "      if you built it, `lexe inspect` names the "
+                             "first rule it breaks.\n";
+            }
         }
         print_local_install_conflict(conflict);
     }
