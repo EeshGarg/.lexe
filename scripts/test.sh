@@ -67,6 +67,50 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 
 ALL_LANES=(evidence unit acceptance integration gui lifecycle concurrency session conformance security windows proton workloads sanitizers)
 
+# --------------------------------------------------------------- compute tiers
+#
+# A tier selects WHICH lanes run and tells each lane HOW HARD to work, through
+# LEXE_TIER in its environment. The second half matters more than the first: a
+# lane that ignores the tier cannot be scaled, and `--soak` would then be `--all`
+# with a longer name and a summary that implies more than happened.
+#
+# The contract for a lane reading LEXE_TIER:
+#   fast      seconds. Enough to catch an obvious break. Nothing that packages
+#             or sandboxes.
+#   standard  the working set a change is judged against. This is what --all is.
+#   heavy     standard plus larger samples, higher-order combinations, and
+#             concurrency under real CPU pressure.
+#   soak      hours, deliberately. Repetition IS the point -- drift, leaks and
+#             rare interleavings that a single pass cannot reach.
+#   fuzz      extended sanitizer-backed campaigns against the parsers.
+#
+# A lane with nothing extra to offer at a tier must run its standard work and SAY
+# SO, never silently do the same thing while the summary implies more. That is
+# precisely the false-confidence pattern this project has had to dig out six
+# separate times; see docs/ERRORS.md section 7.
+LEXE_TIER="${LEXE_TIER:-standard}"
+
+tier_lanes() {
+    case "$1" in
+    fast)     echo "evidence unit" ;;
+    standard) echo "${ALL_LANES[*]}" ;;
+    heavy)    echo "${ALL_LANES[*]}" ;;
+    soak)     echo "${ALL_LANES[*]}" ;;
+    fuzz)     echo "evidence unit sanitizers" ;;
+    *)        echo "" ;;
+    esac
+}
+
+tier_desc() {
+    case "$1" in
+    fast)     echo "seconds: the evidence guard and the unit suite only" ;;
+    standard) echo "every lane once, the set a change is judged against" ;;
+    heavy)    echo "every lane, larger samples and concurrency under CPU pressure" ;;
+    soak)     echo "every lane, repeated for hours, resources measured either side" ;;
+    fuzz)     echo "extended sanitizer-backed fuzz campaigns" ;;
+    esac
+}
+
 lane_desc() {
     case "$1" in
     evidence)   echo "the evidence guard itself: does source_fingerprint() actually fire, and only where documented" ;;
@@ -524,6 +568,105 @@ lane_summary() {
     esac
 }
 
+# ------------------------------------------------------- soak + leak detection
+#
+# A soak is only worth its hours if something is WATCHING. Repetition on its own
+# proves nothing crashed; what it is good for is the class of defect a single pass
+# cannot see -- a descriptor, a mount, a lock, a process or a gigabyte that is not
+# given back. So every cycle is bracketed by a snapshot and the deltas are
+# reported PER CYCLE: a leak of one descriptor per install is invisible in a total
+# and obvious in a slope.
+#
+# Every figure is read from outside .LEXE -- /proc, ps, the filesystem -- because
+# a runtime reporting on its own resource use is the self-reporting pattern that
+# has already produced six false-clean results here (docs/ERRORS.md §7).
+soak_snapshot() {
+    local lexe="$BUILD_DIR/lexe"
+    local procs lexe_procs wine_procs dstate mounts netns tmp_entries tmp_mb fds load
+    procs="$(ps -e --no-headers 2>/dev/null | wc -l)"
+    # `pgrep -c` prints 0 AND exits 1 when it matches nothing, so `|| echo 0`
+    # emits two zeros. Counting lines is unambiguous.
+    lexe_procs="$(pgrep -f "$lexe" 2>/dev/null | wc -l)"
+    wine_procs="$(pgrep -f 'wineserver|wine64' 2>/dev/null | wc -l)"
+    # D-state is called out on its own: an uninterruptible process cannot be
+    # killed, and is the one leak a later run inherits.
+    dstate="$(ps -eo stat= 2>/dev/null | grep -c '^D' || true)"
+    mounts="$(wc -l < /proc/mounts 2>/dev/null || echo 0)"
+    netns="$(find /proc -maxdepth 3 -path '*/ns/net' -type l 2>/dev/null \
+             | xargs -r readlink 2>/dev/null | sort -u | wc -l)"
+    tmp_entries="$(find /tmp -maxdepth 1 2>/dev/null | wc -l)"
+    tmp_mb="$(du -sm /tmp 2>/dev/null | cut -f1)"
+    fds="$(find /proc -maxdepth 3 -path '*/fd/*' -type l 2>/dev/null | wc -l)"
+    load="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
+    printf 'processes=%s lexe_procs=%s wine_procs=%s dstate=%s mounts=%s netns=%s tmp_entries=%s tmp_mb=%s fds=%s loadavg=%s\n' \
+        "${procs:-0}" "${lexe_procs:-0}" "${wine_procs:-0}" "${dstate:-0}" \
+        "${mounts:-0}" "${netns:-0}" "${tmp_entries:-0}" "${tmp_mb:-0}" \
+        "${fds:-0}" "${load:-0}"
+}
+
+snap_get() { printf '%s\n' "$1" | tr ' ' '\n' | grep "^$2=" | cut -d= -f2 | head -1; }
+
+# Report what changed, and judge it. Not every delta is a leak: /tmp grows because
+# a corpus was generated, and loadavg is not a resource at all. Judge only what
+# nothing legitimate should retain across a COMPLETED cycle.
+soak_compare() {
+    local before="$1" after="$2" cycle="$3" bad=0
+    local key b a
+    for key in lexe_procs wine_procs dstate mounts netns fds; do
+        b="$(snap_get "$before" "$key")"; a="$(snap_get "$after" "$key")"
+        [[ -z "$b" || -z "$a" ]] && continue
+        if (( a > b )); then
+            printf '    %sleak?%s cycle %s: %s %s -> %s (+%s)\n' \
+                "$C_YELLOW" "$C_OFF" "$cycle" "$key" "$b" "$a" "$((a - b))"
+            bad=1
+        fi
+    done
+    for key in processes tmp_entries tmp_mb; do
+        b="$(snap_get "$before" "$key")"; a="$(snap_get "$after" "$key")"
+        [[ -z "$b" || -z "$a" ]] && continue
+        if [[ "$a" != "$b" ]]; then
+            printf '    (informational) %s: %s -> %s\n' "$key" "$b" "$a"
+        fi
+    done
+    return $bad
+}
+
+# Runs the lane set until LEXE_SOAK_SECONDS has elapsed (default one hour), at
+# least once. A single completed cycle is reported as what it is rather than
+# dressed up as a soak.
+soak_run() {
+    local budget="${LEXE_SOAK_SECONDS:-3600}"
+    local started elapsed cycle=0 leaks=0
+    started="$(date +%s)"
+    local first_snap="" last_snap="" before after lane
+    while :; do
+        cycle=$((cycle + 1))
+        before="$(soak_snapshot)"
+        [[ -z "$first_snap" ]] && first_snap="$before"
+        head2 "soak cycle $cycle"
+        for lane in "${LANES[@]}"; do run_lane "$lane"; done
+        after="$(soak_snapshot)"
+        last_snap="$after"
+        printf '  resources, cycle %s:\n' "$cycle"
+        soak_compare "$before" "$after" "$cycle" || leaks=$((leaks + 1))
+        elapsed=$(( $(date +%s) - started ))
+        (( elapsed >= budget )) && break
+        printf '  %ss of %ss budget used; starting another cycle\n' "$elapsed" "$budget"
+    done
+    printf '\n%s== soak summary ==%s\n' "$C_BOLD" "$C_OFF"
+    printf '  %s cycle(s) over %ss\n' "$cycle" "$elapsed"
+    if (( cycle == 1 )); then
+        printf '  NOTE: one cycle only, so this measured no repetition. Raise\n'
+        printf '  LEXE_SOAK_SECONDS to make it a soak.\n'
+    fi
+    printf '  cycles reporting a possible leak: %s\n' "$leaks"
+    printf '  first snapshot: %s\n' "$first_snap"
+    printf '  last  snapshot: %s\n' "$last_snap"
+    (( leaks > 0 )) && return 1
+    return 0
+}
+
+
 # --------------------------------------------------------------- arguments
 
 [[ $# -eq 0 ]] && { usage; exit 2; }
@@ -531,6 +674,11 @@ WANT_LIST=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
     --all)        LANES=("${ALL_LANES[@]}") ;;
+    --fast|--standard|--heavy|--soak|--fuzz)
+        LEXE_TIER="${1#--}"
+        # shellcheck disable=SC2207
+        LANES=($(tier_lanes "$LEXE_TIER"))
+        ;;
     --list)       WANT_LIST=1 ;;
     --build-dir)  BUILD_DIR="$2"; shift ;;
     --no-build)   DO_BUILD=0 ;;
@@ -567,12 +715,23 @@ printf '  commit:     %s%s\n' "$RUN_COMMIT" \
 printf '  repository: %s\n' "$REPO"
 printf '  build dir:  %s\n' "$BUILD_DIR"
 printf '  lanes:      %s\n' "${LANES[*]}"
+printf '  tier:       %s (%s)\n' "$LEXE_TIER" "$(tier_desc "$LEXE_TIER")"
+export LEXE_TIER
 
 if [[ $DO_BUILD -eq 1 ]]; then
     build_first || { printf '\n%sbuild failed — no lane was run%s\n' "$C_RED" "$C_OFF"; exit 1; }
 fi
 
-for lane in "${LANES[@]}"; do run_lane "$lane"; done
+# A soak repeats the lane set and watches what accumulates; everything else
+# runs it once. Dispatched here rather than inside soak_run, because putting it
+# inside made soak_run call itself -- which would have recursed until bash gave
+# up, and is the same defect an independent pass hit last wave with a patch that
+# printed every correct line on the way down.
+if [[ "$LEXE_TIER" == "soak" ]]; then
+    soak_run || true   # a possible leak is reported, not turned into an exit here
+else
+    for lane in "${LANES[@]}"; do run_lane "$lane"; done
+fi
 
 # --------------------------------------------------------------- summary
 
