@@ -229,16 +229,23 @@ error messages — precisely the pattern-matching-on-prose that the opening of t
 document gives as the reason it exists. And it is load-bearing: reword one of
 those three sentences and a concurrency test silently changes meaning.
 
-The remedy is a distinct outcome for "the requested state already holds", carried
-in the type rather than the prose, so that both the CLI and any gate can
-distinguish a satisfied no-op from a failure. Until that exists, treat exit 1
-from `install` as ambiguous and do not build a gate on it.
+**Resolved.** `install` of an already-current version now raises `BusyError`, so
+it exits **6** — "busy, or an operation conflict" — and is distinguishable from
+the untyped exit 1 that means the install was attempted and failed. The remedy in
+the message is unchanged and still accurate: reinstalling the files is a
+different operation, and `lexe repair` is the one that does it.
 
-Recorded as an open design decision, not a defect: whether a satisfied no-op
-should be a success code, a distinct failure code, or an explicit
-`--already-ok` contract is a product question about what a package manager
-promises, and it should be answered deliberately rather than by whichever type
-was nearest to hand.
+The prose-matching in `tests/concurrency/lib.sh` is no longer load-bearing: a
+script racing two installs can now read the exit status. It was reported by an
+independent pass that hit it in 22 of 32 concurrent `install‖install` runs and in
+every idempotent re-run — which is the ordinary shape of a provisioning script
+that installs whatever is missing, not an exotic case.
+
+It was recorded here as an open design decision rather than a defect, and that
+framing was right: whether a satisfied no-op should be success, a distinct
+failure code, or an explicit contract is a product question. The answer chosen is
+the middle one, because exit 0 would make `install` claim it had installed
+something it had not, and the taxonomy already had a category that fits.
 
 ---
 

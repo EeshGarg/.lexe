@@ -760,8 +760,18 @@ TEST_CASE("install --yes installs; registry, list and info reflect it") {
     CHECK(j.at("source") == "installed");
     CHECK(j.at("installed").at("version") == "1.0.0");
 
-    // Same version again is a runtime error (repair is the reinstall path).
-    CHECK(run_cli({"install", pkg.string(), "--yes"}).exit_code == 1);
+    // Same version again is an OPERATION CONFLICT (exit 6), not the untyped
+    // catch-all. docs/ERRORS.md §1 defines 6 as "busy, or an operation
+    // conflict" and 1 as "failed for a reason with no more specific code", and
+    // "the requested state already holds" is the former.
+    //
+    // It was 1, which is also what a genuinely broken install returns, so no
+    // script could tell "somebody already did this" from "something went
+    // wrong" -- and that is the ordinary shape of a provisioning script, and of
+    // 22 of 32 concurrent install||install races an independent pass measured.
+    const auto again = run_cli({"install", pkg.string(), "--yes"});
+    CHECK(again.exit_code == 6);
+    CHECK(again.exit_code != 1); // stated separately: the point is the DISTINCTION
 }
 
 TEST_CASE("install without --yes shows the SPEC primary screen and honors "

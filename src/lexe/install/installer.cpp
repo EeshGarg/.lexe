@@ -561,9 +561,27 @@ InstallResult Installer::install(const fs::path& lexe_file,
             // No usable current pointer — allow the install to self-heal.
         }
         if (previous_version == manifest.version) {
-            throw Error(manifest.id + " " + manifest.version +
-                        " is already installed and current; use `lexe repair " +
-                        manifest.id + "` to reinstall its files");
+            // BusyError -> exit 6, "busy, or an OPERATION CONFLICT". Not the
+            // untyped catch-all, which is exit 1 and means "failed for a reason
+            // with no more specific code".
+            //
+            // This was exit 1, and exit 1 is also what a genuinely broken
+            // install returns, so no script could tell "somebody already did
+            // this" from "something went wrong". An independent pass hit it in
+            // 22 of 32 concurrent `install||install` races and in every
+            // idempotent re-run -- the ordinary shape of a provisioning script
+            // that installs whatever is missing. docs/ERRORS.md section 1
+            // already had the right code; nothing was using it.
+            //
+            // The remedy in the message is unchanged and still accurate: the
+            // files can be reinstalled, that is simply a different operation.
+            throw BusyError(manifest.id + " " + manifest.version +
+                            " is already installed and current; use `lexe repair " +
+                            manifest.id + "` to reinstall its files",
+                            "Nothing was changed because nothing needed to be. "
+                            "Exit 6 here means the requested state already holds "
+                            "-- distinct from exit 1, which would mean the "
+                            "install was attempted and failed.");
         }
         // A direct install that moves BACKWARDS must be asked for (§7.1).
         //

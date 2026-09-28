@@ -100,7 +100,18 @@ offending() {
 # after the dwell, so the harness closes it and reports 0; a GUI that exits on
 # its own has its status propagated, and anything other than 0 (a crash signal,
 # 128+N) is a failure. Nothing depends on the outer timeout firing any more.
+# Counted, because a lane that reports no numbers cannot be audited. An evidence
+# audit found this lane emitting nothing a summary could match, so it appeared in
+# every run as a green row carrying no information -- indistinguishable from a
+# lane that did nothing at all.
+#
+# These counters are incremented by the work itself, never set to a literal: a
+# hardcoded total is exactly the failure being closed.
+GUI_CASES_ATTEMPTED=0
+GUI_CASES_PASSED=0
+
 smoke() {
+    GUI_CASES_ATTEMPTED=$((GUI_CASES_ATTEMPTED + 1))
     label="$1"; shift
     log="$WORK/$(echo "$label" | tr ' /' '__').log"
     code=0
@@ -152,6 +163,7 @@ smoke() {
         echo "---- $label offending lines ----"; printf '%s\n' "$bad" | sed 's/^/    /' >&2
         die "$label emitted GTK/Pango warnings"
     fi
+    GUI_CASES_PASSED=$((GUI_CASES_PASSED + 1))
     ok "$label mapped a window and rendered clean (exit $code)"
 }
 
@@ -186,4 +198,12 @@ smoke "lexe-ui (markup-hostile package)" "$UI" --open "$WORK/hostile.lexe"
 # --- The builder builds every section heading at startup ----------------------
 smoke "builder (startup)" "$BUILDER"
 
+# Zero cases is a failure, not a pass. A lane that discovered nothing to do has
+# proved nothing, and saying "passed" over it is the ninth-instance pattern.
+if [ "$GUI_CASES_ATTEMPTED" -eq 0 ]; then
+    printf '\n\033[31mGUI smoke ran 0 cases: nothing was observed.\033[0m\n'
+    printf '0 passed, 1 failed, 0 skipped, 0 blocked\n'
+    exit 1
+fi
 printf '\n\033[1mGUI smoke test passed.\033[0m\n'
+printf '%s passed, 0 failed, 0 skipped, 0 blocked\n' "$GUI_CASES_PASSED"

@@ -261,13 +261,31 @@ acceptance_run() {
     LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/acceptance/run_all.sh"
 }
 
+# Counted and summarised, because an evidence audit found this lane emitting no
+# line any summary could match: it appeared in every run as a green row with an
+# empty note, which is indistinguishable from a lane that ran nothing.
+#
+# Discovering zero scripts is a FAILURE. The loop previously returned 0 in that
+# case, so deleting the directory would have turned the lane green.
 integration_run() {
-    local status=0
+    local status=0 found=0 passed=0 failed=0
     for script in "$REPO"/tests/integration/*.sh; do
         [[ -f "$script" ]] || continue
+        found=$((found + 1))
         printf '%s-- %s%s\n' "$C_DIM" "$(basename "$script")" "$C_OFF"
-        LEXE_BUILD_DIR="$BUILD_DIR" bash "$script" || status=1
+        if LEXE_BUILD_DIR="$BUILD_DIR" bash "$script"; then
+            passed=$((passed + 1))
+        else
+            failed=$((failed + 1)); status=1
+        fi
     done
+    if [[ $found -eq 0 ]]; then
+        printf '  no integration cases were discovered: this lane proved nothing\n'
+        printf '  0 passed, 1 failed, 0 skipped, 0 blocked\n'
+        return 1
+    fi
+    printf '  %d integration cases discovered, %d attempted\n' "$found" "$found"
+    printf '  %d passed, %d failed, 0 skipped, 0 blocked\n' "$passed" "$failed"
     return $status
 }
 
@@ -539,14 +557,73 @@ build_first() {
         grep -E '\bwarning\b' "$log" | head -20
         rm -f "$log"; return 1
     fi
-    say "${C_GREEN}  built clean, zero warnings${C_OFF}"
+    # POSITIVE evidence that the expected products exist. An exit status of 0
+    # covers "compiled everything" and "compiled nothing, already up to date"
+    # equally, and `ninja: no work to do.` used to print as "built clean, zero
+    # warnings" -- a warning count grepped from a log describing zero
+    # compilations. That is the ninth instance of a check reporting on work it
+    # never observed, so this one looks at the artifacts.
+    local missing=() present=0 product
+    for product in lexe lexe_tests; do
+        if [[ -s "$BUILD_DIR/$product" && -x "$BUILD_DIR/$product" ]]; then
+            present=$((present + 1))
+        else
+            missing+=( "$product" )
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        say "${C_RED}  the build reported success but produced no ${missing[*]}${C_OFF}"
+        say "${C_RED}  (exit status 0 is not evidence that anything was built)${C_OFF}"
+        rm -f "$log"; return 1
+    fi
+    # Say which it was, so a reader can tell a compile from a no-op.
+    local did
+    if grep -q 'no work to do' "$log"; then
+        did="already up to date"
+    else
+        did="$(grep -cE '^\[[0-9]+/[0-9]+\]' "$log" || true) step(s) compiled"
+    fi
+    say "${C_GREEN}  ${present} product(s) present, zero warnings, ${did}${C_OFF}"
     rm -f "$log"
+}
+
+# The newest modification time anywhere in the fingerprint's file set.
+#
+# This answers a different question from source_fingerprint, and the difference
+# is the point. A fingerprint says whether the tree LOOKS the same; this says
+# whether anything was WRITTEN. A file edited and restored has identical content
+# and a newer mtime, so A -> B -> A -- a stash/pop, a branch round-trip, an
+# editor save-and-undo -- is invisible to the first and obvious to the second.
+#
+# Honest limit, stated because an unstated limit is how these things rot: a
+# revert that deliberately restores the original timestamp (`cp -p`, `touch -r`)
+# defeats this, and nothing short of watching the filesystem would catch it. It
+# is aimed at accident and ordinary tooling, not at an adversary with the clock.
+newest_mtime() {
+    find "$REPO/src" "$REPO/tests" "$REPO/scripts" "$REPO/tools" \
+         "$REPO/schema" "$REPO/examples" "$REPO/CMakeLists.txt" \
+         -path "$REPO/tests/workloads/specs*" -prune -o -type f \
+         \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.sh' \
+            -o -name '*.py' -o -name '*.json' -o -name '*.c' \
+            -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
+         -printf '%T@\n' 2>/dev/null | sort -rn | head -1
+}
+
+# Every fingerprint reading taken during this run, in order. A change-and-revert
+# is invisible in the endpoints and obvious in the sequence.
+FINGERPRINT_SAMPLES=()
+FINGERPRINT_LANES=()
+
+sample_fingerprint() { # lane-label
+    FINGERPRINT_SAMPLES+=( "$(source_fingerprint)" )
+    FINGERPRINT_LANES+=( "$1" )
 }
 
 run_lane() {
     local lane="$1" reason state
     head2 "$lane"
     say "${C_DIM}  $(lane_desc "$lane")${C_OFF}"
+    sample_fingerprint "before:$lane"
 
     reason="$("${lane}_check" 2>&1)"
     if [[ $? -ne 0 ]]; then
@@ -596,6 +673,7 @@ run_lane() {
         record "$lane" "FAIL" "exit $status"
     fi
     rm -f "$log"
+    sample_fingerprint "after:$lane"
     return 0
 }
 
@@ -755,6 +833,7 @@ fi
 
 printf '%s.LEXE test runner%s\n' "$C_BOLD" "$C_OFF"
 RUN_FINGERPRINT_BEFORE="$(source_fingerprint)"
+RUN_NEWEST_MTIME_BEFORE="$(newest_mtime)"
 printf '  commit:     %s%s\n' "$RUN_COMMIT" \
     "$([[ "$RUN_DIRTY" != "0" ]] && printf ' (+%s uncommitted file(s))' "$RUN_DIRTY")"
 printf '  repository: %s\n' "$REPO"
@@ -804,6 +883,36 @@ fi
 RUN_FINGERPRINT_AFTER="$(source_fingerprint)"
 if [[ -n "$RUN_FINGERPRINT_BEFORE" &&
       "$RUN_FINGERPRINT_BEFORE" != "$RUN_FINGERPRINT_AFTER" ]]; then
+    # Something was WRITTEN during the run, whatever the tree looks like now.
+    local newest_after; newest_after="$(newest_mtime)"
+    if [[ -n "$RUN_NEWEST_MTIME_BEFORE" && -n "$newest_after" &&
+          "$newest_after" != "$RUN_NEWEST_MTIME_BEFORE" ]]; then
+        printf '\n  %sEVIDENCE INVALID: a source file was written during this run.%s\n' \
+            "$C_RED" "$C_OFF"
+        printf '  The newest modification time moved from %s to %s.\n' \
+            "$RUN_NEWEST_MTIME_BEFORE" "$newest_after"
+        printf '  It does not matter whether the content ended up identical:\n'
+        printf '  some lanes ran before that write and some after, so this run\n'
+        printf '  describes no single tree. Discard it and repeat.\n'
+    fi
+
+    # The endpoints matching is NOT proof that nothing moved. Report any lane
+    # boundary whose reading differed from the first, so a change-and-revert
+    # names the lanes it straddled instead of vanishing.
+    local base_sample="${FINGERPRINT_SAMPLES[0]:-}"
+    local drifted=() i
+    for i in "${!FINGERPRINT_SAMPLES[@]}"; do
+        [[ "${FINGERPRINT_SAMPLES[$i]}" != "$base_sample" ]] &&
+            drifted+=( "${FINGERPRINT_LANES[$i]}" )
+    done
+    if [[ ${#drifted[@]} -gt 0 && "$RUN_FINGERPRINT_BEFORE" == "$(source_fingerprint)" ]]; then
+        printf '\n  %sEVIDENCE INVALID: the tree changed and changed back.%s\n' \
+            "$C_RED" "$C_OFF"
+        printf '  The run started and ended in the same state, so the endpoints\n'
+        printf '  agree, but these lane boundaries saw something different:\n'
+        printf '    %s\n' "${drifted[*]}"
+        printf '  Those lanes did not all test the same tree. Discard and repeat.\n'
+    fi
     printf '\n  %sEVIDENCE INVALID: the source tree changed during this run.%s\n' \
         "$C_RED" "$C_OFF"
     printf '  Some lanes tested the code before the change and some after, and the\n'
