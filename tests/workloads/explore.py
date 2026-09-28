@@ -476,6 +476,53 @@ class Observed:
         return "INSTALLED"
 
 
+def observe_on_disk(home, app_id):
+    """The installed state read from the FILESYSTEM, without asking the runtime.
+
+    The second observation of "the transaction really committed". Every other
+    check in this file learns the store's state by running `lexe list` and
+    `lexe info` and parsing what they print — one mechanism, so one defect in it
+    is invisible to all of them at once. A promote that renamed the version
+    directory but not the `current` pointer, a `current` advanced over a version
+    directory that was never created, or a record written for a version whose
+    payload is absent would all be reported by the runtime exactly as a healthy
+    install, and no amount of re-reading its output would say otherwise.
+
+    The layout is docs/REFERENCE-POLICY.md §2, and that document says in as many
+    words that the layout is a reference-implementation choice. So this is
+    deliberately advisory: it reports `known=False` when the directory is not
+    where the document says, rather than manufacturing a violation out of a
+    layout change. What it must never do is report `known=True` and a wrong
+    answer, which is why every field is None unless it was actually read.
+    """
+    app = os.path.join(home, "apps", app_id)
+    out = {"known": os.path.isdir(app), "current": None, "versions": [],
+           "current_target_exists": None, "has_manifest": None}
+    if not out["known"]:
+        return out
+    vdir = os.path.join(app, "versions")
+    if os.path.isdir(vdir):
+        out["versions"] = sorted(n for n in os.listdir(vdir)
+                                 if os.path.isdir(os.path.join(vdir, n)))
+    cur = os.path.join(app, "current")
+    curtxt = os.path.join(app, "current.txt")
+    if os.path.islink(cur):
+        target = os.readlink(cur)
+        out["current"] = os.path.basename(target.rstrip("/"))
+        out["current_target_exists"] = os.path.exists(
+            os.path.join(app, target) if not os.path.isabs(target) else target)
+    elif os.path.isfile(curtxt):
+        try:
+            out["current"] = open(curtxt).read().strip()
+        except OSError:
+            out["current"] = None
+        if out["current"]:
+            out["current_target_exists"] = os.path.isdir(
+                os.path.join(vdir, out["current"]))
+    out["has_manifest"] = os.path.isfile(os.path.join(app, "manifest.json"))
+    return out
+
+
 def observe(cli, app_id, *, probe_run=True):
     notes = []
     listed = cli("list", "--json", label="observe:list")
@@ -1098,7 +1145,58 @@ class Workspace:
                          "version" % label,
                          "FORMAT-0.1 §9.2: the set of installed applications and "
                          "the active version of each MUST be mutually consistent")
+        self.check_disk_agrees(o, label)
         return o
+
+    def check_disk_agrees(self, o, label):
+        """The SECOND observation of the same property, by another mechanism.
+
+        Everything above learned the store's state from the runtime's own
+        output. This reads the store. The two cannot fail for the same reason:
+        a parser or a reporting bug moves the first and not the second, and a
+        promote that half-happened moves the second and not the first.
+
+        Only genuine contradictions are raised. A layout the document does not
+        describe makes this observation ABSENT (`known=False`), never a
+        violation — docs/REFERENCE-POLICY.md §2 says the layout is a
+        reference-implementation choice, and a check that cannot tell "the
+        layout moved" from "the store is torn" would report the first as the
+        second forever.
+        """
+        d = observe_on_disk(self.home, APP_ID)
+        if not d["known"]:
+            return d
+        if o.installed and o.active and d["current"] and d["current"] != o.active:
+            self.violate("I5-record-vs-disk",
+                         "%s: `info` reports active version %s and the store's "
+                         "`current` points at %s"
+                         % (label, o.active, d["current"]),
+                         "FORMAT-0.1 §9.2: the active version of each "
+                         "application and the content of that version MUST be "
+                         "mutually consistent")
+        if o.installed and o.active and d["versions"] and \
+                o.active not in d["versions"]:
+            self.violate("I5-active-version-absent",
+                         "%s: `info` reports active version %s and the store "
+                         "holds only %s" % (label, o.active, d["versions"]),
+                         "FORMAT-0.1 §9.2: an application that reports as "
+                         "installed MUST be launchable, or MUST report honestly "
+                         "that it is damaged")
+        if d["current"] and d["current_target_exists"] is False:
+            self.violate("I5-dangling-current",
+                         "%s: the store's `current` names %s and no such version "
+                         "directory exists" % (label, d["current"]),
+                         "FORMAT-0.1 §9.2: a failed or interrupted operation "
+                         "MUST leave either the previous valid state or the new "
+                         "one, never a mixture")
+        if (not o.installed) and d["current"] and d["current_target_exists"]:
+            self.violate("I5-disowned-installation",
+                         "%s: `list` does not name the application and the store "
+                         "holds a complete installation of %s"
+                         % (label, d["current"]),
+                         "FORMAT-0.1 §9.2: the set of installed applications "
+                         "MUST be mutually consistent with what is stored")
+        return d
 
     # -- filesystem states --------------------------------------------------
     def apply_filesystem(self, which):
@@ -1885,10 +1983,17 @@ def check_doctor_convergence(cfg, rounds=3):
 #              arrive inside the window. This is forcing, not luck, and it needs
 #              no hook in production code.
 #
-# The interleavings that "trigger" cannot reach are the ones inside a SHORT
-# mutation's critical section (install vs install, repair vs repair). Forcing
-# those needs a hold point the process will honour, i.e. a production hook; what
-# would be needed is stated in the report rather than added here.
+#   "hold"     the interleavings "trigger" cannot reach are the ones inside a
+#              SHORT mutation's critical section — install vs install, repair vs
+#              repair, update vs rollback. Those needed a hold point the process
+#              will honour, and one now exists: LEXE_TEST_HOLD_APPLOCK_MS, read
+#              once, inert when unset, honoured after the per-app mutation lock
+#              is acquired. A is started with it set; B is released only once the
+#              hold is WITNESSED, and the witness is two observations that do not
+#              fail for the same reason (see _await_applock).
+#
+# What none of the three reach is an interleaving inside an operation that takes
+# no per-app lock at all, and that is stated rather than papered over.
 
 SCHEDULES = [
     # (id, mode, setup, A, B, oracle)
@@ -1902,28 +2007,50 @@ SCHEDULES = [
      ["run", APP_ID], ["rollback", APP_ID], "running-undisturbed"),
     ("repair||run", "trigger", "installed-long", ["run", APP_ID],
      ["repair", APP_ID], "running-undisturbed"),
-    ("install||install", "barrier", "absent",
+    ("install||install", "hold", "absent",
      ["install", "@v1", "--yes", "--trust"],
      ["install", "@v1", "--yes", "--trust"], "one-coherent-installation"),
-    ("repair||repair", "barrier", "installed",
+    ("repair||repair", "hold", "installed",
      ["repair", APP_ID], ["repair", APP_ID], "healthy-afterwards"),
-    ("update||rollback", "barrier", "installed-two-versions",
+    ("update||rollback", "hold", "installed-two-versions",
      ["install", "@v3", "--yes", "--trust"], ["rollback", APP_ID],
      "coherent-and-the-program-matches-the-record"),
-    ("uninstall||uninstall", "barrier", "installed",
+    ("uninstall||uninstall", "hold", "installed",
      ["remove", APP_ID, "--yes"], ["remove", APP_ID, "--yes"], "absent-afterwards"),
     ("doctor-repair||uninstall", "barrier", "installed",
      ["doctor", "--repair"], ["remove", APP_ID, "--yes"], "absent-afterwards"),
-    ("update||repair", "barrier", "installed",
+    ("update||repair", "hold", "installed",
      ["install", "@v2", "--yes", "--trust"], ["repair", APP_ID],
      "healthy-afterwards"),
     ("service-start||update", "barrier", "installed-service",
      ["run", APP_ID], ["install", "@v2", "--yes", "--trust"],
      "coherent-and-the-program-matches-the-record"),
-    ("uninstall||repair", "barrier", "installed",
+    ("uninstall||repair", "hold", "installed",
      ["remove", APP_ID, "--yes"], ["repair", APP_ID], "coherent"),
-    ("rollback||rollback", "barrier", "installed-two-versions",
+    ("rollback||rollback", "hold", "installed-two-versions",
      ["rollback", APP_ID], ["rollback", APP_ID], "coherent"),
+    # The promote is the instant installed state changes. A reader that takes no
+    # per-app mutation lock can observe it, so widening it with
+    # LEXE_TEST_HOLD_BEFORE_COMMIT_MS asks the question the mutation locks cannot:
+    # can anything see a torn state? docs/CONCURRENCY.md: "activation (the
+    # `current` flip) is atomic, so a launch never sees a torn mix."
+    ("update||run-observer", "hold-commit", "installed",
+     ["install", "@v2", "--yes", "--trust"], ["run", APP_ID],
+     "observer-saw-one-whole-version"),
+    ("update||info-observer", "hold-commit", "installed",
+     ["install", "@v2", "--yes", "--trust"], ["info", APP_ID],
+     "observer-saw-one-whole-version"),
+    # Deliberately "hold" and not "hold-commit". Measured, five samples each:
+    # LEXE_TEST_HOLD_BEFORE_COMMIT_MS widens install/update (0.015s -> 3.014s)
+    # and does NOTHING for rollback (0.004s), repair (0.011s) or remove
+    # (0.005s) — they do not promote through InstallTransaction. So a rollback's
+    # promote window cannot be widened from outside; its MUTATION window can,
+    # and that is what this schedule forces. Stated rather than silently
+    # downgraded, because a hold that is inert looks exactly like a race that
+    # never happens.
+    ("rollback||run-observer", "hold", "installed-two-versions",
+     ["rollback", APP_ID], ["run", APP_ID],
+     "observer-saw-one-whole-version"),
 ]
 
 # The spin-and-go barrier, as a real script with a real shebang. The shebang is
@@ -2031,6 +2158,35 @@ class RaceRunner:
                 pb = subprocess.Popen(argv_b, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, text=True, env=env,
                                       cwd=ws.home)
+            elif mode in ("hold", "hold-commit"):
+                # A is asked to hold the window open; B is released only once the
+                # hold is WITNESSED from outside. A witness that does not fire is
+                # reported as NOT FORCED — the run still executes and is still
+                # checked, it is simply not counted as a forced interleaving.
+                var = ("LEXE_TEST_HOLD_APPLOCK_MS" if mode == "hold"
+                       else "LEXE_TEST_HOLD_BEFORE_COMMIT_MS")
+                held_ms = (self.cfg.applock_hold_ms if mode == "hold"
+                           else self.cfg.commit_hold_ms)
+                env_a = dict(env)
+                env_a[var] = str(held_ms)
+                pa = subprocess.Popen(argv_a, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True,
+                                      env=env_a, cwd=ws.home)
+                if mode == "hold":
+                    forced, why = self._await_applock(
+                        ws.home, pa.pid, deadline=min(held_ms / 1000.0, 15.0))
+                else:
+                    # The commit hold is INSIDE the mutation lock, so the same
+                    # two witnesses see it; what differs is which window B lands
+                    # in, because the promote has not happened yet.
+                    forced, why = self._await_applock(
+                        ws.home, pa.pid, deadline=min(held_ms / 1000.0, 15.0))
+                row["forced"] = forced
+                row["force_mechanism"] = "%s=%d" % (var, held_ms)
+                row["force_witness"] = why
+                pb = subprocess.Popen(argv_b, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True, env=env,
+                                      cwd=ws.home)
             else:
                 go = os.path.join(ws.dir, "go")
                 pa = subprocess.Popen([self.barrier, go] + argv_a,
@@ -2069,6 +2225,74 @@ class RaceRunner:
         finally:
             ws.close()
         return row
+
+    @staticmethod
+    def _await_applock(home, pid_a, deadline):
+        """Wait until participant A is INSIDE its per-app mutation critical
+        section, and require two observations that do not fail for the same
+        reason before calling the window forced.
+
+        Observation 1 — `flock(LOCK_EX|LOCK_NB)` on `locks/<id>.lock` is
+        REFUSED. This is the kernel's answer and cannot be faked by a leftover
+        file, which is the trap docs/CONCURRENCY.md warns about ("a leftover
+        lock file on disk is never, by itself, evidence that anyone holds the
+        lock"). It can still be satisfied by the WRONG holder — a straggler from
+        a previous repetition, or this harness's own probe.
+
+        Observation 2 — the owner record the holder writes into the lock file
+        (`pid=… start=… op=… at=…`) names pid_a, and that pid is alive. This
+        reads a different mechanism written by different code, so it does not
+        fail for the same reason: a stale record survives the writer, and an
+        unwritten one is invisible to flock.
+
+        Neither alone is enough. Observation 1 alone once let a previous
+        repetition's holder be mistaken for this one; observation 2 alone would
+        accept a record written and then released microseconds later. Returns
+        (forced, why) and `why` names which observation refused, so a campaign
+        with a low forced ratio says WHERE it lost the window instead of
+        reporting the ratio and nothing else.
+        """
+        lockf = os.path.join(home, "locks", APP_ID + ".lock")
+        end = time.time() + max(deadline, 0.5)
+        saw_flock = saw_owner = False
+        while time.time() < end:
+            if os.path.exists(lockf):
+                try:
+                    fd = os.open(lockf, os.O_RDWR)
+                except OSError:
+                    time.sleep(0.002)
+                    continue
+                refused = False
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    refused = True
+                os.close(fd)
+                if refused:
+                    saw_flock = True
+                    try:
+                        with open(lockf, "rb") as f:
+                            line = f.read(512).decode("utf-8", "replace")
+                    except OSError:
+                        line = ""
+                    owner_pid = None
+                    for tok in line.split():
+                        if tok.startswith("pid="):
+                            try:
+                                owner_pid = int(tok[4:])
+                            except ValueError:
+                                owner_pid = None
+                    if owner_pid == pid_a and os.path.isdir("/proc/%d" % pid_a):
+                        saw_owner = True
+                        return True, "flock refused and owner record names pid %d" % pid_a
+            time.sleep(0.002)
+        if not saw_flock:
+            return False, "the mutation lock was never observed held"
+        if not saw_owner:
+            return False, ("the lock was held but its owner record never named "
+                           "pid %d" % pid_a)
+        return False, "unreached"
 
     @staticmethod
     def _await_lease(home, deadline):
@@ -2149,6 +2373,38 @@ class RaceRunner:
                            "FORMAT-0.1 §9.4: installing, updating, rolling back or "
                            "repairing MUST NOT modify or remove the files of a "
                            "version that is currently executing")
+        elif oracle == "observer-saw-one-whole-version":
+            # B observes while A sits in the widened promote window. The claim
+            # under test is docs/CONCURRENCY.md's: "activation (the `current`
+            # flip) is atomic, so a launch never sees a torn mix."
+            #
+            # Two things would falsify it, and they are different failures:
+            # an observer that SUCCEEDS while reporting nothing recognisable
+            # (a half-built version), and an observer that FAILS silently (a
+            # torn state with no diagnosis, which §9.2 forbids separately).
+            if b["timed_out"]:
+                ws.violate("R7-observer-hung",
+                           "the observer did not return while the promote "
+                           "window was held open",
+                           "docs/CONCURRENCY.md: a reader takes no per-app "
+                           "mutation lock, so it must never be blocked by one")
+            elif b["rc"] == 0:
+                text = (b["out"] or "") + (b["err"] or "")
+                known = [m for m in self.marks.values() if (m + "=") in text]
+                row["observer_saw"] = known
+                if self.marks and not known and "run-observer" in row["schedule"]:
+                    ws.violate("R7-observer-torn",
+                               "a launch during the promote window exited 0 and "
+                               "emitted no recognisable program output",
+                               "docs/CONCURRENCY.md: the `current` flip is "
+                               "atomic, so a launch never sees a torn mix")
+            elif not (b["out"].strip() or b["err"].strip()):
+                ws.violate("R7-observer-silent",
+                           "the observer failed (rc=%d) during the promote "
+                           "window and said nothing" % b["rc"],
+                           "FORMAT-0.1 §9.2: it MUST report honestly that it is "
+                           "damaged — it MUST NOT silently be missing files")
+
         # Every schedule, whatever else it asserts, must leave a coherent store.
         o = observe(ws.cli, APP_ID)
         row["final"] = o.as_dict()
@@ -2425,6 +2681,8 @@ def build_cfg(a):
     cfg.tattletale = build_tattletale(cfg)
     cfg.keep = bool(getattr(a, "keep", False))
     cfg.hold_ms = int(getattr(a, "hold_ms", 2500))
+    cfg.applock_hold_ms = int(getattr(a, "applock_hold_ms", 1200))
+    cfg.commit_hold_ms = int(getattr(a, "commit_hold_ms", 1200))
     cfg.jobs = int(getattr(a, "jobs", 8))
     return cfg
 
@@ -2761,10 +3019,11 @@ def cmd_race(a):
                 jobs.append((sched, rep, pressure))
     if not jobs:
         die("no schedule selected")
-    print("  %d schedules x %d repeats%s = %d runs (hold=%dms)"
+    print("  %d schedules x %d repeats%s = %d runs "
+          "(trigger payload %dms, applock hold %dms, commit hold %dms)"
           % (len({j[0][0] for j in jobs}), a.repeats,
              " x {no pressure, cpu pressure}" if a.pressure else "", len(jobs),
-             cfg.hold_ms))
+             cfg.hold_ms, cfg.applock_hold_ms, cfg.commit_hold_ms))
 
     rows, done = [], 0
     t0 = time.time()
@@ -2799,8 +3058,29 @@ def cmd_race(a):
         if r.get("a") and r.get("b"):
             d["outcomes"][r["a"]["class"] + " | " + r["b"]["class"]] = \
                 d["outcomes"].get(r["a"]["class"] + " | " + r["b"]["class"], 0) + 1
+    # The forced ratio, split by how the window was entered. A single ratio
+    # hides the fact that "trigger" and "hold" schedules are forced by different
+    # mechanisms and a barrier schedule cannot be forced at all, so a campaign
+    # that swapped one for another would show no change in the headline number.
+    by_mode = {}
+    for r in rows:
+        m = dict((s[0], s[1]) for s in SCHEDULES).get(r["schedule"], "?")
+        d = by_mode.setdefault(m, {"runs": 0, "forced": 0})
+        d["runs"] += 1
+        d["forced"] += 1 if r.get("forced") else 0
+    lost = {}
+    for r in rows:
+        if r.get("force_witness") and not r.get("forced"):
+            lost[r["force_witness"]] = lost.get(r["force_witness"], 0) + 1
     print("\n  %d runs in %.1fs, %d entered a FORCED window, %d violations"
           % (executed, elapsed, forced, len(viol)))
+    for m, d in sorted(by_mode.items()):
+        print("    mode %-12s %3d runs, %3d forced (%s)"
+              % (m, d["runs"], d["forced"],
+                 "%.0f%%" % (100.0 * d["forced"] / d["runs"]) if d["runs"]
+                 else "n/a"))
+    for why, n in sorted(lost.items(), key=lambda kv: -kv[1]):
+        print("    window lost x%-4d %s" % (n, why))
     failed_closed = sum(1 for r in rows if r.get("launch_failed_closed"))
     print("  %d launches failed CLOSED on the documented resolve->lease TOCTOU "
           "(not a violation; a high count means a weak trigger)" % failed_closed)
@@ -2810,26 +3090,36 @@ def cmd_race(a):
                  ", ".join("%s x%d" % (k, v)
                            for k, v in sorted(d["outcomes"].items()))))
     payload = {"runs": rows, "per_schedule": per, "elapsed_s": round(elapsed, 2),
-               "forced_runs": forced, "harness_errors": HARNESS_ERRORS,
-               "hook_request": HOOK_REQUEST}
+               "forced_runs": forced, "forced_by_mode": by_mode,
+               "windows_lost": lost, "harness_errors": HARNESS_ERRORS,
+               "applock_hold_ms": cfg.applock_hold_ms,
+               "commit_hold_ms": cfg.commit_hold_ms,
+               "still_unforceable": STILL_UNFORCEABLE}
     return emit(a, payload, len(viol) + len(HARNESS_ERRORS), executed,
                 "race: %d runs, %d forced, %d violations"
                 % (executed, forced, len(viol)))
 
 
-HOOK_REQUEST = (
-    "What cannot be forced from outside: the interleaving INSIDE a short "
-    "mutation's critical section. `install`, `repair`, `rollback` and `remove` "
-    "hold the per-app mutation lock for roughly 10-30ms, and nothing outside the "
-    "process can observe the moment it is taken and stop it there. The schedules "
-    "that need that window are install||install, repair||repair, update||rollback "
-    "and update||repair, and they are run here with a real barrier under CPU "
-    "pressure, which is probability. To make them deterministic a production hold "
-    "point is needed: an environment-gated sleep immediately after the AppLock is "
-    "acquired and immediately before it is released, e.g. "
-    "LEXE_TEST_HOLD_APPLOCK_MS / LEXE_TEST_HOLD_BEFORE_COMMIT_MS, read once in "
-    "OperationLockManager and a no-op when unset. That is a change to production "
-    "code and is therefore REQUESTED, not made here.")
+# This used to be a REQUEST. The hold points it asked for now exist
+# (LEXE_TEST_HOLD_APPLOCK_MS in the lock layer, LEXE_TEST_HOLD_BEFORE_COMMIT_MS
+# at the promote), so the schedules that needed them — install||install,
+# repair||repair, update||rollback, update||repair — are forced rather than
+# hoped for, and the barrier-under-pressure fallback is gone from those rows.
+#
+# What remains genuinely unforceable is recorded here instead, because a lane
+# that stops listing its blind spots stops having any.
+STILL_UNFORCEABLE = (
+    "Two windows are still entered by luck rather than forced. (1) Schedules "
+    "whose participant A takes no per-application mutation lock: "
+    "`doctor --repair` operates on integration state, not on one app, so there "
+    "is no per-app critical section to hold it in, and `service-start||update` "
+    "starts with a launch. Those two remain barrier schedules and are reported "
+    "as NOT forced. (2) The interval between `flock` returning and the owner "
+    "record being written: the witness used here requires BOTH, so a run that "
+    "lands between them is reported as a lost window with the reason, not "
+    "silently counted. Neither is worth another production hook — the first "
+    "would need a lock that does not exist, and the second is smaller than the "
+    "scheduling granularity the harness can act on.")
 
 
 def cmd_reduce(a):
@@ -2933,6 +3223,13 @@ def main():
     r.add_argument("--only", default=None)
     r.add_argument("--pressure", action="store_true",
                    help="also run every schedule under CPU pressure")
+    r.add_argument("--applock-hold-ms", type=int, default=1200,
+                   help="LEXE_TEST_HOLD_APPLOCK_MS given to participant A in "
+                        "'hold' schedules, so B is forced into its critical "
+                        "section rather than arriving there by luck")
+    r.add_argument("--commit-hold-ms", type=int, default=1200,
+                   help="LEXE_TEST_HOLD_BEFORE_COMMIT_MS given to participant A "
+                        "in 'hold-commit' schedules, which widens the promote")
     r.add_argument("--hold-ms", type=int, default=2500,
                    help="how long the FORCED schedules hold a launch lease")
     r.set_defaults(fn=cmd_race)
