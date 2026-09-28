@@ -14,6 +14,7 @@ int main(int argc, char **argv) {
     orc_kv("NODE", "helper");
     orc_kv("SLEEP_MS", "%lu", (unsigned long)ms);
     orc_kv("HELPER_STARTED", "yes");
+    tree_state_note("HELPER");
     Sleep(ms);
     orc_kv("HELPER_COMPLETED", "yes");
     orc_kv("SURVIVED_SLEEP", "yes");

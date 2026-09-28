@@ -9,6 +9,7 @@ int main(int argc, char **argv) {
     (void)argc; (void)argv;
     orc_begin_fixed("t_crash_handler");
     orc_kv("NODE", "crash_handler");
+    tree_state_note("CRASH_HANDLER");
     orc_kv("WORK_BEFORE_FAULT", "done");
     orc_expect_death("access-violation");
     *target = 1;

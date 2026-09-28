@@ -102,6 +102,18 @@ DEFAULT_LAYERS_NOTE = (
 LAYERS_WITH_STDIO = {"native", "wine", "proton-wine"}
 
 
+def _as_text(x):
+    """subprocess hands back BYTES in a TimeoutExpired even when text=True was
+    asked for. Concatenating a message onto that raises TypeError and killed a
+    whole generation once, from inside the error path of a timeout -- so the
+    coercion is explicit here rather than assumed."""
+    if x is None:
+        return ""
+    if isinstance(x, bytes):
+        return x.decode("utf-8", "replace")
+    return x
+
+
 def sh(cmd, timeout=300, **kw):
     """Run a command and never wait forever. A hung toolchain or a hung
     translation layer is a finding, not something to sit through."""
@@ -110,8 +122,25 @@ def sh(cmd, timeout=300, **kw):
                               timeout=timeout, **kw)
     except subprocess.TimeoutExpired as e:
         return subprocess.CompletedProcess(
-            cmd, 124, e.stdout or "",
-            (e.stderr or "") + chr(10) + "[generator] timed out after " + str(timeout) + "s")
+            cmd, 124, _as_text(e.stdout),
+            _as_text(e.stderr) + chr(10)
+            + "[generator] timed out after " + str(timeout) + "s")
+
+
+def sh_detached(cmd, **kw):
+    """Start a command that DAEMONISES and keeps running -- `wineserver -p` is
+    the only user. It must not be run through sh(): capture_output gives it pipes,
+    the daemon inherits them and never closes them, and subprocess.run() waits for
+    EOF rather than for the process, so a 60-second timeout fires on a command
+    that in fact succeeded in milliseconds. (The same trap as finding 13 in
+    README-PE.md, met from the other side.)"""
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=60, **kw)
+        return p.returncode
+    except subprocess.TimeoutExpired:
+        return 124
 
 
 def sha256_file(path):
@@ -230,9 +259,19 @@ def check_pe(declared, actual):
 # --------------------------------------------------------------------------
 
 SPECIMENS = []
+# `dir` puts a DLL in a subdirectory of out/dll. wsearch.dll is built TWICE, with
+# the SAME FILE NAME and different contents, into two different directories: that
+# is the only way a specimen can say WHICH of them the loader found, and therefore
+# the only way to observe DLL search order rather than merely DLL loading.
 DLLS = [
     {"name": "wlib.dll", "src": "wlib.c", "toolchain": "mingw64-O2", "implib": "libwlib.a"},
     {"name": "wlib32.dll", "src": "wlib.c", "toolchain": "mingw32-O2", "implib": None},
+    {"name": "wsearch.dll", "src": "wsearch.c", "toolchain": "mingw64-O2", "implib": None,
+     "dir": "search-primary",
+     "cflags": ["-DWSEARCH_WHICH=primary", "-DWSEARCH_VALUE=1111"]},
+    {"name": "wsearch.dll", "src": "wsearch.c", "toolchain": "mingw64-O2", "implib": None,
+     "dir": "search-alt",
+     "cflags": ["-DWSEARCH_WHICH=alt", "-DWSEARCH_VALUE=2222"]},
 ]
 
 
@@ -266,6 +305,9 @@ def S(fid, src, family, prop, **kw):
             "instability_expected": kw.get("instability_expected", None),
             "warmup_launch": kw.get("warmup", False),
             "post_files": dict(kw.get("post", {})),
+            # {filename: terminal line}. Turns settle_s from a fixed sleep --
+            # which is a race -- into a condition with settle_s as its ceiling.
+            "post_files_complete_when": dict(kw.get("post_complete_when", {})),
             "duration_class": kw.get("duration", "sub-second"),
             "capabilities": list(kw.get("caps", [])),
             "filesystem_effects": list(kw.get("effects", [])),
@@ -538,12 +580,28 @@ S("pe-outcome-abnormal-raise", "w_abnormal.c", "outcome",
         "on the nondeterminism.")
 S("pe-run-bounded-500ms", "w_longrun.c", "outcome", "a bounded sub-second run",
   argv=["500"],
-  expect={"SLEEP_REQUESTED_MS": "500", "SLEPT_AT_LEAST_REQUESTED": "yes",
+  expect={"SLEEP_REQUESTED_MS": "500", "SLEEP_FLOOR_MS": "450",
+          "SLEPT_AT_LEAST_REQUESTED": "yes", "SLEEP_WAS_NOT_SKIPPED": "yes",
           "DURATION_CLASS": "sub-second"})
 S("pe-run-bounded-3s", "w_longrun.c", "outcome", "a long-running process",
   argv=["3000"], duration="seconds", timeout=180.0,
-  expect={"SLEEP_REQUESTED_MS": "3000", "SLEPT_AT_LEAST_REQUESTED": "yes",
-          "DURATION_CLASS": "seconds"})
+  expect={"SLEEP_REQUESTED_MS": "3000", "SLEEP_FLOOR_MS": "2700",
+          "SLEPT_AT_LEAST_REQUESTED": "yes", "SLEEP_WAS_NOT_SKIPPED": "yes",
+          "DURATION_CLASS": "seconds"},
+  notes="DECLARATION REVISED, and the revision is a finding about the layer rather "
+        "than about the program. The original check required the elapsed "
+        "QueryPerformanceCounter time to be within 20 ms of the requested 3000, and "
+        "on a busy host it failed at 2962 ms -- under BOTH Wines, across repeats. "
+        "Sleep did not return early in any useful sense: Sleep and "
+        "QueryPerformanceCounter are different clocks in this layer and they do not "
+        "agree to better than a few tens of milliseconds under load. A 20 ms window "
+        "on 3000 ms is 0.67%, which made this a PERFORMANCE assertion disguised as a "
+        "correctness one -- the exact thing this corpus forbids everywhere else, and "
+        "it had been sitting here passing quietly on an idle machine. The "
+        "deterministic check is now the one that really separates a working Sleep "
+        "from a broken one, and the clock disagreement is reported as "
+        "OBS_SLEEP_VERSUS_QPC_MS and OBS_QPC_AGREED_WITHIN_20MS, where it is "
+        "visible instead of fatal.")
 S("pe-run-cpu-bound", "p_cpu.c", "outcome", "a deterministic CPU-bound run",
   argv=["20000000"], layers=NATIVE, duration="seconds", timeout=180.0,
   expect={"ROUNDS": "20000000", "WORK_COMPLETED": "yes"},
@@ -704,6 +762,1024 @@ S("pe-socket-name-resolution", "w_resolve.c", "sockets",
   expect={"LOCALHOST_RC_IS_ZERO": "yes", "LOCALHOST_ADDRS_NONZERO": "yes",
           "BOGUS_RC_IS_ZERO": "no", "SURVIVED_RESOLUTION": "yes"},
   caps=["name resolution for localhost"])
+S("pe-socket-tcp6-loopback", "w_tcp6.c", "sockets",
+  "Winsock TCP over IPv6 loopback", cflags=["-lws2_32"],
+  expect={"WSASTARTUP": "ok", "AF_INET6_SOCKET": "ok", "BOUND_LOOPBACK_V6": "ok",
+          "ACCEPT": "ok", "RECEIVED": "HELLO-TCP6", "TCP6_LOOPBACK": "ok",
+          "PEER_FAMILY_IS_INET6": "yes", "PEER_IS_V6_LOOPBACK": "yes",
+          "SURVIVED_NETWORK_ATTEMPT": "yes"},
+  caps=["IPv6 loopback"],
+  notes="A different address family, a different sockaddr and, inside a "
+        "translation layer, often a different amount of implementation. Working on "
+        "IPv4 loopback and not on IPv6 loopback is a real and common failure, so "
+        "the two are separate cells and never one 'networking' cell.")
+S("pe-socket-select-nonblocking", "w_select.c", "sockets",
+  "non-blocking sockets and the three answers select can give",
+  cflags=["-lws2_32"],
+  expect={"CLIENT_SOCKET": "yes", "SET_NON_BLOCKING": "yes",
+          "SELECT_WRITABLE_AFTER_CONNECT": "1",
+          "CONNECT_COMPLETED_VIA_SELECT": "yes", "ACCEPTED": "yes",
+          "SET_ACCEPTED_NON_BLOCKING": "yes", "SELECT_READ_WHEN_IDLE": "0",
+          "IDLE_SOCKET_NOT_READABLE": "yes", "NONBLOCKING_RECV_WHEN_IDLE": "-1",
+          "NONBLOCKING_RECV_ERROR": "WSAEWOULDBLOCK",
+          "SELECT_READ_WITH_DATA": "1", "RECEIVED": "SELECT-PING",
+          "READY_SOCKET_DELIVERED_THE_DATA": "yes", "SELECT_MODEL": "ok",
+          "SURVIVED_NETWORK_ATTEMPT": "yes"},
+  expect_one_of={"NONBLOCKING_CONNECT": ["would-block", "completed-immediately"]},
+  caps=["loopback networking"],
+  notes="The READINESS model rather than the blocking one. Whether a non-blocking "
+        "connect over loopback reports WSAEWOULDBLOCK or completes synchronously is "
+        "a PLATFORM choice -- Windows always defers it, a Unix kernel behind a "
+        "layer need not -- so that one key is expect_one_of and everything else, "
+        "including a select that must return 0 on an idle socket, stays exact.")
+S("pe-socket-error-paths", "w_connrefused.c", "sockets",
+  "four socket failures, each with its own distinct Winsock error",
+  cflags=["-lws2_32"],
+  expect={"SOCKET": "yes", "CONNECT_TO_DEAD_PORT": "refused",
+          "CONNECT_TO_DEAD_PORT_ERROR": "WSAECONNREFUSED",
+          "SEND_UNCONNECTED": "-1", "SEND_UNCONNECTED_ERROR": "WSAECONNRESET",
+          "FIRST_BIND": "yes", "SECOND_BIND_SAME_ADDRESS": "refused",
+          "SECOND_BIND_ERROR": "WSAEADDRINUSE",
+          "SEND_ON_CLOSED_SOCKET": "-1",
+          "SEND_ON_CLOSED_SOCKET_ERROR": "WSAENOTSOCK",
+          "SOCKET_AFTER_WSACLEANUP": "refused",
+          "SOCKET_AFTER_WSACLEANUP_ERROR": "WSANOTINITIALISED",
+          "SURVIVED_EVERY_ERROR_PATH": "yes"},
+  caps=["loopback networking"],
+  notes="The happy-path socket specimens cannot see any of this. Four DISTINCT "
+        "errors, because a networked application branches on which one it got, and "
+        "a layer that collapsed them into one would make 'nobody is listening' and "
+        "'my socket is closed' indistinguishable. The dead port is obtained "
+        "honestly: bound, read back, then closed. DECLARATION REVISED BY ITS OWN "
+        "BASELINE, and worth writing down: I declared WSAENOTCONN for a send on a "
+        "socket that was never connected, which is what Windows documents. The "
+        "measured answer here is WSAECONNRESET -- Wine is relaying the Unix EPIPE "
+        "from a send() on an unconnected TCP socket rather than synthesising the "
+        "Win32 error. The declaration now records what this platform actually does, "
+        "and the difference from documented Windows is stated rather than smoothed "
+        "over: it is the kind of thing that makes a reconnect loop behave "
+        "differently under a translation layer than on Windows, because "
+        "WSAECONNRESET reads as 'the peer went away, retry' and WSAENOTCONN reads "
+        "as 'you have a bug'. The other three errors in this specimen came back "
+        "exactly as declared.")
+
+# ---- large, binary and paced output --------------------------------------
+#
+# The deterministic claims in this family are about a FILE the specimen writes that
+# carries nothing but the payload -- never an offset, length or count over a stream
+# that also carries FIXTURE_ID. FIXTURE_ID is environment-derived, and an offset
+# measured past it moves when the environment does. In the STREAM the payload is
+# located by its delimiter LINES, by content; any absolute offset is an OBS_.
+
+_BULK_COMMON = {"BULK_LINE_BYTES": "64", "BULK_FILE_OPEN": "yes",
+                "BULK_FILE_REOPEN": "yes", "BULK_FILE_SIZE_AS_INTENDED": "yes",
+                "BULK_EMITTED": "yes",
+                "BULK_DELIMITERS": "BULK_PAYLOAD_BEGIN..BULK_PAYLOAD_END"}
+_BULK_256 = dict(_BULK_COMMON, BULK_KIB="256", BULK_FILE_BYTES="262144",
+                 BULK_ROLLING_HASH="0c59b1d115cf0325",
+                 BULK_FILE_HASH="368ae29b2e800325")
+
+S("pe-io-bulk-stdout-256k", "w_bulkout.c", "io",
+  "256 KiB of payload on stdout between two delimiter lines",
+  argv=["out", "256"], layers=NATIVE, timeout=180.0,
+  expect=dict(_BULK_256, BULK_STREAM="out"),
+  notes="Large output as a dimension in its own right: a consumer that reads a "
+        "guest's stdout has to survive a quarter of a megabyte arriving in one "
+        "burst. The payload is lowercase hex and newlines only, so it cannot "
+        "contain either delimiter, and the hash is over bulk.bin -- a file that "
+        "never carried FIXTURE_ID -- so it is a property of the program.")
+S("pe-io-bulk-stderr-256k", "w_bulkout.c", "io",
+  "256 KiB of payload on stderr instead",
+  argv=["err", "256"], layers=NATIVE, timeout=180.0,
+  expect=dict(_BULK_256, BULK_STREAM="err"),
+  notes="Separate from the stdout case because the two streams are separately "
+        "buffered and separately plumbed, and a consumer that drains one while the "
+        "other fills its pipe deadlocks.")
+S("pe-io-bulk-both-256k", "w_bulkout.c", "io",
+  "256 KiB on BOTH streams at once, interleaved",
+  argv=["both", "256"], layers=NATIVE, timeout=180.0,
+  expect=dict(_BULK_256, BULK_STREAM="both"),
+  notes="The deadlock case: half a megabyte in total, going out of two pipes at "
+        "the same time. Anything reading one stream to EOF before starting on the "
+        "other hangs here and nowhere else in the corpus.")
+S("pe-io-bulk-stdout-4m", "w_bulkout.c", "io",
+  "4 MiB on stdout: an order of magnitude past the pipe buffer",
+  argv=["out", "4096"], layers=NATIVE, timeout=300.0, duration="seconds",
+  expect=dict(_BULK_COMMON, BULK_STREAM="out", BULK_KIB="4096",
+              BULK_FILE_BYTES="4194304",
+              BULK_ROLLING_HASH="3c980e4214242325",
+              BULK_FILE_HASH="068b7c5f2a002325"),
+  notes="The 256 KiB cases fit in a few pipe buffers; this one does not, by a long "
+        "way, so the writer really does block on the reader repeatedly.")
+S("pe-io-binary-nul", "w_binout.c", "io",
+  "binary output including NUL bytes, newlines and DOS EOFs",
+  layers=NATIVE, timeout=120.0,
+  expect={"BIN_FILE_OPEN": "yes", "BIN_FILE_REOPEN": "yes",
+          "BIN_FILE_BYTES": "1024", "BIN_FILE_HASH": "1e5698f9d66e6f25",
+          "BIN_DISTINCT_BYTE_VALUES": "256", "BIN_NUL_COUNT": "4",
+          "BIN_NEWLINE_COUNT": "4", "BIN_DOS_EOF_COUNT": "4",
+          "BIN_ROUNDTRIP_IDENTICAL": "yes", "BIN_NO_NEWLINE_TRANSLATION": "yes",
+          "BIN_EMITTED": "yes",
+          "BIN_DELIMITERS": "BIN_PAYLOAD_BEGIN..BIN_PAYLOAD_END"},
+  expect_by_layer={"native": {"STDOUT_BINARY_MODE": "not-applicable"},
+                   "wine": {"STDOUT_BINARY_MODE": "ok"},
+                   "proton-wine": {"STDOUT_BINARY_MODE": "ok"}},
+  notes="All 256 byte values, four times over. The Windows-specific part is that "
+        "stdout must be put into _O_BINARY first or the C runtime turns every 0x0A "
+        "in the payload into 0x0D 0x0A -- the same text-mode machinery that "
+        "truncates stdin at 0x1A in pe-io-stdin-text-mode-ctrl-z, seen from the "
+        "other end. The declared per-layer difference is only that a Linux build "
+        "has no such mode to ask for.")
+S("pe-io-paced-output", "w_paced.c", "io",
+  "twelve lines a quarter of a second apart, on both streams and to a file",
+  argv=["12", "250"], duration="seconds", timeout=180.0,
+  expect={"PACED_LINES_REQUESTED": "12", "PACE_INTERVAL_MS": "250",
+          "PACED_LOG_OPEN": "yes", "PACED_LOG_REOPEN": "yes",
+          "PACED_LOG_LINES": "12", "PACED_ALL_LINES_LANDED": "yes",
+          "DURATION_CLASS": "seconds"},
+  notes="A program that dribbles output over three seconds, which is where a "
+        "consumer that buffers until EOF behaves differently from one that streams. "
+        "paced.log carries nothing but the paced lines, so its line COUNT is a "
+        "property of the program; the elapsed time is an observation, always. "
+        "That last clause used to be false of this entry: it also declared "
+        "PACED_TOOK_AT_LEAST_THE_GAPS=yes, a deterministic assertion about "
+        "elapsed wall time, and it failed on two of five IDENTICAL repeats under "
+        "both Wine layers -- 2560, 2766, 2729, 2664 and 2765 ms against an "
+        "11 x 250 ms floor of 2690. Sleep(n) does not promise to take n ms and on "
+        "a translation layer it often returns early, so the floor is a fact about "
+        "the LAYER and the specimen was reporting the host's timer as a fixture "
+        "failure. It is an observation now, with the number beside it.")
+S("pe-io-standard-handles", "w_console.c", "io",
+  "what the standard handles ARE, not what is written to them",
+  expect={"STDIN_HANDLE_VALID": "yes",
+          "STDOUT_HANDLE_VALID": "yes",
+          "STDERR_HANDLE_VALID": "yes",
+          "STDIN_GETCONSOLEMODE": "fail", "STDOUT_GETCONSOLEMODE": "fail",
+          "STDERR_GETCONSOLEMODE": "fail",
+          "STDIN_GETCONSOLEMODE_ERROR": "ERROR_INVALID_HANDLE",
+          "STDOUT_GETCONSOLEMODE_ERROR": "ERROR_INVALID_HANDLE",
+          "STDERR_GETCONSOLEMODE_ERROR": "ERROR_INVALID_HANDLE",
+          "STD_HANDLES_ARE_DISTINCT": "yes",
+          "WRITEFILE_TO_STD_HANDLE": "yes", "RAW_WRITEFILE_BYTES": "18",
+          "RAW_WRITE_WROTE_EVERYTHING": "yes", "OPENED_REROUTE_TARGET": "yes",
+          "SET_STD_HANDLE": "yes", "RESTORED_STD_HANDLE": "yes",
+          "STD_HANDLE_IS_BACK": "yes", "REROUTED_FILE_BYTES": "13",
+          "REROUTED_WRITE_LANDED_IN_THE_FILE": "yes"},
+  expect_by_layer={
+      "wine": {"STDIN_FILE_TYPE": "pipe", "STDOUT_FILE_TYPE": "pipe",
+               "STDERR_FILE_TYPE": "pipe"},
+      "proton-wine": {"STDIN_FILE_TYPE": "char", "STDOUT_FILE_TYPE": "char",
+                      "STDERR_FILE_TYPE": "char"},
+  },
+  notes="A DELIBERATE per-layer difference, MEASURED, and one of the sharper "
+        "Wine-versus-Proton findings in this corpus. The generator hands every "
+        "specimen the SAME three pipes on every layer -- that is a property of the "
+        "harness, not of the guest -- and yet the system Wine reports all three as "
+        "FILE_TYPE_PIPE while PROTON's Wine reports all three as FILE_TYPE_CHAR, a "
+        "character device. Both then fail GetConsoleMode with ERROR_INVALID_HANDLE, "
+        "so under Proton's Wine the two questions a program asks to decide whether "
+        "it is running interactively give CONTRADICTORY answers: GetFileType says "
+        "'a console-like device', GetConsoleMode says 'not a console'. A great deal "
+        "of real Windows software branches on exactly this -- coloured output, "
+        "progress bars, prompting -- and it will branch differently under the two "
+        "layers. I declared 'pipe' everywhere and the baseline corrected me. The "
+        "last block redirects the process's OWN stdout handle at runtime and puts "
+        "it back, which is how a program captures a library's output.")
+
+# ---- unusual exit codes ---------------------------------------------------
+#
+# A Windows exit status is a full 32-bit DWORD and a Unix wait status carries eight
+# bits, so a translation layer has to truncate -- and the specimen's own oracle FILE
+# is what preserves the intent across that truncation.
+S("pe-outcome-exit-256", "w_exitcode.c", "outcome",
+  "exits 256: the one truncation that is NOT a plain & 0xFF",
+  argv=["256"], exit=1,
+  expect={"EXIT_CODE_INTENDED": "256", "EXIT_CODE_INTENDED_HEX": "0x00000100",
+          "EXIT_CODE_LOW_BYTE": "0", "EXIT_CODE_EXCEEDS_8_BITS": "yes",
+          "EXIT_CODE_LOOKS_LIKE_NT_STATUS": "no", "DIED_ABNORMALLY": "no",
+          "WORK_DONE": "yes"},
+  notes="DECLARATION REVISED BY ITS OWN BASELINE, and the revision is the finding. "
+        "I declared exit 0, reasoning that a Unix wait status is eight bits and "
+        "256 & 0xFF is 0. The other two specimens in this family confirm that "
+        "reasoning exactly -- 1000 truncates to 232 and 0xC0000005 truncates to 5, "
+        "both as declared -- but 256 came back as 1, not 0. So the mapping is NOT a "
+        "plain & 0xFF: a non-zero Windows status whose low byte happens to be zero "
+        "is reported as 1 rather than allowed to become a SUCCESS. That is sensible "
+        "behaviour and I had not predicted it; it is also a fact a supervisor needs, "
+        "because it means the exact status is lost while the failure is not. Which "
+        "of the two is worse depends on the caller, and the oracle file is where the "
+        "full 32-bit intent survives either way.")
+S("pe-outcome-exit-1000", "w_exitcode.c", "outcome",
+  "exits 1000, which truncates to 232",
+  argv=["1000"], exit=232,
+  expect={"EXIT_CODE_INTENDED": "1000", "EXIT_CODE_INTENDED_HEX": "0x000003e8",
+          "EXIT_CODE_LOW_BYTE": "232", "EXIT_CODE_EXCEEDS_8_BITS": "yes",
+          "EXIT_CODE_LOOKS_LIKE_NT_STATUS": "no", "WORK_DONE": "yes"},
+  notes="1000 & 0xFF is 232. Declared before running from the same reasoning.")
+S("pe-outcome-exit-looks-like-a-crash", "w_exitcode.c", "outcome",
+  "exits 0xC0000005 ON PURPOSE, which looks exactly like an access violation",
+  argv=["3221225477"], exit=5,
+  expect={"EXIT_CODE_INTENDED": "3221225477",
+          "EXIT_CODE_INTENDED_HEX": "0xc0000005", "EXIT_CODE_LOW_BYTE": "5",
+          "EXIT_CODE_EXCEEDS_8_BITS": "yes",
+          "EXIT_CODE_LOOKS_LIKE_NT_STATUS": "yes", "DIED_ABNORMALLY": "no",
+          "WORK_DONE": "yes"},
+  notes="The sharpest of the three. This program did not crash: it ran to "
+        "completion, wrote a full oracle with RESULT=PASS, and then chose to exit "
+        "with the same 32-bit value an access violation produces. A parent using "
+        "GetExitCodeProcess sees 0xC0000005 and a Unix caller sees 5 -- both "
+        "identical to pe-outcome-abnormal-av -- and the ONLY thing that "
+        "distinguishes the two is the oracle file. Declared exit 5 from the "
+        "definition of a Unix wait status, before running.")
+for _code in (2, 127):
+    S("pe-outcome-exit-%d" % _code, "p_exit.c", "outcome",
+      "exits with status %d after a complete run" % _code,
+      argv=[str(_code)], exit=_code, layers=NATIVE,
+      expect={"EXIT_CODE_INTENDED": str(_code), "WORK_DONE": "yes"},
+      notes="Two more conventional statuses with meanings of their own: 2 is the "
+            "usage convention and 127 is 'command not found' in a shell, so both "
+            "are statuses a supervisor is likely to interpret rather than pass on.")
+
+# ---- DLL search order -----------------------------------------------------
+#
+# Two DLLs with the SAME FILE NAME and different exports, so the specimen can say
+# WHICH one the loader found. A test that only checks "LoadLibrary succeeded"
+# cannot tell the application directory from a directory added at runtime.
+S("pe-dll-search-appdir-wins", "w_dll_search.c", "dll",
+  "the application directory beats a directory added to the search path",
+  stage="search_both", argv=["appdir"],
+  expect={"SEARCH_MODE": "appdir", "MODULE_DIR_FOUND": "yes",
+          "ALT_DLL_IS_STAGED": "yes", "LOAD": "ok", "LOADED": "yes",
+          "LOADED_WHICH": "primary", "LOADED_VALUE": "1111",
+          "APPLICATION_DIRECTORY_WON": "yes"},
+  caps=["two same-named DLLs in two directories"],
+  notes="Both DLLs are present and they are DIFFERENT: search_which() is what makes "
+        "the answer observable at all.")
+S("pe-dll-search-setdlldirectory", "w_dll_search.c", "dll",
+  "SetDllDirectoryW turning a failed load into a successful one",
+  stage="search_alt_only", argv=["needs-setdll"],
+  expect={"SEARCH_MODE": "needs-setdll", "ALT_DLL_IS_STAGED": "yes",
+          "FIRST_LOAD": "fail", "FIRST_LOAD_ERROR": "ERROR_MOD_NOT_FOUND",
+          "FIRST_LOAD_FAILED_AS_DECLARED": "yes", "SETDLLDIRECTORY": "yes",
+          "SECOND_LOAD": "ok", "SECOND_LOAD_SUCCEEDED": "yes",
+          "LOADED_WHICH": "alt", "LOADED_VALUE": "2222",
+          "SETDLLDIRECTORY_CHANGED_THE_OUTCOME": "yes"},
+  caps=["SetDllDirectoryW"],
+  notes="The DLL is staged ONLY in altdir, so the first load must fail. The "
+        "evidence that SetDllDirectory did something is the CHANGE in outcome "
+        "between two otherwise identical calls in one process -- not the second "
+        "call succeeding, which could have happened for any number of reasons.")
+S("pe-dll-search-absolute-path", "w_dll_search.c", "dll",
+  "an absolute path, which performs no search at all",
+  stage="search_alt_only", argv=["explicit-abs"],
+  expect={"SEARCH_MODE": "explicit-abs", "LOAD": "ok", "LOADED": "yes",
+          "LOADED_WHICH": "alt", "LOADED_VALUE": "2222",
+          "NO_SEARCH_PERFORMED": "yes"},
+  notes="The control for the other three: the same DLL in the same place, reached "
+        "without the search path being involved.")
+S("pe-dll-search-adddlldirectory", "w_dll_search.c", "dll",
+  "the modern SetDefaultDllDirectories/AddDllDirectory pair, if it exists",
+  stage="search_alt_only", argv=["adddlldirectory"],
+  expect={"SEARCH_MODE": "adddlldirectory", "MODERN_SEARCH_API_PROBED": "yes",
+          "ALT_DLL_IS_STAGED": "yes"},
+  expect_one_of={"MODERN_SEARCH_API_PRESENT": ["yes", "no"],
+                 "LOAD": ["ok", "not-attempted"],
+                 "LOADED_WHICH": ["alt", "<absent>"]},
+  notes="Whether these two entry points exist at all is a property of the Windows "
+        "being emulated, not of the program, so their presence is an OBSERVATION "
+        "and the outcome is declared as either legitimate possibility. What IS "
+        "declared is that the program probes them and survives either answer -- a "
+        "specimen that silently did nothing when they were missing would be a row "
+        "pretending to be coverage.")
+
+# ---- the registry, past a single round trip -------------------------------
+S("pe-registry-enumerate", "w_registry2.c", "registry",
+  "subkeys and values counted, then walked to ERROR_NO_MORE_ITEMS",
+  argv=["enum"],
+  effects=["creates and removes HKCU/Software/LexeWorkload/Reg2-enum-<pid>"],
+  expect={"REGISTRY_MODE": "enum", "REG_CREATE": "yes", "QUERY_INFO_KEY": "yes",
+          "SUBKEY_COUNT": "3", "VALUE_COUNT": "3",
+          "ENUM_KEYS_ENDED": "no-more-items",
+          "ENUM_VALUES_ENDED": "no-more-items",
+          "ENUM_SUBKEYS_SEEN": "3", "ENUM_VALUES_SEEN": "3",
+          "ALL_THREE_SUBKEY_NAMES_FOUND": "yes",
+          "ALL_THREE_VALUE_NAMES_FOUND": "yes",
+          "SUBKEY_COUNT_MATCHES_WALK": "yes",
+          "VALUE_COUNT_MATCHES_WALK": "yes", "CLEANED_UP": "yes"},
+  caps=["a writable registry"],
+  notes="Enumeration ORDER is not a contract, so the specimen checks the SET of "
+        "names rather than the sequence, and separately checks that the count "
+        "RegQueryInfoKeyW reported matches the number the walk actually produced -- "
+        "a layer whose count and whose enumeration disagree is a real failure and "
+        "would be invisible to either check alone. The key name carries the process "
+        "id because one Wine prefix is shared by every specimen running at once.")
+S("pe-registry-value-types", "w_registry2.c", "registry",
+  "REG_BINARY, REG_MULTI_SZ, REG_EXPAND_SZ and REG_QWORD kept apart",
+  argv=["types"],
+  effects=["creates and removes HKCU/Software/LexeWorkload/Reg2-types-<pid>"],
+  expect={"REGISTRY_MODE": "types", "REG_CREATE": "yes", "SET_BINARY": "yes",
+          "SET_MULTI_SZ": "yes", "SET_EXPAND_SZ": "yes", "SET_QWORD": "yes",
+          "QUERY_BINARY": "yes", "BINARY_TYPE_IS_REG_BINARY": "yes",
+          "BINARY_SIZE": "8", "BINARY_HEX": "deadbeef00017f80",
+          "BINARY_ROUNDTRIPPED": "yes", "QUERY_MULTI_SZ": "yes",
+          "MULTI_SZ_TYPE_IS_REG_MULTI_SZ": "yes",
+          "MULTI_SZ_STRING_COUNT": "3", "MULTI_SZ_FIRST_IS_ALPHA": "yes",
+          "QUERY_EXPAND_SZ": "yes", "EXPAND_SZ_TYPE_IS_REG_EXPAND_SZ": "yes",
+          "EXPAND_SZ_NOT_EXPANDED_BY_QUERY": "yes", "QUERY_QWORD": "yes",
+          "QWORD_TYPE_IS_REG_QWORD": "yes", "QWORD_HEX": "0123456789abcdef",
+          "QWORD_ROUNDTRIPPED": "yes", "CLEANED_UP": "yes"},
+  caps=["a writable registry with typed values"],
+  notes="A layer that collapses every value into REG_SZ passes "
+        "pe-registry-roundtrip and fails here. The REG_EXPAND_SZ check is the "
+        "subtle one: the API must NOT expand it, because expansion is the caller's "
+        "job and a layer that helpfully expanded it would corrupt every installer "
+        "path that contains a percent sign.")
+S("pe-registry-absent", "w_registry2.c", "registry",
+  "the registry error paths: absent key, absent value, buffer too small",
+  argv=["absent"],
+  expect={"REGISTRY_MODE": "absent", "OPEN_ABSENT_KEY": "fail",
+          "OPEN_ABSENT_KEY_ERROR": "ERROR_FILE_NOT_FOUND",
+          "ABSENT_KEY_REPORTED": "yes", "REG_CREATE": "yes",
+          "QUERY_ABSENT_VALUE": "fail",
+          "QUERY_ABSENT_VALUE_ERROR": "ERROR_FILE_NOT_FOUND",
+          "QUERY_TOO_SMALL_ERROR": "ERROR_MORE_DATA",
+          "TOO_SMALL_REPORTS_REQUIRED_SIZE": "yes",
+          "DELETE_ABSENT_KEY": "fail",
+          "DELETE_ABSENT_KEY_ERROR": "ERROR_FILE_NOT_FOUND",
+          "SURVIVED_EVERY_ERROR_PATH": "yes"},
+  notes="ERROR_MORE_DATA with the required size written back is how every caller "
+        "grows its buffer; a layer that answered ERROR_FILE_NOT_FOUND there instead "
+        "would make a present-but-large value look absent.")
+
+# ---- threads and synchronisation, beyond mutex and event ------------------
+S("pe-tls-both-mechanisms", "w_tls.c", "process",
+  "TlsAlloc slots and compiler __thread, four threads, checked together",
+  procbeh="multi-threaded",
+  expect={"TLS_ALLOC": "yes", "BARRIER_EVENT": "yes", "THREADS_STARTED": "4",
+          "TLS_API_PER_THREAD_OK": "4", "COMPILER_TLS_PER_THREAD_OK": "4",
+          "TLS_API_ISOLATED_ALL_THREADS": "yes",
+          "COMPILER_TLS_ISOLATED_ALL_THREADS": "yes",
+          "MAIN_TLS_API_UNTOUCHED": "yes",
+          "MAIN_COMPILER_TLS_UNTOUCHED": "yes", "TLS_FREE": "yes"},
+  caps=["thread-local storage, both the API slots and the PE TLS directory"],
+  notes="Two different mechanisms with different failure modes: TlsAlloc is a slot "
+        "the program asks the OS for, __thread needs a TLS DIRECTORY in the PE that "
+        "the loader sets up before any of this code runs. A runtime can get one "
+        "right and the other wrong. Every thread WRITES before any thread READS, so "
+        "a slot that is not really per-thread shows up as a mismatch rather than as "
+        "a coincidence.")
+S("pe-sync-semaphore", "w_semaphore.c", "process",
+  "a counting semaphore, drained and probed at each known state",
+  procbeh="multi-threaded",
+  expect={"CREATE_SEMAPHORE": "yes", "INITIAL_COUNT": "2", "MAXIMUM_COUNT": "2",
+          "TAKE_FIRST": "yes", "TAKE_SECOND": "yes", "PROBE_WHEN_EMPTY": "0",
+          "EMPTY_SEMAPHORE_BLOCKS": "yes", "RELEASE_ONE": "yes",
+          "PREVIOUS_COUNT_REPORTED": "0", "PREVIOUS_COUNT_WAS_ZERO": "yes",
+          "PROBE_AFTER_RELEASE": "1", "RELEASED_SEMAPHORE_ADMITS_ONE": "yes",
+          "RELEASE_PAST_MAXIMUM": "refused",
+          "RELEASE_PAST_MAXIMUM_ERROR": "ERROR_TOO_MANY_POSTS",
+          "OPEN_BY_NAME": "yes", "NAMED_OBJECT_IS_SHARED": "yes"},
+  caps=["named kernel objects"],
+  notes="Testing a semaphore by racing N threads at it is a race dressed up as a "
+        "test. This drains it from the main thread so the state is known exactly at "
+        "every step, and a probe thread reports what a zero-timeout wait sees at "
+        "each of those states. Releasing past the maximum has its own distinct "
+        "error, which is what tells a caller it has a bookkeeping bug rather than a "
+        "busy resource.")
+S("pe-sync-wait-multiple", "w_waitmulti.c", "process",
+  "WaitForMultipleObjects: the index, the timeout, and bWaitAll",
+  procbeh="single-process",
+  expect={"EVENTS_CREATED": "yes", "OBJECT_COUNT": "4",
+          "WAIT_NONE_SIGNALLED": "timeout", "IDLE_WAIT_TIMED_OUT": "yes",
+          "SIGNALLED_INDEX": "2", "CORRECT_INDEX_REPORTED": "yes",
+          "LOWEST_OF_TWO_INDEX": "1", "LOWEST_INDEX_WINS": "yes",
+          "HIGHER_INDEX_NOT_CONSUMED": "yes", "WAIT_ALL": "signalled",
+          "WAIT_ALL_SUCCEEDED": "yes", "WAIT_ALL_CONSUMED_EVERY_OBJECT": "yes"},
+  notes="The two easy-to-get-wrong parts are asserted explicitly: with two objects "
+        "signalled the call must return the LOWEST index, and it must consume ONLY "
+        "that one, so the auto-reset event at the higher index is still signalled "
+        "afterwards. An implementation that returned an arbitrary ready object, or "
+        "consumed both, passes a naive test and fails this one.")
+S("pe-sync-interlocked", "w_interlocked.c", "process",
+  "eight threads on three atomic primitives, with exact totals",
+  procbeh="multi-threaded", timeout=180.0,
+  expect={"THREADS": "8", "ITERATIONS_EACH": "50000", "THREADS_STARTED": "8",
+          "INCREMENT_TOTAL": "400000", "ADD_TOTAL": "1200000",
+          "CAS_GUARDED_TOTAL": "400000", "EXCHANGE_COUNT": "400000",
+          "SPIN_LOCK_RELEASED": "0", "ALL_THREADS_STARTED": "yes",
+          "INCREMENT_WAS_ATOMIC": "yes", "EXCHANGE_ADD_WAS_ATOMIC": "yes",
+          "COMPARE_EXCHANGE_MUTUAL_EXCLUSION": "yes",
+          "LOCK_NOT_LEFT_HELD": "yes"},
+  caps=["atomic read-modify-write across cores"],
+  notes="One of the very few specimens where an exact number is a CORRECTNESS claim "
+        "rather than a description: if an Interlocked operation is not really "
+        "atomic the totals come out LOW, and by how much is the race. Deliberately "
+        "32-bit LONG throughout so the same source means the same thing in a "
+        "WoW64 process.")
+S("pe-sync-condition-variable", "w_condvar.c", "process",
+  "SRWLOCK and CONDITION_VARIABLE over a ring smaller than the workload",
+  procbeh="multi-threaded", timeout=180.0,
+  expect={"RING_CAPACITY": "4", "ITEMS": "100", "PRODUCER_THREAD": "yes",
+          "PRODUCED": "100", "CONSUMED": "100", "CONSUMED_SUM": "4950",
+          "RING_DRAINED": "0", "EVERY_ITEM_PRODUCED": "yes",
+          "EVERY_ITEM_CONSUMED": "yes", "NO_ITEM_LOST_OR_DUPLICATED": "yes",
+          "RING_EMPTY_AT_END": "yes", "PRODUCER_REALLY_BLOCKED": "yes",
+          "CONSUMER_REALLY_BLOCKED": "yes", "SHARED_READERS_CONCURRENT": "4",
+          "SRWLOCK_SHARED_ADMITS_ALL_FOUR": "yes"},
+  caps=["SRWLOCK and CONDITION_VARIABLE"],
+  notes="Not kernel objects with handles: structures the runtime manipulates in the "
+        "process's own memory, so a translation layer has to provide them itself. "
+        "The two blocking claims are forced rather than hoped for -- the consumer "
+        "waits 150 ms before its first take so the producer MUST fill the ring, and "
+        "the producer paces itself after the eighth item so the consumer MUST run it "
+        "dry. Without that, PRODUCER_REALLY_BLOCKED would be a race that usually "
+        "happened to pass, and the exact totals would prove much less than they "
+        "look.")
+S("pe-proc-fibers", "w_fiber.c", "process",
+  "cooperative fibers switching in a fixed order inside one thread",
+  procbeh="single-process",
+  expect={"CONVERT_THREAD_TO_FIBER": "yes", "CREATE_FIBER_A": "yes",
+          "CREATE_FIBER_B": "yes", "FIBER_SEQUENCE": "mAmBmAm",
+          "FIBER_A_ENTRIES": "2", "FIBER_B_ENTRIES": "1",
+          "SWITCHING_ORDER_AS_PROGRAMMED": "yes",
+          "FIBER_A_RESUMED_NOT_RESTARTED": "yes",
+          "ALL_FIBERS_ON_ONE_THREAD": "yes",
+          "CONVERT_FIBER_TO_THREAD": "yes"},
+  caps=["fibers"],
+  notes="Real Windows games use fibers: a job system built on them is a standard "
+        "engine design. They are also the one place a translation layer must "
+        "reproduce a CONTEXT SWITCH it performs itself, stack and all. Fiber A is "
+        "entered twice and must RESUME the second time rather than restart, which "
+        "is the difference between a real fiber and a callback.")
+S("pe-proc-apc", "w_apc.c", "process",
+  "an APC queued onto another thread, delivered by an alertable wait",
+  procbeh="multi-threaded", timeout=180.0,
+  expect={"READY_EVENT": "yes", "WORKER_THREAD": "yes",
+          "WORKER_REACHED_SLEEP": "yes", "QUEUE_USER_APC": "yes",
+          "APC_RAN_COUNT": "1", "APC_ARGUMENT_HEX": "5afe",
+          "SLEEPEX_RETURN": "192",
+          "APC_RAN_DURING_NON_ALERTABLE_SLEEP": "no",
+          "APC_RAN_EXACTLY_ONCE": "yes", "APC_ARGUMENT_DELIVERED": "yes",
+          "APC_RAN_ON_THE_TARGET_THREAD": "yes",
+          "SLEEPEX_RETURNED_IO_COMPLETION": "yes",
+          "ALERTABLE_WAIT_ENDED_EARLY": "yes",
+          "NON_ALERTABLE_SLEEP_DID_NOT_RUN_IT": "yes"},
+  caps=["user-mode APCs"],
+  notes="There is no POSIX equivalent worth leaning on. The ordering is not a race: "
+        "an APC queued to a thread that is not yet alertable is delivered as soon as "
+        "it becomes alertable, so both interleavings give the same answer. The "
+        "negative half is the interesting one -- the same APC must NOT run during "
+        "the worker's NON-alertable sleep, which is what makes 'alertable' mean "
+        "something. 192 is WAIT_IO_COMPLETION.")
+S("pe-proc-suspended-thread", "w_suspend.c", "process",
+  "CREATE_SUSPENDED and the nesting suspend COUNT",
+  procbeh="multi-threaded", timeout=180.0,
+  expect={"CREATE_SUSPENDED": "yes", "PHASE_WHILE_SUSPENDED": "0",
+          "DID_NOT_RUN_WHILE_SUSPENDED": "yes",
+          "FIRST_RESUME_PREVIOUS_COUNT": "1",
+          "FIRST_RESUME_REPORTED_COUNT_ONE": "yes", "RAN_AFTER_RESUME": "yes",
+          "SUSPEND_ONE_PREVIOUS_COUNT": "0", "SUSPEND_TWO_PREVIOUS_COUNT": "1",
+          "SUSPEND_COUNT_NESTS": "yes",
+          "RESUME_FROM_TWO_PREVIOUS_COUNT": "2",
+          "RESUME_FROM_TWO_REPORTED_TWO": "yes",
+          "STILL_SUSPENDED_AFTER_ONE_RESUME": "yes",
+          "FINAL_RESUME_PREVIOUS_COUNT": "1", "FINAL_RESUME_REPORTED_ONE": "yes",
+          "THREAD_JOINED": "yes", "FINAL_PHASE": "3", "THREAD_COMPLETED": "yes",
+          "MADE_PROGRESS_AFTER_FULL_RESUME": "yes",
+          "GET_EXIT_CODE_THREAD": "yes", "THREAD_EXIT_CODE": "0"},
+  caps=["suspended thread creation and nested suspend counts"],
+  notes="Creating a thread suspended is how real software sets one up -- priority, "
+        "affinity, an injected hook -- before it can run an instruction. The COUNT "
+        "is the part that matters: suspends nest, so a thread suspended twice needs "
+        "resuming twice, and a runtime that treats suspend as a boolean lets a "
+        "thread run one resume too early.")
+
+# ---- memory and exception handling ---------------------------------------
+S("pe-mem-virtual-states", "w_virtualalloc.c", "memory",
+  "reserve, commit, protect, decommit, release, each verified by VirtualQuery",
+  argv=["states"],
+  expect={"VIRTUAL_MODE": "states", "RESERVE": "yes",
+          "AFTER_RESERVE_QUERY": "ok", "AFTER_RESERVE_STATE": "MEM_RESERVE",
+          "AFTER_RESERVE_REGION_SIZE": "65536", "COMMIT": "yes",
+          "AFTER_COMMIT_STATE": "MEM_COMMIT",
+          "AFTER_COMMIT_PROTECT": "PAGE_READWRITE",
+          "COMMITTED_PAGE_IS_WRITABLE": "yes",
+          "REST_OF_REGION_STATE": "MEM_RESERVE", "PROTECT_READONLY": "yes",
+          "PROTECT_PREVIOUS": "PAGE_READWRITE", "PREVIOUS_WAS_READWRITE": "yes",
+          "AFTER_PROTECT_PROTECT": "PAGE_READONLY",
+          "READONLY_PAGE_STILL_READABLE": "yes", "DECOMMIT": "yes",
+          "AFTER_DECOMMIT_STATE": "MEM_RESERVE", "RELEASE": "yes",
+          "AFTER_RELEASE_STATE": "MEM_FREE", "RELEASE_WITH_SIZE": "refused",
+          "RELEASE_WITH_SIZE_ERROR": "ERROR_INVALID_PARAMETER"},
+  caps=["VirtualAlloc reserve/commit semantics"],
+  notes="The reserve/commit distinction has no POSIX equivalent of quite this "
+        "shape, and a layer that treats them as the same thing passes every simple "
+        "allocation test and then falls over on a program that reserves a large "
+        "region and commits it a page at a time -- which is what a game's streaming "
+        "allocator does. REST_OF_REGION_STATE is the check that catches it: after "
+        "committing ONE page of a 64 KiB reservation the rest must still say "
+        "MEM_RESERVE.")
+S("pe-mem-noaccess-page-faults", "w_virtualalloc.c", "memory",
+  "PAGE_NOACCESS really enforced, and the fault caught and converted",
+  argv=["noaccess"], exit=12,
+  expect={"VIRTUAL_MODE": "noaccess", "COMMIT": "yes",
+          "WRITABLE_WHILE_READWRITE": "yes", "PROTECT_NOACCESS": "yes",
+          "PREVIOUS_PROTECTION": "PAGE_READWRITE",
+          "AFTER_NOACCESS_PROTECT": "PAGE_NOACCESS",
+          "DELIBERATE_FAULT": "write-to-PAGE_NOACCESS",
+          "WORK_BEFORE_FAULT": "done", "FAULT_CODE": "0xc0000005",
+          "FAULT_WAS_ACCESS_VIOLATION": "yes", "FAULT_WAS_A_WRITE": "yes",
+          "PROTECTION_WAS_ENFORCED": "yes",
+          "NOACCESS_PAGE_REALLY_FAULTED": "yes"},
+  expect_absent=["FAULT_DID_NOT_HAPPEN"],
+  notes="Memory protection that is NOT enforced would be invisible to the `states` "
+        "specimen: VirtualQuery would happily report PAGE_NOACCESS while the page "
+        "stayed writable. This writes to it. The fault is caught by a top-level "
+        "filter which reports the code, says whether it was a read or a write, and "
+        "exits 12 -- so the declared outcome is a clean exit 12 with a complete "
+        "oracle, not a crash.")
+S("pe-exception-unhandled-filter", "w_exception.c", "outcome",
+  "a crash converted into a chosen exit code by a top-level filter",
+  argv=["filter"], exit=9,
+  expect={"EXCEPTION_MODE": "filter", "SET_UNHANDLED_EXCEPTION_FILTER": "yes",
+          "DELIBERATE_FAULT": "access-violation-to-be-handled",
+          "WORK_BEFORE_FAULT": "done", "FILTER_RAN": "yes",
+          "FILTER_CODE": "0xc0000005",
+          "FILTER_SAW_ACCESS_VIOLATION": "yes",
+          "FILTER_HAS_FAULT_ADDRESS": "yes",
+          "VEH_RAN_BEFORE_THE_FILTER": "no",
+          "HANDLER_CHOSE_EXIT_CODE": "9",
+          "CRASH_WAS_HANDLED_NOT_FATAL": "yes"},
+  expect_absent=["FAULT_DID_NOT_HAPPEN"],
+  notes="This is the machinery every Windows crash reporter is built on, and the "
+        "difference between a program that dies and one that dies TIDILY. "
+        "Deliberately NOT tagged EXPECT_DEATH: the fault happens, but the process "
+        "does not die of it -- the filter writes its report and ends the process "
+        "itself with a status of its own choosing. A layer that never ran the "
+        "filter would produce a raw access violation instead of exit 9, and the "
+        "difference is exactly what a crash reporter cares about.")
+S("pe-exception-vectored-ordering", "w_exception.c", "outcome",
+  "a vectored handler runs BEFORE the top-level filter",
+  argv=["vectored"], exit=9,
+  expect={"EXCEPTION_MODE": "vectored", "ADD_VECTORED_HANDLER": "yes",
+          "VEH_SAW_EXCEPTION": "yes", "VEH_CODE": "0xc0000005",
+          "VEH_FILTER_HAD_ALREADY_RUN": "no", "FILTER_RAN": "yes",
+          "VEH_RAN_BEFORE_THE_FILTER": "yes",
+          "CRASH_WAS_HANDLED_NOT_FATAL": "yes"},
+  notes="The ORDER is the property. Vectored handlers see an exception before any "
+        "frame-based handling and before the unhandled-exception filter; a layer "
+        "that ran them in the other order would break every anti-cheat, profiler "
+        "and crash reporter that installs one to get first refusal.")
+S("pe-exception-continue-execution", "w_exception.c", "outcome",
+  "an exception fully recovered from: RaiseException RETURNS and the run continues",
+  argv=["continue"], exit=0,
+  expect={"EXCEPTION_MODE": "continue", "ADD_VECTORED_HANDLER": "yes",
+          "ABOUT_TO_RAISE": "0xE0000099", "VEH_SAW_EXCEPTION": "yes",
+          "VEH_CODE": "0xe0000099", "VEH_DECISION": "continue-execution",
+          "RAISE_RETURNED": "yes", "VEH_HITS": "1",
+          "EXCEPTION_FULLY_RECOVERED": "yes",
+          "EXECUTION_RESUMED_AFTER_THE_HANDLER": "yes"},
+  notes="The one case in the corpus where an exception is recovered from completely "
+        "and the program goes on to exit 0 normally. The exception is raised WITHOUT "
+        "EXCEPTION_NONCONTINUABLE, so continuing is legitimate -- which is precisely "
+        "the distinction pe-outcome-abnormal-raise exists to show the other side "
+        "of, where the system Wine continues from a NONCONTINUABLE one and should "
+        "not.")
+
+# ---- the filesystem, the Windows-specific parts ---------------------------
+S("pe-fs-sharing-mode", "w_fileshare.c", "filesystem",
+  "share modes enforced by the kernel, with no POSIX equivalent behind them",
+  effects=["creates and removes shared.dat"],
+  expect={"CREATE_EXCLUSIVE": "yes",
+          "SECOND_OPEN_WHILE_EXCLUSIVE": "refused",
+          "SECOND_OPEN_WHILE_EXCLUSIVE_ERROR": "ERROR_SHARING_VIOLATION",
+          "DELETE_WHILE_OPEN": "refused",
+          "DELETE_WHILE_OPEN_ERROR": "ERROR_SHARING_VIOLATION",
+          "REOPEN_SHARING_READ": "yes", "READER_WHILE_SHARE_READ": "opened",
+          "READER_WITH_INCOMPATIBLE_SHARE": "refused",
+          "READER_WITH_INCOMPATIBLE_SHARE_ERROR": "ERROR_SHARING_VIOLATION",
+          "WRITER_WHILE_SHARE_READ": "refused",
+          "WRITER_WHILE_SHARE_READ_ERROR": "ERROR_SHARING_VIOLATION",
+          "READER_AFTER_CLOSE": "opened", "WRITER_AFTER_CLOSE": "opened",
+          "DELETE_AFTER_CLOSE": "yes", "GONE": "yes"},
+  caps=["kernel-enforced file sharing modes"],
+  notes="On Windows the sharing mode is declared at open time and the KERNEL "
+        "refuses a conflicting second open; on Unix nothing of the sort happens by "
+        "default, so a layer has to provide this itself. It is also why Windows "
+        "installers reboot and Unix ones do not: DeleteFileW on a file with an open "
+        "handle and no FILE_SHARE_DELETE must fail. FIXTURE BUG FOUND BY ITS OWN "
+        "BASELINE: the first version asked for FILE_SHARE_READ alone as the reader "
+        "and declared 'opened'; it got 'refused', and the layer was right. The check "
+        "is SYMMETRIC -- a reader demanding FILE_SHARE_READ only is saying nobody "
+        "may write, while a writer already holds the file. The C source was fixed "
+        "to permit the writer, and the wrong case was KEPT as "
+        "READER_WITH_INCOMPATIBLE_SHARE, because a layer that enforced only the "
+        "existing handle's share mode and not the new opener's would pass the "
+        "corrected check and fail this one.")
+S("pe-fs-file-attributes", "w_fileattrs.c", "filesystem",
+  "READONLY and HIDDEN, and READONLY blocking deletion",
+  effects=["creates and removes attrs.dat"],
+  expect={"CREATE": "yes", "FRESH_READONLY": "no", "SET_READONLY": "yes",
+          "AFTER_READONLY_READONLY": "yes",
+          "OPEN_READONLY_FOR_WRITE": "refused",
+          "OPEN_READONLY_FOR_WRITE_ERROR": "ERROR_ACCESS_DENIED",
+          "DELETE_READONLY": "refused",
+          "DELETE_READONLY_ERROR": "ERROR_ACCESS_DENIED",
+          "READ_READONLY": "yes", "READONLY_CONTENT_INTACT": "yes",
+          "SET_HIDDEN": "yes", "AFTER_HIDDEN_HIDDEN": "yes",
+          "AFTER_HIDDEN_READONLY": "no", "HIDDEN_STILL_OPENABLE": "yes",
+          "CLEAR_ATTRS": "yes", "AFTER_CLEAR_READONLY": "no",
+          "AFTER_CLEAR_HIDDEN": "no", "DELETE_AFTER_CLEAR": "yes",
+          "GONE": "yes", "ATTRS_OF_ABSENT_FILE": "invalid",
+          "ATTRS_OF_ABSENT_FILE_ERROR": "ERROR_FILE_NOT_FOUND"},
+  caps=["DOS file attributes stored and honoured"],
+  notes="These are Windows attributes with no Unix mode bit behind them, so a layer "
+        "has to keep them somewhere -- an extended attribute, usually. An installer "
+        "that marks a file read-only and then cannot delete it is depending on the "
+        "answer being the real one.")
+S("pe-fs-directory-operations", "w_dirops.c", "filesystem",
+  "the directory error paths, including 'wrong kind of object'",
+  effects=["creates and removes dirops/ and its contents"],
+  expect={"CREATE_DIRECTORY": "yes", "IS_A_DIRECTORY": "yes",
+          "CREATE_EXISTING_DIRECTORY": "refused",
+          "CREATE_EXISTING_DIRECTORY_ERROR": "ERROR_ALREADY_EXISTS",
+          "CREATE_WITH_MISSING_PARENT": "refused",
+          "CREATE_WITH_MISSING_PARENT_ERROR": "ERROR_PATH_NOT_FOUND",
+          "CREATE_NESTED": "yes", "CREATE_FILE_INSIDE": "yes",
+          "REMOVE_NON_EMPTY_DIRECTORY": "refused",
+          "REMOVE_NON_EMPTY_DIRECTORY_ERROR": "ERROR_DIR_NOT_EMPTY",
+          "REMOVE_DIRECTORY_ON_A_FILE": "refused",
+          "DELETE_FILE_ON_A_DIRECTORY": "refused",
+          "GET_CURRENT_DIRECTORY": "yes", "SET_CURRENT_DIRECTORY": "yes",
+          "CWD_ENDS_IN_NESTED": "yes",
+          "PARENT_FILE_VISIBLE_FROM_CHILD_DIR": "no",
+          "PARENT_FILE_VISIBLE_VIA_DOTDOT": "yes",
+          "RETURN_TO_ORIGINAL_DIRECTORY": "yes", "DELETE_INSIDE_FILE": "yes",
+          "REMOVE_NESTED": "yes", "REMOVE_NOW_EMPTY_DIRECTORY": "yes",
+          "DIRECTORY_GONE": "yes"},
+  notes="w_dirtree.c walks a tree that exists; this one asks what happens when it "
+        "does not, or is the wrong kind of thing. The 'wrong kind of object' "
+        "refusals are how an uninstaller decides whether what it is about to remove "
+        "is a file or a directory, and a layer that answered ERROR_ACCESS_DENIED to "
+        "all of them would make that undecidable. WHICH error those two produce is "
+        "recorded rather than declared: only that they are refused is a property of "
+        "the program. SetCurrentDirectoryW is checked by the RELATIONSHIP between "
+        "the two paths, never by the paths themselves, which are environmental.")
+S("pe-fs-memory-mapped-file", "w_memmap.c", "filesystem",
+  "a file written THROUGH a mapping, and a named section shared in-process",
+  effects=["creates and removes mapped.dat"],
+  expect={"CREATE_FILE": "yes", "CREATE_FILE_MAPPING": "yes",
+          "MAPPING_SIZE": "4096", "MAP_VIEW_OF_FILE": "yes",
+          "VIEW_HASH": "e617258064ad8325", "FLUSH_VIEW": "yes",
+          "UNMAP_VIEW": "yes", "MAP_VIEW_READ_ONLY": "yes",
+          "READ_ONLY_VIEW_HASH": "e617258064ad8325",
+          "READ_ONLY_VIEW_SEES_THE_WRITES": "yes", "SEEK_TO_START": "yes",
+          "READ_FILE": "yes", "READ_BYTES": "4096",
+          "FILE_HASH": "e617258064ad8325",
+          "FILE_ON_DISK_MATCHES_THE_VIEW": "yes",
+          "CREATE_NAMED_SECTION": "yes",
+          "OPEN_NAMED_SECTION_BY_NAME": "yes", "BOTH_VIEWS_MAPPED": "yes",
+          "SECOND_HANDLE_SEES_THE_SAME_MEMORY": "yes",
+          "OPEN_ABSENT_SECTION": "refused",
+          "OPEN_ABSENT_SECTION_ERROR": "ERROR_FILE_NOT_FOUND",
+          "DELETE_MAPPED_FILE": "yes"},
+  caps=["file mappings and named section objects"],
+  notes="Games map their asset archives rather than reading them, and a mapping is "
+        "the one file API where the data path bypasses ReadFile entirely -- so a "
+        "layer can have perfect ReadFile behaviour and still get this wrong. The "
+        "hash is declared from the pattern the program writes, computed before "
+        "running, and the same value must come back three ways: through the "
+        "writable view, through a second read-only view, and through an ordinary "
+        "ReadFile from disk.")
+S("pe-fs-case-insensitive", "w_casefold.c", "filesystem",
+  "case-insensitive lookup with case-preserving storage",
+  effects=["creates and removes MixedCase.TXT"],
+  expect={"CREATE_MIXED_CASE": "yes", "OPEN_ALL_LOWER": "opened",
+          "LOWERCASE_NAME_RESOLVED": "yes", "OPEN_ALL_UPPER": "opened",
+          "UPPERCASE_NAME_RESOLVED": "yes", "EXACT_NAME_RESOLVED": "yes",
+          "FOUND_BY_UPPERCASE_PATTERN": "yes", "FOUND_NAME_LEN": "13",
+          "FOUND_NAME_HEX": "4d69786564436173652e545854",
+          "CASE_WAS_PRESERVED_ON_DISK": "yes",
+          "ATTRS_BY_LOWER_NAME": "found", "ATTRIBUTES_FOLDED_TOO": "yes",
+          "CREATE_ALWAYS_OTHER_CASE": "yes", "TXT_FILES_PRESENT": "1",
+          "NO_SECOND_FILE_WAS_CREATED": "yes", "DELETE_BY_LOWER_NAME": "yes",
+          "GONE": "yes"},
+  caps=["case-insensitive, case-preserving filenames"],
+  notes="The single biggest behavioural gap between a Windows filesystem and the "
+        "Linux one a translation layer sits on, and an enormous amount of real "
+        "Windows software depends on it: write Save.DAT, read save.dat. Both halves "
+        "are checked -- the folding AND the preservation -- because a "
+        "lowercase-everything implementation gets the first right and the second "
+        "wrong. NO_SECOND_FILE_WAS_CREATED is the one that catches a layer folding "
+        "in CreateFile but not in the directory itself.")
+S("pe-fs-file-times", "w_filetimes.c", "filesystem",
+  "an exact FILETIME set, read back, and converted to a SYSTEMTIME",
+  effects=["creates and removes times.dat"],
+  expect={"CREATE": "yes", "REQUESTED_FILETIME_HEX": "01c0000000000001",
+          "SET_FILE_TIME": "yes", "GET_FILE_TIME": "yes",
+          "MODIFIED_FILETIME_HEX": "01c0000000000001",
+          "MODIFIED_TIME_ROUNDTRIPPED_EXACTLY": "yes",
+          "FILETIME_RESOLUTION_NOT_LOST_TO_SECONDS": "yes",
+          "FILETIME_TO_SYSTEMTIME": "yes",
+          "SYSTEMTIME": "2000-08-06T23:42:36.637Z",
+          "SYSTEMTIME_TO_FILETIME": "yes",
+          "ROUNDTRIP_TICK_DIFFERENCE": "3889", "REOPEN": "yes",
+          "MODIFIED_AFTER_REOPEN_HEX": "01c0000000000001",
+          "TIME_PERSISTED_TO_DISK": "yes",
+          "GET_FILE_ATTRIBUTES_EX": "yes",
+          "BY_NAME_MODIFIED_HEX": "01c0000000000001",
+          "BY_NAME_SIZE_LOW": "5",
+          "BY_NAME_AGREES_WITH_BY_HANDLE": "yes", "DELETE": "yes"},
+  caps=["100-nanosecond file timestamps"],
+  notes="A FILETIME is 100-ns ticks since 1601 and a Unix timestamp is seconds since "
+        "1970, so a layer has to convert, and the two places it goes wrong are the "
+        "EPOCH and the RESOLUTION. The value chosen is deliberately one tick past a "
+        "round number: a layer storing whole seconds loses the low digits and a "
+        "layer with the wrong epoch reports a different year. 2000-08-06T23:42:36"
+        ".637Z and the 3889-tick SYSTEMTIME round-trip loss were both computed from "
+        "the definition of a FILETIME before the specimen was ever run. The CREATION "
+        "time is deliberately NOT declared -- whether a birth time can be set at all "
+        "is a property of the underlying filesystem, not of Windows.")
+S("pe-fs-file-position", "w_filepos.c", "filesystem",
+  "SetFilePointerEx, SetEndOfFile, and what an extended file contains",
+  effects=["creates and removes positions.dat"],
+  expect={"CREATE": "yes", "WRITE_100": "yes", "SIZE_AFTER_WRITE": "100",
+          "POSITION_AFTER_WRITE": "100", "SEEK_FROM_BEGIN_10": "10",
+          "SEEK_RELATIVE_PLUS_5": "15", "SEEK_FROM_END_MINUS_10": "90",
+          "SEEK_PAST_END_TO_500": "500",
+          "SIZE_UNCHANGED_BY_SEEK_PAST_END": "100",
+          "SEEK_PAST_END_DOES_NOT_GROW_THE_FILE": "yes",
+          "SET_END_OF_FILE_TRUNCATE": "yes", "SIZE_AFTER_TRUNCATE": "50",
+          "TRUNCATED_TO_50": "yes", "SET_END_OF_FILE_EXTEND": "yes",
+          "SIZE_AFTER_EXTEND": "200", "EXTENDED_TO_200": "yes",
+          "READ_BACK": "yes", "READ_BYTES": "200",
+          "SURVIVING_PAYLOAD_BYTES": "50", "ZERO_FILLED_GAP_BYTES": "150",
+          "READ_STOPPED_AT_END_OF_FILE": "yes",
+          "FIRST_50_BYTES_UNCHANGED": "yes",
+          "EXTENSION_READS_AS_ZEROS": "yes", "WRITE_AT_300": "yes",
+          "SIZE_AFTER_TAIL_WRITE": "304", "FILE_GREW_TO_304": "yes",
+          "HOLE_BEFORE_TAIL_IS_ZEROS": "yes",
+          "TAIL_IS_WHERE_IT_WAS_PUT": "yes",
+          "READ_AT_EOF_SUCCEEDED": "yes", "READ_AT_EOF_BYTES": "0",
+          "READ_AT_EOF_RETURNS_ZERO_BYTES": "yes", "DELETE": "yes"},
+  notes="Every number here is an offset into the specimen's OWN data file, which "
+        "carries nothing but this payload -- never a stream that also carries "
+        "FIXTURE_ID. A layer that seeks the host file and forgets SetEndOfFile "
+        "leaves the file SHORT, and nothing notices until something reads it back; "
+        "that is what the two size assertions and the zero-fill counts are for.")
+S("pe-fs-copy-and-move", "w_copymove.c", "filesystem",
+  "CopyFileW and MoveFileExW, including the refusals a patcher branches on",
+  effects=["creates and removes src.dat, dst.dat and moved.dat"],
+  expect={"WRITE_SOURCE": "yes", "WRITE_TARGET": "yes",
+          "COPY_FAIL_IF_EXISTS": "refused",
+          "COPY_FAIL_IF_EXISTS_ERROR": "ERROR_FILE_EXISTS",
+          "TARGET_AFTER_REFUSED_COPY": "TARGET-V0",
+          "REFUSED_COPY_LEFT_TARGET_ALONE": "yes", "COPY_OVERWRITING": "yes",
+          "TARGET_AFTER_COPY": "SOURCE-V1",
+          "COPY_REPLACED_THE_CONTENT": "yes",
+          "COPY_LEFT_SOURCE_IN_PLACE": "yes",
+          "MOVE_ONTO_EXISTING": "refused",
+          "MOVE_ONTO_EXISTING_ERROR": "ERROR_ALREADY_EXISTS",
+          "REFUSED_MOVE_LEFT_SOURCE_IN_PLACE": "yes",
+          "WRITE_SOURCE_V2": "yes", "MOVE_EX_REPLACE_EXISTING": "yes",
+          "TARGET_AFTER_REPLACE": "SOURCE-V2",
+          "REPLACE_MOVED_THE_CONTENT": "yes",
+          "MOVE_CONSUMED_THE_SOURCE": "yes",
+          "PLAIN_MOVE_TO_A_FREE_NAME": "yes", "OLD_NAME_GONE": "yes",
+          "CONTENT_SURVIVED_THE_MOVE": "yes", "MOVE_ABSENT_SOURCE": "refused",
+          "MOVE_ABSENT_SOURCE_ERROR": "ERROR_FILE_NOT_FOUND",
+          "COPY_ABSENT_SOURCE": "refused",
+          "COPY_ABSENT_SOURCE_ERROR": "ERROR_FILE_NOT_FOUND",
+          "CLEANUP": "yes"},
+  notes="The two move failures have DIFFERENT errors and that difference is what a "
+        "patcher branches on: ERROR_ALREADY_EXISTS means 'add the replace flag', "
+        "ERROR_FILE_NOT_FOUND means 'my download is missing'. A layer answering "
+        "ERROR_ACCESS_DENIED to both makes them indistinguishable. The refused copy "
+        "is also checked for having left the target's CONTENT alone, not merely for "
+        "having returned false.")
+S("pe-fs-deep-and-long-paths", "w_deeppath.c", "filesystem",
+  "a deep path under MAX_PATH, and a long one over it through the \\\\?\\ prefix",
+  timeout=180.0,
+  effects=["creates a twelve-level directory tree and a long-path tree"],
+  expect={"DEEP_DEPTH_REQUESTED": "12", "DEEP_RELATIVE_LENGTH": "208",
+          "CREATED_EVERY_LEVEL": "yes", "CREATE_FILE_AT_DEPTH": "yes",
+          "REOPEN_FILE_AT_DEPTH": "yes", "DEEP_CONTENT_MATCHES": "yes",
+          "DELETE_FILE_AT_DEPTH": "yes", "LONG_PATH_ATTEMPTED": "yes",
+          "LONG_PATH_EXCEEDS_MAX_PATH": "yes",
+          "SURVIVED_BOTH_PATH_LENGTHS": "yes"},
+  expect_one_of={"LONG_PATH_WITH_PREFIX": ["created", "refused"],
+                 "LONG_PATH_WITHOUT_PREFIX": ["created", "refused"]},
+  notes="Two different things, deliberately kept apart. The DEEP tree is still "
+        "shorter than MAX_PATH and must work everywhere, so it is declared exactly. "
+        "Whether a path LONGER than 260 works through the \\\\?\\ prefix depends on "
+        "the filesystem underneath and on how much of the \\\\?\\ handling the layer "
+        "implements -- a platform choice, so expect_one_of. What is NOT optional is "
+        "that the program survives either answer and says which happened.")
+S("pe-fs-overlapped-io", "w_overlapped.c", "filesystem",
+  "asynchronous file I/O where the OVERLAPPED offset, not the file pointer, decides",
+  effects=["creates and removes overlapped.dat"],
+  expect={"CREATE_OVERLAPPED": "yes", "MIDDLE_RESULT": "ok",
+          "MIDDLE_BYTES": "8", "FIRST_RESULT": "ok", "FIRST_BYTES": "8",
+          "LAST_RESULT": "ok", "LAST_BYTES": "8", "WRITE_MIDDLE": "yes",
+          "WRITE_FIRST": "yes", "WRITE_LAST": "yes",
+          "OVERLAPPED_READ": "yes", "READ_BYTES": "40",
+          "READ_WHOLE_FILE": "yes", "FIRST_AT_OFFSET_0": "yes",
+          "MIDDLE_AT_OFFSET_16": "yes", "LAST_AT_OFFSET_32": "yes",
+          "GAPS_ARE_ZEROS": "yes", "FILE_HASH": "a17577f550c48849",
+          "DELETE": "yes"},
+  caps=["FILE_FLAG_OVERLAPPED"],
+  notes="With FILE_FLAG_OVERLAPPED the file pointer is IGNORED and the offset in "
+        "the OVERLAPPED is the only thing that decides where the bytes go -- so the "
+        "three writes are issued OUT OF ORDER and the resulting file is checked byte "
+        "for byte. A layer that quietly used the file pointer instead would write "
+        "them sequentially and the hash would be wrong. Whether each call completes "
+        "immediately or reports ERROR_IO_PENDING is a platform choice and is "
+        "recorded, not declared.")
+
+# ---- process spawning outside the tree -----------------------------------
+S("pe-proc-self-spawn-redirect", "w_selfspawn.c", "process",
+  "a process spawning ITSELF with both streams redirected to files",
+  procbeh="parent-and-child", oracle_file="w_selfspawn_parent.oracle",
+  timeout=180.0,
+  effects=["creates child_stdout.txt, child_stderr.txt and the child's oracle"],
+  expect={"ROLE": "parent", "SELF_PATH": "yes",
+          "OPENED_CHILD_STDOUT_FILE": "yes",
+          "OPENED_CHILD_STDERR_FILE": "yes", "SPAWNED_SELF": "yes",
+          "WAITED_FOR_CHILD": "yes", "CHILD_EXIT_DECIMAL": "7",
+          "CHILD_EXIT_WAS_SEVEN": "yes",
+          "CHILD_STDOUT_REACHED_THE_FILE": "yes",
+          "CHILD_STDERR_REACHED_THE_FILE": "yes",
+          "STREAMS_WERE_NOT_CROSSED": "yes",
+          "CHILD_LEFT_ITS_OWN_ORACLE": "yes"},
+  post={"w_selfspawn_child.oracle": ["ROLE=child",
+                                     "CHILD_WROTE_BOTH_STREAMS=yes",
+                                     "RESULT=PASS"],
+        "child_stdout.txt": ["CHILD_STDOUT_MARKER=yes"],
+        "child_stderr.txt": ["CHILD_STDERR_MARKER=yes"]},
+  caps=["handle inheritance into a child process"],
+  notes="One binary, two roles by argv, so there is no second executable to stage "
+        "and no chance of the two halves drifting apart -- and real Windows software "
+        "re-invokes itself constantly. STREAMS_WERE_NOT_CROSSED is the assertion "
+        "that a single combined redirect would fail: the stderr marker must NOT be "
+        "in the stdout file.")
+S("pe-proc-job-object", "w_jobobject.c", "process",
+  "a job object owning a child, and TerminateJobObject with a chosen status",
+  procbeh="parent-and-child", oracle_file="w_jobobject_parent.oracle",
+  timeout=180.0,
+  effects=["creates job_child_alive.flag and the child's truncated oracle"],
+  expect={"ROLE": "parent", "SELF_PATH": "yes", "CREATE_JOB_OBJECT": "yes",
+          "OPEN_JOB_BY_NAME": "yes", "SPAWNED_SUSPENDED_CHILD": "yes",
+          "ASSIGN_PROCESS_TO_JOB": "yes", "CHILD_IS_IN_THE_JOB": "yes",
+          "RESUMED_CHILD": "yes", "CHILD_REPORTED_ALIVE_BEFORE_KILL": "yes",
+          "TERMINATE_JOB_OBJECT": "yes", "CHILD_DIED_PROMPTLY": "yes",
+          "CHILD_EXIT_DECIMAL": "55", "CHILD_EXIT_HEX": "0x00000037",
+          "JOB_STATUS_BECAME_THE_CHILD_EXIT_CODE": "yes",
+          "CHILD_ORACLE_EXISTS": "yes", "CHILD_GOT_AS_FAR_AS_ALIVE": "yes",
+          "CHILD_NEVER_COMPLETED": "yes", "CHILD_WROTE_NO_RESULT": "yes"},
+  post={"w_jobobject_child.oracle": ["ROLE=child", "CHILD_ALIVE=yes"]},
+  caps=["job objects"],
+  notes="Job objects are how Windows makes 'the application and everything it "
+        "started' a real, enforceable set rather than something a supervisor has to "
+        "guess from parent pids -- which is exactly the problem the process-tree "
+        "family is about, solved from the other side. The child is spawned "
+        "SUSPENDED and assigned before it runs an instruction, so the assignment is "
+        "not a race; the evidence that the job killed it is its own oracle file "
+        "stopping short of a RESULT line.")
+
+# ---- resources, and the runtime linked in or shipped beside --------------
+S("pe-format-resources", ["w_resource.c", "w_resource.rc"], "format",
+  "an executable reading data out of its own PE resource directory",
+  cflags=["-lversion"],
+  pe=dict(PE64, imports_contains=["version.dll"]),
+  expect={"FIND_RESOURCE_RCDATA": "yes", "RCDATA_SIZE": "16",
+          "LOAD_RESOURCE": "yes", "LOCK_RESOURCE": "yes",
+          "RCDATA_HEX": "0123456789abcdef321076546698badc",
+          "RCDATA_HASH": "e8792db24909188d",
+          "RCDATA_CONTENT_AS_AUTHORED": "yes",
+          "RCDATA_SIZE_IS_SIXTEEN": "yes", "LOAD_STRING_LENGTH": "29",
+          "LOAD_STRING": "yes", "STRING_101_LEN": "29",
+          "STRING_101_HEX": "6c6578652d776f726b6c6f61642d7265736f757263652d737472696e67",
+          "STRING_101_AS_AUTHORED": "yes", "STRING_102_AS_AUTHORED": "yes",
+          "ABSENT_STRING_LENGTH": "0", "VERSION_RESOURCE_PRESENT": "yes",
+          "GET_FILE_VERSION_INFO_SIZE": "yes", "GET_FILE_VERSION_INFO": "yes",
+          "FILE_VERSION_MS": "0x00030001", "FILE_VERSION_LS": "0x00040001",
+          "FILE_VERSION": "3.1.4.1", "FILE_VERSION_AS_AUTHORED": "yes",
+          "PRODUCT_NAME_LEN": "22",
+          "PRODUCT_NAME_HEX": "6c6578652d776f726b6c6f61642d7265736f75726365",
+          "PRODUCT_NAME_AS_AUTHORED": "yes"},
+  caps=["a PE resource directory built by windres"],
+  notes="The only specimen whose sources are not all compiled by a C compiler: "
+        "windres turns w_resource.rc into a COFF object carrying a .rsrc section and "
+        "the linker puts a PE RESOURCE DIRECTORY in the image. Almost every real "
+        "Windows executable has one -- its icon, version block, strings and manifest "
+        "all live there -- and nothing else in this corpus produces one. Three "
+        "different mechanisms read it back, and GetFileVersionInfoW is the one that "
+        "reads the block out of the FILE ON DISK rather than the loaded image, which "
+        "is the path installers use. Every declared value comes from the .rc file, "
+        "so all of them were known before anything ran.")
+S("pe-cxx-static-libstdcxx-shared-libgcc", "x_cxx.cpp", "format",
+  "C++ with the standard library linked in but the unwinder still a DLL",
+  cflags=["-static-libstdc++"], stage="bundle_cxx_dlls",
+  pe={"imports_contains": ["libgcc_s_seh-1.dll"],
+      "imports_excludes": ["libstdc++-6.dll"]},
+  expect={"STATIC_INIT_ORDER": "12", "EXCEPTION_CAUGHT": "by-base-ref",
+          "SORTED": "alpha,beta,gamma", "EXCEPTION_UNWOUND": "yes"},
+  caps=["libgcc_s_seh-1.dll beside the exe"],
+  notes="The third of the four C++ packaging combinations, and the import table is "
+        "read out of the PE to prove which one was actually built rather than which "
+        "flags were passed. An exception still has to unwind through a DLL boundary "
+        "here, which is not the same code path as the fully static case.")
+S("pe-cxx-static-libgcc-shared-libstdcxx", "x_cxx.cpp", "format",
+  "the opposite split: the unwinder linked in, the standard library a DLL",
+  cflags=["-static-libgcc"], stage="bundle_cxx_dlls",
+  pe={"imports_contains": ["libstdc++-6.dll"],
+      "imports_excludes": ["libgcc_s_seh-1.dll"]},
+  expect={"STATIC_INIT_ORDER": "12", "EXCEPTION_CAUGHT": "by-base-ref",
+          "SORTED": "alpha,beta,gamma", "EXCEPTION_UNWOUND": "yes"},
+  caps=["libstdc++-6.dll beside the exe"],
+  notes="Completes the set with pe-cxx-static-runtime (both in) and "
+        "pe-cxx-bundled-runtime-dlls (both out). Four different import tables from "
+        "one source file, each verified from the PE headers, which is the packaging "
+        "problem real C++ Windows software actually has.")
+
+# ---- GUI, beyond one window and a blocking message loop ------------------
+S("pe-gui-console-subsystem-window", "w_gui_console.c", "gui",
+  "a CONSOLE-subsystem PE that creates a window and has stdout as well",
+  cflags=["-lgdi32"], gui=True, warmup=True, timeout=300.0,
+  layers=["wine", "proton-wine"],
+  pe=dict(CUI),
+  expect={"SUBSYSTEM_DECLARED": "console", "HAS_STDOUT": "yes",
+          "REGISTER_CLASS": "yes", "CREATE_WINDOW": "yes",
+          "WINDOW_VISIBLE": "yes", "CREATE_CHILD_WINDOW": "yes",
+          "CHILD_PARENT_IS_THE_WINDOW": "yes", "CHILD_IS_VISIBLE": "yes",
+          "CHILD_CLASS_IS_A_SYSTEM_CLASS": "yes", "SET_WINDOW_TEXT": "yes",
+          "WINDOW_TEXT_LENGTH": "13", "WINDOW_TEXT_ROUNDTRIPPED": "yes",
+          "MOVE_WINDOW": "yes",
+          "CLIENT_AREA_IS_SMALLER_THAN_THE_WINDOW": "yes",
+          "WM_PAINT_SEEN": "yes", "WM_SIZE_SEEN": "yes",
+          "WM_CLOSE_SEEN": "yes", "WINDOW_REACHED_SCREEN": "yes",
+          "CONSOLE_PE_CAN_OWN_A_WINDOW": "yes",
+          "MESSAGE_LOOP_COMPLETED": "yes"},
+  caps=["a display (runs ONLY on a private X server, never the real desktop)"],
+  notes="The PE subsystem is CUI and this program still puts a window on the "
+        "screen. Enormous amounts of real Windows software is shaped exactly like "
+        "this -- SDL and GLFW programs, debug builds of games, anything built "
+        "without -mwindows. A runtime that decides whether a program needs a display "
+        "by reading the subsystem byte is wrong about every one of them, and wrong "
+        "in the OPPOSITE direction from pe-gui-headless-worker. It also creates a "
+        "CHILD window of a system class, which is a different creation path from the "
+        "top-level one every other GUI specimen uses.")
+S("pe-gui-peek-message-loop", "w_gui_peekloop.c", "gui",
+  "a game loop: PeekMessage and a frame counter, not a blocking GetMessage",
+  cflags=["-mwindows", "-lgdi32"], gui=True, warmup=True, timeout=300.0,
+  layers=["wine", "proton-wine"],
+  pe={"subsystem_is_gui": True, "subsystem_is_console": False},
+  expect={"REGISTER_CLASS": "yes", "CREATE_WINDOW": "yes",
+          "WINDOW_VISIBLE": "yes", "SET_TIMER": "yes",
+          "FRAMES_RENDERED": "120", "TARGET_FRAMES": "120",
+          "WM_CLOSE_SEEN": "yes", "WM_TIMER_SEEN": "yes",
+          "PEEK_MESSAGE_REPORTED_AN_EMPTY_QUEUE": "yes",
+          "WINDOW_REACHED_SCREEN": "yes",
+          "LOOP_REACHED_ITS_TARGET_AND_STOPPED": "yes",
+          "PEEK_MESSAGE_DID_NOT_BLOCK": "yes",
+          "TIMER_MESSAGES_ARRIVED_BETWEEN_FRAMES": "yes",
+          "PAINTED_AT_LEAST_ONCE": "yes"},
+  caps=["a display (runs ONLY on a private X server, never the real desktop)"],
+  notes="pe-gui-window uses GetMessageW, which BLOCKS -- that is how a document "
+        "application waits for a user. A game does the opposite: it drains the queue "
+        "with PeekMessage and renders whether or not anything happened. Those are "
+        "completely different paths through a window-system emulation, and a "
+        "PeekMessage that blocks turns a 120-frame run into a hang. The loop ends on "
+        "a frame count the PROGRAM chose rather than on whenever WM_QUIT happens to "
+        "be dequeued, so FRAMES_RENDERED is a deterministic key and not a timing "
+        "measurement wearing one's clothes.")
+S("pe-gui-gdi-pixels", "w_gui_gdi.c", "gui",
+  "GDI rendering checked by reading the pixels back",
+  cflags=["-mwindows", "-lgdi32"], gui=True, warmup=True, timeout=300.0,
+  layers=["wine", "proton-wine"],
+  pe={"subsystem_is_gui": True},
+  expect={"GET_DC": "yes", "CREATE_COMPATIBLE_DC": "yes",
+          "CREATE_COMPATIBLE_BITMAP": "yes", "CREATE_BRUSHES": "yes",
+          "FILL_LEFT": "yes", "FILL_RIGHT": "yes",
+          "PIXEL_LEFT": "0x00302010", "PIXEL_RIGHT": "0x008040c0",
+          "PIXEL_LEFT_EDGE": "0x00302010", "PIXEL_RIGHT_EDGE": "0x008040c0",
+          "EXPECTED_LEFT": "0x00302010", "EXPECTED_RIGHT": "0x008040c0",
+          "LEFT_HALF_IS_THE_COLOUR_IT_WAS_PAINTED": "yes",
+          "RIGHT_HALF_IS_THE_COLOUR_IT_WAS_PAINTED": "yes",
+          "THE_BOUNDARY_IS_EXACTLY_WHERE_IT_WAS_ASKED_FOR": "yes",
+          "SET_PIXEL": "yes", "PIXEL_AFTER_SET": "0x00ffffff",
+          "SET_PIXEL_TOOK_EFFECT": "yes", "GET_DI_BITS": "yes",
+          "DIB_PIXEL_BGR": "302010", "DIB_AGREES_WITH_GETPIXEL": "yes",
+          "PIXELS_WERE_REALLY_RENDERED": "yes"},
+  caps=["a display (runs ONLY on a private X server, never the real desktop)",
+        "GDI rendering into a memory device context"],
+  notes="Every other GUI specimen checks that a window existed and that messages "
+        "flowed. None of them checks that anything was DRAWN. A COLORREF is "
+        "0x00BBGGRR, so RGB(0x10,0x20,0x30) is 0x00302010 and that number is "
+        "declared. Two rectangles in different colours, so an implementation that "
+        "filled the whole surface with the last brush is caught, and the boundary is "
+        "checked on BOTH sides. GetDIBits then reads the same pixel straight out of "
+        "the bitmap, bypassing GetPixel entirely, so the two have to agree.")
 
 # ---- the process tree ----------------------------------------------------
 #
@@ -717,8 +1793,23 @@ S("pe-socket-name-resolution", "w_resolve.c", "sockets",
 # Every node writes its own oracle file, so the tree is reconstructible from the
 # run directory after every process in it is gone.
 
-TREE_SOURCES = ["t_launcher.c", "t_bootstrap.c", "t_main.c", "t_helper.c",
-                "t_worker.c", "t_crash_handler.c"]
+# Ten binaries, each with the flags it needs. t_window.exe is the only
+# GUI-SUBSYSTEM node -- it is built -mwindows and therefore has no console at all,
+# which is exactly the point: in real Windows software the process that owns the
+# window and the process doing the work are usually not the same process.
+TREE_BUILD = [
+    ("t_launcher.c", []),
+    ("t_bootstrap.c", []),
+    ("t_stage2.c", []),
+    ("t_main.c", []),
+    ("t_helper.c", []),
+    ("t_worker.c", []),
+    ("t_grandchild.c", []),
+    ("t_crash_handler.c", []),
+    ("t_supervisor.c", []),
+    ("t_window.c", ["-mwindows", "-lshell32", "-lgdi32"]),
+]
+TREE_SOURCES = [src for src, _flags in TREE_BUILD]
 
 
 def tree(fid, mode, prop, **kw):
@@ -810,6 +1901,248 @@ tree("pe-tree-crash-child", "crash-child",
      notes="The parent exits 0 having observed a child that did not. A supervisor "
            "that looks only at the top of the tree sees a clean run.")
 
+# ---- the tree, made uglier -----------------------------------------------
+#
+# Six levels rather than three in the deep modes:
+#
+#   t_launcher -> t_bootstrap -> t_stage2 -> t_main -> t_worker -> t_grandchild
+#
+# plus t_supervisor (restarts the worker) and t_window (the GUI-subsystem node
+# that owns the visible window), each of which can sit at more than one position.
+
+tree("pe-tree-deep-chain", "deep-chain",
+     "six levels, every one of the five parents waiting for its child",
+     settle=2.0, timeout=240.0,
+     expect={"MODE": "deep-chain", "WILL_WAIT_FOR_CHILD": "yes",
+             "BOOTSTRAP_STARTED": "yes", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
+             "LAUNCHER_EXIT": "0"},
+     post={"t_bootstrap.oracle": ["CHILD_NODE=stage2", "STAGE2_WAIT=signalled",
+                                  "STAGE2_EXIT_DECIMAL=0", "BOOTSTRAP_OUTLIVED_MAIN=yes"],
+           "t_stage2.oracle": ["LEVEL=2", "MAIN_WAIT=signalled", "MAIN_EXIT_DECIMAL=0",
+                               "STAGE2_OUTLIVED_MAIN=yes", "RESULT=PASS"],
+           "t_main.oracle": ["LEVEL=3", "WORKER_WAIT=signalled",
+                             "WORKER_EXIT_DECIMAL=33", "WORKER_EXIT_33=yes"],
+           "t_worker.oracle": ["LEVEL=4", "GRANDCHILD_WAIT=signalled",
+                               "GRANDCHILD_EXIT_DECIMAL=44", "GRANDCHILD_EXIT_44=yes",
+                               "WORKER_WAITED_FOR_GRANDCHILD=yes", "RESULT=PASS"],
+           "t_grandchild.oracle": ["DEPTH=5", "GRANDCHILD_COMPLETED=yes",
+                                   "RESULT=PASS"]},
+     notes="The deep reference case. A status chosen at the bottom (44) is carried "
+           "up through five nested waits, and every level's own file says what it "
+           "saw. Three levels is the shape most fixtures stop at; real installers "
+           "and launchers stack deeper than that, and each extra level is another "
+           "place a supervisor's parent-pid bookkeeping can lose the thread.")
+tree("pe-tree-deep-orphan", "deep-orphan",
+     "six levels and not one wait anywhere; the deepest node writes the state",
+     settle=7.0, timeout=240.0,
+     expect={"MODE": "deep-orphan", "WILL_WAIT_FOR_CHILD": "no",
+             "BOOTSTRAP_STARTED": "yes", "LAUNCHER_OUTLIVED_TREE": "no",
+             "TREE_STILL_RUNNING_AT_LAUNCHER_EXIT": "yes", "LAUNCHER_EXIT": "0"},
+     post={"t_bootstrap.oracle": ["CHILD_NODE=stage2", "BOOTSTRAP_OUTLIVED_MAIN=no"],
+           "t_stage2.oracle": ["STAGE2_OUTLIVED_MAIN=no"],
+           "t_main.oracle": ["MAIN_WAITED_FOR_WORKER=no", "MAIN_EXITS_FIRST=yes"],
+           "t_worker.oracle": ["GRANDCHILD_LEFT_RUNNING=yes",
+                               "WORKER_WAITED_FOR_GRANDCHILD=no"],
+           "t_grandchild.oracle": ["DEPTH=5", "PARENT_GONE_AFTER_SLEEP=yes",
+                                   "GRANDPARENT_GONE_AFTER_SLEEP=yes",
+                                   "GRANDCHILD_COMPLETED=yes",
+                                   "WROTE_STATE_AFTER_SLEEP=yes", "RESULT=PASS"],
+           "tree_state.dat": ["STATE_LAUNCHER=yes", "STATE_BOOTSTRAP=yes",
+                              "STATE_STAGE2=yes", "STATE_MAIN=yes",
+                              "STATE_WORKER=yes", "STATE_GRANDCHILD=yes"]},
+     notes="The worst supervision case in the corpus, and the one that says who owns "
+           "persistent state. Six processes, none of which waits for anything, and "
+           "the file that has to exist after all of them are gone is written LAST by "
+           "the DEEPEST of them -- two and a half seconds after the launcher returned "
+           "0. tree_state.dat is checked for the line each node appends, never for "
+           "their order, because the order is not a contract. The grandchild proves "
+           "it outlived its parent and its grandparent by looking for the flag files "
+           "they drop on the way out, rather than inferring it from a sleep.")
+tree("pe-tree-grandchild-survives", "grandchild-survives",
+     "a grandchild outlives its parent AND its grandparent, under a clean launcher",
+     settle=6.0, timeout=240.0,
+     expect={"MODE": "grandchild-survives", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
+             "LAUNCHER_EXIT": "0"},
+     post={"t_main.oracle": ["WORKER_WAIT=signalled", "WORKER_EXIT_DECIMAL=33",
+                             "WORKER_EXIT_33=yes"],
+           "t_worker.oracle": ["GRANDCHILD_LEFT_RUNNING=yes",
+                               "WORKER_WAITED_FOR_GRANDCHILD=no",
+                               "GRANDCHILD_WILL_OUTLIVE_ITS_GRANDPARENT=yes"],
+           "t_grandchild.oracle": ["PARENT_GONE_AFTER_SLEEP=yes",
+                                   "GRANDPARENT_GONE_AFTER_SLEEP=yes",
+                                   "GRANDCHILD_COMPLETED=yes", "RESULT=PASS"]},
+     notes="The deceptive one. Every process the launcher can see is reaped, and "
+           "reaped with the RIGHT status -- the launcher's run looks completely "
+           "clean and completely finished -- while a detached grandchild two levels "
+           "below keeps working for another two and a half seconds. Anything that "
+           "concluded 'the application is done' from the top of this tree is wrong, "
+           "and t_grandchild.oracle is what proves it.")
+tree("pe-tree-supervisor-restart", "supervisor-restart",
+     "a supervisor restarts the same worker three times and collects each status",
+     settle=2.0, timeout=240.0,
+     expect={"MODE": "supervisor-restart", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes"},
+     post={"t_main.oracle": ["SUPERVISOR_WAIT=signalled", "SUPERVISOR_EXIT_DECIMAL=0",
+                             "SUPERVISOR_EXITED_CLEAN=yes"],
+           "t_supervisor.oracle": ["RESTARTS_REQUESTED=3", "GENERATIONS_COMPLETED=3",
+                                   "GEN0_EXIT_DECIMAL=33", "GEN1_EXIT_DECIMAL=33",
+                                   "GEN2_EXIT_DECIMAL=33",
+                                   "EVERY_GENERATION_EXITED_33=yes", "RESULT=PASS"],
+           "supervisor.log": ["GEN=0 EXIT=33", "GEN=1 EXIT=33", "GEN=2 EXIT=33",
+                              "GENERATIONS=3"],
+           "t_worker.oracle": ["WORKER_EXIT_INTENT=33", "RESULT=PASS"]},
+     notes="Every crash-restart wrapper has this shape. Three sequential children "
+           "from one image in one process, each status collected independently, so a "
+           "layer that reported the FIRST child's status for all three would be "
+           "caught. It also creates the evidence problem a restart loop always "
+           "creates: supervisor.log ACCUMULATES one line per generation while "
+           "t_worker.oracle is OVERWRITTEN by each, so after the tree is gone the "
+           "only record that three ran is the supervisor's.")
+tree("pe-tree-redirect-to-file", "redirect-to-file",
+     "the parent redirects BOTH of its child's streams into a file it opened",
+     settle=2.0, timeout=240.0,
+     expect={"MODE": "redirect-to-file", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes"},
+     post={"t_main.oracle": ["REDIRECT_TARGET_OPENED=yes", "WORKER_EXIT_DECIMAL=33",
+                             "WORKER_STDOUT_LANDED_IN_THE_FILE=yes",
+                             "WORKER_STDERR_LANDED_IN_THE_SAME_FILE=yes",
+                             "BOTH_STREAMS_WENT_TO_ONE_FILE=yes"],
+           "worker_redirected.txt": ["NODE=worker", "WORKER_EXIT_INTENT=33",
+                                     "WORKER_STDERR_MARKER=yes"]},
+     notes="Handle INHERITANCE done properly: an inheritable file handle, "
+           "STARTF_USESTDHANDLES, and bInheritHandles TRUE. The child never knows "
+           "its output is a file. worker_redirected.txt is the whole of the child's "
+           "two streams, captured off-process by its parent and still on disk after "
+           "both of them are gone.")
+tree("pe-tree-split-stdio", "split-stdio",
+     "a child that inherits one stream and has the other redirected to a file",
+     settle=2.0, timeout=240.0,
+     expect={"MODE": "split-stdio", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes"},
+     post={"t_main.oracle": ["SPLIT_TARGET_OPENED=yes",
+                             "REDIRECTED_STDOUT_LANDED_IN_THE_FILE=yes",
+                             "INHERITED_STDERR_DID_NOT_LAND_IN_THE_FILE=yes",
+                             "SPLIT_STDOUT_TO_FILE=yes", "SPLIT_STDERR_INHERITED=yes",
+                             "WORKER_EXIT_DECIMAL=33"],
+           "worker_split_stdout.txt": ["NODE=worker", "WORKER_EXIT_INTENT=33"]},
+     notes="The asymmetric case, and the reason t_worker writes one line to stderr: "
+           "the worker's stdout goes to a file its parent opened, while its stderr is "
+           "INHERITED all the way up and out of the tree to whoever launched the "
+           "launcher. The declaration checks both halves -- the redirected line is in "
+           "the file and the inherited line is NOT -- because a layer that merged the "
+           "two streams would still pass a test that only looked for the first.")
+tree("pe-tree-no-wait-crash", "no-wait-crash",
+     "a child crashes and its parent never asks, so nothing above hears about it",
+     settle=3.0, timeout=240.0,
+     expect={"MODE": "no-wait-crash", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
+             "LAUNCHER_EXIT": "0"},
+     post={"t_main.oracle": ["CRASH_CHILD_STARTED=yes",
+                             "MAIN_WAITED_FOR_CRASH_CHILD=no",
+                             "MAIN_NOTICED_THE_CRASH=no",
+                             "MAIN_EXIT_STATUS_IS_CLEAN_ANYWAY=yes", "MAIN_EXIT=0"],
+           "t_crash_handler.oracle": ["WORK_BEFORE_FAULT=done",
+                                      "EXPECT_DEATH=access-violation"]},
+     notes="The mirror image of pe-tree-crash-child, and the more dangerous one. "
+           "There the parent waits and reports 0xC0000005; here it never waits, so "
+           "every process in the tree exits 0 and the ONLY evidence that anything "
+           "died is t_crash_handler.oracle stopping mid-file. A supervisor watching "
+           "exit statuses sees a perfect run.")
+tree("pe-tree-crash-at-depth", "crash-at-depth",
+     "the crash is four levels down and the level above it reports a clean 33",
+     settle=3.0, timeout=240.0,
+     expect={"MODE": "crash-at-depth", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
+             "LAUNCHER_EXIT": "0"},
+     post={"t_main.oracle": ["WORKER_WAIT=signalled", "WORKER_EXIT_DECIMAL=33",
+                             "WORKER_EXIT_33=yes"],
+           "t_worker.oracle": ["CRASH_CHILD_STARTED=yes",
+                               "WORKER_WAITED_FOR_CRASH_CHILD=no",
+                               "WORKER_REPORTS_ITS_OWN_CLEAN_STATUS_ANYWAY=yes",
+                               "RESULT=PASS"],
+           "t_crash_handler.oracle": ["WORK_BEFORE_FAULT=done",
+                                      "EXPECT_DEATH=access-violation"]},
+     notes="Worse than no-wait-crash because the status above the crash is not just "
+           "clean, it is SPECIFIC: the application waits, gets exactly the 33 it was "
+           "expecting, and is right to be satisfied. The crash is one level below the "
+           "deepest thing anybody is watching.")
+tree("pe-tree-gui-leaf", "gui-leaf",
+     "the visible window is owned by a detached leaf that outlives its starter",
+     settle=30.0, timeout=600.0, gui=True, warmup=True,
+     post_complete_when={"t_window.oracle": "WINDOW_LIFECYCLE_COMPLETED=",
+                         "t_main.oracle": "MAIN_EXITS_FIRST="},
+     layers=["wine", "proton-wine"],
+     expect={"MODE": "gui-leaf", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0",
+             "LAUNCHER_WAITED_ON_A_PROCESS_HANDLE_FOR_THE_WINDOW": "no",
+             "WINDOW_DONE_FLAG_SEEN": "yes", "LAUNCHER_EXIT": "0"},
+     post={"t_main.oracle": ["DETACHED_WINDOW_STARTED=yes",
+                             "MAIN_WAITED_FOR_WINDOW=no",
+                             "WINDOW_OWNER_LEFT_RUNNING=yes", "MAIN_EXITS_FIRST=yes"],
+           "t_window.oracle": ["NODE=window", "SUBSYSTEM_DECLARED=windows",
+                               "CREATE_WINDOW=yes", "WINDOW_VISIBLE=yes",
+                               "WINDOW_REACHED_SCREEN=yes",
+                               "STARTER_GONE_BEFORE_WINDOW_CAME_DOWN=yes",
+                               "SAW_TREE_DONE_FLAG=no", "WM_CLOSE_SEEN=yes",
+                               "WINDOW_HELD_AND_CLOSED=yes", "RESULT=PASS"]},
+     caps=["a display (runs ONLY on a private X server, never the real desktop)"],
+     notes="Window ownership at the BOTTOM of the tree. t_window.exe is the only "
+           "GUI-subsystem binary in the family, it is started DETACHED, and the "
+           "process that started it exits milliseconds later -- so for the two and a "
+           "half seconds the window is up there is no live ancestor between it and "
+           "the launcher. A window belongs to the thread that created it and cannot "
+           "outlive that thread, so 'the window outlives the process that created "
+           "it' is not a thing any program can do; what this shows is the real "
+           "version of that -- the window, and the process owning it, outliving "
+           "everything that STARTED them, which it proves by finding main's exit "
+           "flag on disk. The launcher then holds the private display open until "
+           "the window node's own flag appears; see the comment in t_launcher.c for "
+           "why that wait is about the X server and not about the shape.")
+tree("pe-tree-gui-top", "gui-top",
+     "the launcher owns the window and work two levels down takes it away",
+     settle=2.0, timeout=600.0, gui=True, warmup=True,
+     layers=["wine", "proton-wine"],
+     expect={"MODE": "gui-top", "WINDOW_CHILD_SPAWN": "ok",
+             "WINDOW_CHILD_STARTED": "yes",
+             "LAUNCHER_OWNED_THE_WINDOW_CHILD": "yes",
+             "BOOTSTRAP_WAIT": "signalled", "BOOTSTRAP_EXIT_DECIMAL": "0",
+             "WINDOW_CHILD_WAIT": "signalled",
+             "LAUNCHER_OUTLIVED_ITS_WINDOW": "yes",
+             "LAUNCHER_OUTLIVED_TREE": "yes", "LAUNCHER_EXIT": "0"},
+     post={"t_window.oracle": ["NODE=window", "CREATE_WINDOW=yes",
+                               "WINDOW_VISIBLE=yes", "SAW_TREE_DONE_FLAG=yes",
+                               "WINDOW_HELD_AND_CLOSED=yes", "RESULT=PASS"],
+           "t_main.oracle": ["WORKER_EXIT_33=yes",
+                             "WINDOW_IS_NOT_OWNED_BY_THIS_NODE=yes"]},
+     caps=["a display (runs ONLY on a private X server, never the real desktop)"],
+     notes="The splash screen, and the opposite end of the tree from gui-leaf. The "
+           "window belongs to a direct child of the LAUNCHER, off to one side of the "
+           "payload chain entirely, and it comes down because of a SIDE EFFECT of "
+           "work two levels below it -- the worker drops tree_done.flag on its way "
+           "out and the window node, which has no handle on the worker and no idea "
+           "it exists, notices the file and closes. That is how real launchers and "
+           "their payloads are coupled, and SAW_TREE_DONE_FLAG=yes is the evidence "
+           "it happened that way rather than on a timeout.")
+tree("pe-tree-wait-timeout", "wait-timeout",
+     "a parent waits with a timeout, gives up, and exits while the child works on",
+     settle=7.0, timeout=240.0,
+     expect={"MODE": "wait-timeout", "BOOTSTRAP_WAIT": "signalled",
+             "BOOTSTRAP_EXIT_DECIMAL": "0", "LAUNCHER_OUTLIVED_TREE": "yes",
+             "LAUNCHER_EXIT": "0"},
+     post={"t_main.oracle": ["SLOW_HELPER_STARTED=yes", "HELPER_WAIT=timeout",
+                             "MAIN_GAVE_UP_WAITING=yes", "MAIN_WAIT_TIMEOUT_MS=500",
+                             "HELPER_LEFT_RUNNING=yes", "MAIN_EXITS_FIRST=yes"],
+           "t_helper.oracle": ["SLEEP_MS=4000", "HELPER_COMPLETED=yes",
+                               "SURVIVED_SLEEP=yes", "RESULT=PASS"]},
+     notes="The third kind of parent, after 'waits' and 'never waits': one that "
+           "waits with a DEADLINE. The 500 ms timeout against a 4000 ms child is "
+           "wide enough that WAIT_TIMEOUT is the only possible answer, and giving up "
+           "does not kill the child -- so the launcher above reports a clean, fully "
+           "waited-for run at a moment when the real work has three and a half "
+           "seconds left. HELPER_COMPLETED=yes, written afterwards, is the proof.")
+
 # --------------------------------------------------------------------------
 # Compiler differentials: a chosen subset, each with the assumption it probes.
 # --------------------------------------------------------------------------
@@ -833,6 +2166,53 @@ DIFFERENTIALS = [
      "WoW64 path at the same time."),
     ("pe-format-console-x64", ["mingw64-O0", "clang-mingw64-O2"],
      "The control case under every toolchain that can build it."),
+    ("pe-sync-interlocked", ["clang-mingw64-O2", "mingw32-O2"],
+     "clang lowers the Interlocked* intrinsics through its own atomic builtins "
+     "rather than gcc's, and a 32-bit process uses different instructions again. "
+     "The totals are exact, so a lowering that is not really atomic shows up as a "
+     "number that is LOW rather than as a crash -- the one failure mode a "
+     "correctness test can see and a smoke test cannot."),
+    ("pe-tls-both-mechanisms", ["clang-mingw64-O2", "mingw32-O2"],
+     "__thread on mingw needs a TLS DIRECTORY in the PE image, which the two "
+     "compilers emit differently and which PE32 lays out differently from PE32+. "
+     "The specimen checks the API slots and the compiler's own TLS side by side, so "
+     "a toolchain that got one of them wrong is distinguishable from a layer that "
+     "got both wrong."),
+    ("pe-proc-fibers", ["mingw32-O2"],
+     "A fiber switch is a context switch the implementation performs itself, and "
+     "on i686 that is entirely different code: different register set, different "
+     "stack layout, and no SEH unwinding table of the x86-64 kind. The switching "
+     "sequence must still come out mAmBmAm."),
+    ("pe-exception-unhandled-filter", ["clang-mingw64-O2"],
+     "The top-level filter is reached through the PE's .pdata/.xdata unwinding "
+     "tables, and clang generates those with its own backend. A filter that never "
+     "ran would turn a declared exit 9 into a raw access violation, which is "
+     "precisely the difference a crash reporter exists to make."),
+    ("pe-fs-memory-mapped-file", ["mingw32-O2"],
+     "A 32-bit process maps views in a 4 GiB address space with different "
+     "alignment and a different base, and MapViewOfFile is where that stops being "
+     "invisible. The hash of the mapped bytes must be identical anyway."),
+    ("pe-format-resources", ["clang-mingw64-O2"],
+     "The resource object comes from GNU windres either way; the assumption under "
+     "test is that clang's linker still produces a .rsrc directory FindResourceW "
+     "can walk, and that the version block is still findable in the file on disk."),
+    ("pe-outcome-exit-looks-like-a-crash", ["mingw32-O2"],
+     "A 32-bit process exiting with a status that looks like an access violation "
+     "must still be distinguishable from one that suffered it, and WoW64 is an "
+     "extra layer between the guest's ExitProcess and the status the caller sees."),
+    ("pe-io-binary-nul", ["mingw64-O0"],
+     "The payload is all 256 byte values written by a loop. At -O2 that loop may be "
+     "vectorised or turned into a table; at -O0 it is not. The bytes that come out "
+     "must be identical, which is what makes the declared hash a property of the "
+     "program rather than of the optimiser."),
+    ("pe-cxx-static-runtime", ["clang-mingw64-O2"],
+     "clang++ pairs its own unwinder with this libstdc++. An exception that failed "
+     "to unwind across that pairing would change EXCEPTION_CAUGHT from "
+     "by-base-ref to wrong, or abort the process outright."),
+    ("pe-sync-condition-variable", ["clang-mingw64-O2"],
+     "SRWLOCK and CONDITION_VARIABLE are manipulated in the process's own memory, "
+     "so the surrounding loads and stores -- and the memory ordering the compiler "
+     "chooses for them -- are part of the mechanism rather than beside it."),
 ]
 
 
@@ -893,6 +2273,40 @@ for _s in SPECIMENS:
 # Cross-key rules a single expect= value cannot express.
 _by_id = {s["id"]: s for s in SPECIMENS}
 _by_id["pe-fs-persistent-state"]["declared"]["expect_sequence"] = {"RUN_COUNT": ["1", "2"]}
+
+# A MEASURED, DETERMINISTIC per-layer difference found by the differential it was
+# added for, and the most substantive result in this generation.
+#
+# pe-tls-both-mechanisms passes everywhere when gcc builds it, under both Wines, at
+# both -O2 and 32-bit. Rebuilt by CLANG for the same target it still passes under
+# the SYSTEM Wine -- complete oracle, RESULT=PASS, exit 0 -- and under PROTON's Wine
+# it dies with an access violation, exit 5, immediately after TlsAlloc returns: the
+# oracle file stops at OBS_TLS_SLOT_INDEX, before the first touch of the __thread
+# variable and before CreateEventW. Deterministic across repeats on both layers.
+#
+# That is a legitimate program, built by a legitimate toolchain that is installed
+# on this host, crashing under one Wine and not another -- which is precisely the
+# assumption the differential named ("clang and gcc build the PE TLS directory
+# differently"). It is DECLARED here rather than left as a mystery failure, in the
+# same way pe-outcome-abnormal-raise declares its Wine-versus-Proton split: the
+# wine cell keeps every expectation the base specimen has, and the proton-wine cell
+# declares the exit status and exactly how far the program gets.
+_tls_clang = _by_id.get("pe-tls-both-mechanisms--clang-mingw64-O2")
+if _tls_clang:
+    _d = _tls_clang["declared"]
+    _full = dict(_d["expect"])
+    _d["expect"] = {"TLS_ALLOC": "yes"}          # as far as it gets on every layer
+    _d["expect_by_layer"] = {"wine": dict(_full, RESULT="PASS")}
+    _d["requires_result_pass"] = False           # checked per layer above instead
+    _d["exit_code"] = 0
+    _d["exit_code_by_layer"] = {"proton-wine": 5}
+    _d["measured_layer_difference"] = (
+        "clang-built __thread/TLS faults under Proton's Wine (exit 5, access "
+        "violation, oracle stops at OBS_TLS_SLOT_INDEX) and works under the system "
+        "Wine (exit 0, RESULT=PASS). The gcc build of the SAME source passes on "
+        "both, so the crash belongs to the combination of clang's TLS lowering and "
+        "Proton's Wine, not to either alone and not to the specimen.")
+    _tls_clang["property"] += " [MEASURED LAYER DIFFERENCE]"
 for _sid in list(_by_id):
     if _sid.startswith("pe-fs-unicode-path"):
         _by_id[_sid]["declared"]["equal_keys"] = [["TARGET_NAME_HEX", "FOUND_NAME_HEX"]]
@@ -920,13 +2334,42 @@ def find_runtime_dll(name):
 CXX_RUNTIME_DLLS = ["libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll"]
 
 
-def compile_cmd(spec, out, target):
+def windres_for(toolchain):
+    """A .rc is not compiled by a C compiler: windres turns it into a COFF object
+    carrying a .rsrc section, and the linker puts a PE resource DIRECTORY in the
+    image. It must match the target architecture."""
+    return ("i686-w64-mingw32-windres" if TOOLCHAINS[toolchain]["target"] != "x86_64"
+            else "x86_64-w64-mingw32-windres")
+
+
+def build_resources(spec, out):
+    """Compile every .rc source of a specimen. Returns (objects, records). A
+    failure here is a BUILD failure like any other: a resource specimen whose
+    resources silently did not get in would be a hole disguised as a row."""
+    objs, records = [], []
+    for s in spec["sources"]:
+        if not s.endswith(".rc"):
+            continue
+        obj = os.path.join(out, "res", "%s--%s.o" % (spec["id"], s[:-3]))
+        os.makedirs(os.path.dirname(obj), exist_ok=True)
+        cmd = [windres_for(spec["toolchain"]), "-I", SPECS,
+               os.path.join(SPECS, s), "-O", "coff", "-o", obj]
+        r = sh(cmd)
+        records.append({"source": s, "command": " ".join(cmd),
+                        "ok": r.returncode == 0 and os.path.exists(obj),
+                        "stderr": r.stderr.strip()[:1000]})
+        objs.append(obj)
+    return objs, records
+
+
+def compile_cmd(spec, out, target, res_objs=()):
     tc = TOOLCHAINS[spec["toolchain"]]
     cxx = spec["language"] == "c++"
     driver = tc["cxx"] if cxx else tc["cc"]
     flags = (COMMON_CXX if cxx else COMMON_C) + tc["opt"] + tc["extra"]
-    srcs = [os.path.join(SPECS, s) for s in spec["sources"]]
-    cmd = [driver] + flags + srcs + ["-o", target] + spec["cflags"] + LINK_REPRODUCIBLE
+    srcs = [os.path.join(SPECS, s) for s in spec["sources"] if not s.endswith(".rc")]
+    cmd = ([driver] + flags + srcs + list(res_objs) + ["-o", target]
+           + spec["cflags"] + LINK_REPRODUCIBLE)
     if spec["stage"] in ("bundle_wlib", "isolate_exe") and "w_dll_implicit.c" in spec["sources"]:
         cmd += ["-L" + os.path.join(out, "dll"), "-lwlib"]
     return cmd
@@ -939,27 +2382,32 @@ def build_support(out):
     os.makedirs(dlldir, exist_ok=True)
     for lib in DLLS:
         tc = TOOLCHAINS[lib["toolchain"]]
-        target = os.path.join(dlldir, lib["name"])
-        cmd = ([tc["cc"]] + COMMON_C + tc["opt"] + ["-shared",
-                                                    os.path.join(SPECS, lib["src"]),
-                                                    "-o", target] + LINK_REPRODUCIBLE)
+        libdir = os.path.join(dlldir, lib["dir"]) if lib.get("dir") else dlldir
+        os.makedirs(libdir, exist_ok=True)
+        target = os.path.join(libdir, lib["name"])
+        cmd = ([tc["cc"]] + COMMON_C + tc["opt"] + lib.get("cflags", [])
+               + ["-shared", os.path.join(SPECS, lib["src"]), "-o", target]
+               + LINK_REPRODUCIBLE)
         if lib["implib"]:
             cmd += ["-Wl,--out-implib," + os.path.join(dlldir, lib["implib"])]
         r = sh(cmd)
         record["dlls"].append({"name": lib["name"], "toolchain": lib["toolchain"],
+                               "dir": lib.get("dir", ""),
                                "command": " ".join(cmd), "ok": r.returncode == 0,
                                "stderr": r.stderr.strip()[:1000],
                                "sha256": sha256_file(target) if os.path.exists(target) else None})
     treedir = os.path.join(out, "tree")
     os.makedirs(treedir, exist_ok=True)
     tc = TOOLCHAINS["mingw64-O2"]
-    for src in TREE_SOURCES:
+    for src, extra in TREE_BUILD:
         target = os.path.join(treedir, src[:-2] + ".exe")
         cmd = ([tc["cc"]] + COMMON_C + tc["opt"] + [os.path.join(SPECS, src),
-                                                    "-o", target] + LINK_REPRODUCIBLE)
+                                                    "-o", target] + list(extra)
+               + LINK_REPRODUCIBLE)
         r = sh(cmd)
         record["tree"].append({"name": os.path.basename(target),
                                "command": " ".join(cmd), "ok": r.returncode == 0,
+                               "extra_flags": list(extra),
                                "stderr": r.stderr.strip()[:1000],
                                "sha256": sha256_file(target) if os.path.exists(target) else None})
     for name in CXX_RUNTIME_DLLS:
@@ -979,15 +2427,21 @@ def build_one(spec, out):
                 "target": target, "shared_build": True}
     target = os.path.join(out, "bin", spec["id"] + ".exe")
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    cmd = compile_cmd(spec, out, target)
     t0 = time.time()
+    res_objs, res_records = build_resources(spec, out)
+    res_ok = all(x["ok"] for x in res_records)
+    cmd = compile_cmd(spec, out, target, res_objs)
     r = sh(cmd)
     return {"toolchain": spec["toolchain"], "compiler": cmd[0],
             "compiler_version": TOOL_VERSIONS.get(cmd[0], "?"),
             "flags": cmd[1:], "command": " ".join(cmd),
-            "ok": r.returncode == 0 and os.path.exists(target),
+            "resources": res_records,
+            "ok": res_ok and r.returncode == 0 and os.path.exists(target),
             "seconds": round(time.time() - t0, 2),
-            "warnings": r.stderr.strip()[:4000], "target": target,
+            "warnings": ((r.stderr.strip()
+                          + ("" if res_ok else "\n[windres] "
+                             + "; ".join(x["stderr"] for x in res_records)))[:4000]),
+            "target": target,
             "shared_build": False}
 
 
@@ -1024,16 +2478,49 @@ WINEDBG_KEY = "HKCU" + BS + "Software" + BS + "Wine" + BS + "WineDbg"
 # stable; parallel repeats are not. Every other layer runs in parallel.
 PROTON_LOCK = threading.Semaphore(1)
 
+# GUI launches are SERIALISED and get a PREFIX OF THEIR OWN, for a measured
+# reason. A GUI specimen runs on a fresh private X display every launch, but a
+# Wine PREFIX has one set of per-prefix service processes (wineserver,
+# explorer.exe, winedevice.exe) shared by everything using it -- and those
+# services keep X11 state. Running several GUI specimens in parallel against one
+# prefix therefore asks one set of services to serve several private displays at
+# once, and the result, observed across five repeats, was an occasional
+#
+#   X Error of failed request: BadWindow, Major opcode 10 (X_UnmapWindow)
+#
+# which Xlib's default handler turns into an immediate exit -- killing the guest
+# mid-run and leaving a truncated oracle. It hit a different GUI specimen each
+# generation, which is exactly the shape of a defect that gets blamed on whatever
+# it happened to land on.
+#
+# So: GUI work runs in prefix-wine-gui / prefix-protonwine-gui, one launch at a
+# time, and the wineserver for that prefix is killed before each launch so the
+# services restart on the display actually in use. Non-GUI specimens keep their
+# own prefixes and keep running in parallel.
+GUI_LOCK = threading.Semaphore(1)
+
+
+def wine_prefix(layer, out, gui):
+    if layer == "wine":
+        return os.path.join(out, "prefix-wine-gui" if gui else "prefix-wine")
+    if layer == "proton-wine":
+        return os.path.join(out, "prefix-protonwine-gui" if gui else "prefix-protonwine")
+    return None
+
+
+def wineserver_for(layer):
+    if layer == "proton-wine":
+        return os.path.join(PROTON_DIR, "files", "bin", "wineserver")
+    return "wineserver"
+
 
 def layer_env(layer, out, spec, rundir):
     env = dict(BASE_ENV)
     env["FIXTURE_ID"] = spec["id"]
     env["WINEDEBUG"] = "-all"
     env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
-    if layer == "wine":
-        env["WINEPREFIX"] = os.path.join(out, "prefix-wine")
-    elif layer == "proton-wine":
-        env["WINEPREFIX"] = os.path.join(out, "prefix-protonwine")
+    if layer in ("wine", "proton-wine"):
+        env["WINEPREFIX"] = wine_prefix(layer, out, spec["gui"])
     elif layer == "proton-run":
         env["STEAM_COMPAT_DATA_PATH"] = os.path.join(out, "prefix-protonrun")
         env["DISPLAY"] = PROTON_DISPLAY[0] or ":96"
@@ -1094,15 +2581,35 @@ def setup_layers(out, layers, probe_exe):
         boot = sh(["wineboot", "-u"], env=env)
         reg = sh(["wine", "reg", "add", WINEDBG_KEY, "/v", "ShowCrashDialog",
                   "/t", "REG_DWORD", "/d", "0", "/f"], env=env)
+        # Keep the server up for the whole generation. MEASURED: a wineserver that
+        # shuts down when its last client leaves can be mid-shutdown when the next
+        # specimen connects, and that client dies instantly with
+        # "wine client error:0: recvmsg: Connection reset by peer" and exit 1 --
+        # observed once in five repeats, on a different specimen each generation.
+        persist = sh_detached(["wineserver", "-p"], env=env)
+        gui_env = dict(env)
+        gui_env["WINEPREFIX"] = os.path.join(out, "prefix-wine-gui")
+        gui_boot = sh(["wineboot", "-u"], env=gui_env)
+        sh(["wine", "reg", "add", WINEDBG_KEY, "/v", "ShowCrashDialog",
+            "/t", "REG_DWORD", "/d", "0", "/f"], env=gui_env)
         records["wine"] = {
             "kind": "system wine, directly",
             "binary": "wine", "version": TOOL_VERSIONS.get("wine"),
             "prefix": env["WINEPREFIX"],
+            "gui_prefix": gui_env["WINEPREFIX"],
+            "gui_prefix_ok": gui_boot.returncode == 0,
             "prefix_creation_seconds": round(time.time() - t0, 1),
             "wineboot_ok": boot.returncode == 0,
             "configuration": [WINEDBG_KEY + " ShowCrashDialog = 0 (no debugger on "
-                              "an unhandled fault, so a crash dies instead of hanging)"],
-            "configuration_ok": reg.returncode == 0,
+                              "an unhandled fault, so a crash dies instead of hanging)",
+                              "wineserver -p (persistent), so a server shutting down "
+                              "between specimens cannot reset the next client's "
+                              "connection",
+                              "a SEPARATE prefix for GUI specimens, whose launches "
+                              "are serialised and whose wineserver is killed before "
+                              "each launch: per-prefix Wine services keep X11 state "
+                              "and cannot serve several private displays at once"],
+            "configuration_ok": reg.returncode == 0 and persist == 0,
             "stdio_observable": True,
         }
     if "proton-wine" in layers:
@@ -1114,15 +2621,26 @@ def setup_layers(out, layers, probe_exe):
         boot = sh([PROTON_WINE, "wineboot", "-u"], env=pfxenv, timeout=900)
         reg = sh([PROTON_WINE, "reg", "add", WINEDBG_KEY, "/v", "ShowCrashDialog",
                   "/t", "REG_DWORD", "/d", "0", "/f"], env=pfxenv, timeout=300)
+        persist = sh_detached([wineserver_for("proton-wine"), "-p"], env=pfxenv)
+        gpfx = dict(pfxenv)
+        gpfx["WINEPREFIX"] = os.path.join(out, "prefix-protonwine-gui")
+        os.makedirs(gpfx["WINEPREFIX"], exist_ok=True)
+        gui_boot = sh([PROTON_WINE, "wineboot", "-u"], env=gpfx, timeout=900)
+        sh([PROTON_WINE, "reg", "add", WINEDBG_KEY, "/v", "ShowCrashDialog",
+            "/t", "REG_DWORD", "/d", "0", "/f"], env=gpfx, timeout=300)
         records["proton-wine"] = {
             "kind": "the wine binary inside Proton, run directly, headless",
             "binary": PROTON_WINE,
             "proton_build": HOST["proton_version"],
             "prefix": pfxenv["WINEPREFIX"],
+            "gui_prefix": gpfx["WINEPREFIX"],
+            "gui_prefix_ok": gui_boot.returncode == 0,
             "prefix_creation_seconds": round(time.time() - t0, 1),
             "wineboot_ok": boot.returncode == 0,
-            "configuration": [WINEDBG_KEY + " ShowCrashDialog = 0"],
-            "configuration_ok": reg.returncode == 0,
+            "configuration": [WINEDBG_KEY + " ShowCrashDialog = 0",
+                              "wineserver -p (persistent)",
+                              "a SEPARATE, serialised prefix for GUI specimens"],
+            "configuration_ok": reg.returncode == 0 and persist == 0,
             "stdio_observable": True,
             "notes": "Proton's Wine with a prefix of its own, and WITHOUT the proton "
                      "script. It separates 'Proton's Wine behaves differently' from "
@@ -1283,6 +2801,21 @@ def stage_run_dir(spec, out, layer, repeat, support):
             if src and os.path.exists(src):
                 shutil.copy2(src, rundir)
         exe = os.path.join(rundir, os.path.basename(exe))
+    elif spec["stage"] in ("search_both", "search_alt_only"):
+        # Two DLLs with the SAME NAME in two places. The "alt" one always goes in
+        # altdir\; the "primary" one goes beside the executable ONLY when the
+        # specimen is about to assert that the application directory wins. The
+        # alt-only staging is what makes the SetDllDirectory and AddDllDirectory
+        # specimens meaningful: without it the loader would find a DLL anyway and
+        # the specimen would pass while proving nothing.
+        shutil.copy2(exe, rundir)
+        altdir = os.path.join(rundir, "altdir")
+        os.makedirs(altdir, exist_ok=True)
+        shutil.copy2(os.path.join(out, "dll", "search-alt", "wsearch.dll"), altdir)
+        if spec["stage"] == "search_both":
+            shutil.copy2(os.path.join(out, "dll", "search-primary", "wsearch.dll"),
+                         rundir)
+        exe = os.path.join(rundir, os.path.basename(exe))
     return rundir, exe
 
 
@@ -1302,16 +2835,66 @@ def run_once(spec, out, layer, rundir, exe, launch_index, display_helper):
     t0 = time.time()
     timed_out = False
     abandoned = None
-    gate = PROTON_LOCK if layer == "proton-run" else None
+    gate = (PROTON_LOCK if layer == "proton-run"
+            else GUI_LOCK if (needs_display and layer != "native") else None)
     if gate:
         gate.acquire()
+    if needs_display and layer in ("wine", "proton-wine"):
+        # Start this GUI launch with no leftover Wine services from the previous
+        # launch's display. See the comment on GUI_LOCK: they are per-prefix, they
+        # keep X11 state, and a private display only exists for one launch.
+        kenv = dict(BASE_ENV)
+        kenv["WINEPREFIX"] = wine_prefix(layer, out, True)
+        kenv["WINEDEBUG"] = "-all"
+        sh([wineserver_for(layer), "-k"], env=kenv, timeout=60)
     proc = None
+    pipe_held_open = False
     try:
         proc = subprocess.Popen(cmd, cwd=rundir, env=env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True)
+        # Drain the pipes in threads and wait for the PROCESS, not for EOF on its
+        # pipes. MEASURED, and the reason this is not communicate():
+        #
+        # a GUI tree under Proton's Wine occasionally leaves a Wine service
+        # process (explorer.exe and friends) alive in the private display's
+        # namespace after the guest tree has finished. That process INHERITED the
+        # guest's stdout and stderr, so the pipes never reach EOF, and
+        # communicate() -- which waits for EOF and not for the child -- sat there
+        # for the full 300 s timeout on a run whose oracle files showed the entire
+        # six-process tree had completed cleanly in about a second. One repeat in
+        # five, so it would have surfaced later as a mystery flake.
+        #
+        # The process group must NOT be killed to break that: several specimens
+        # DELIBERATELY leave a detached process running past the launcher's exit
+        # and the generator inspects what it writes afterwards. Killing the group
+        # would destroy exactly the evidence those specimens exist to produce.
+        # So the readers are left to their fate as daemon threads and the run is
+        # scored on the process's own exit.
+        chunks = {"out": [], "err": []}
+
+        def drain(stream, key):
+            try:
+                while True:
+                    block = stream.read(65536)
+                    if not block:
+                        break
+                    chunks[key].append(block)
+            except (ValueError, OSError):
+                pass
+
+        readers = [threading.Thread(target=drain, args=(proc.stdout, "out"),
+                                    daemon=True),
+                   threading.Thread(target=drain, args=(proc.stderr, "err"),
+                                    daemon=True)]
+        for t in readers:
+            t.start()
+        feeder = threading.Thread(
+            target=lambda: (proc.stdin.write(spec["stdin"]), proc.stdin.close()),
+            daemon=True)
+        feeder.start()
         try:
-            so, se = proc.communicate(input=spec["stdin"], timeout=spec["timeout_s"])
+            proc.wait(timeout=spec["timeout_s"])
         except subprocess.TimeoutExpired:
             timed_out = True
             try:
@@ -1322,10 +2905,18 @@ def run_once(spec, out, layer, rundir, exe, launch_index, display_helper):
                 # Briefly, then give up: a process wedged in uninterruptible D
                 # state (see the proton-run findings) never dies, and waiting for
                 # it would hang the whole generation.
-                so, se = proc.communicate(timeout=20)
+                proc.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 abandoned = proc.pid
-                so, se = b"", b""
+        # The guest is gone, so everything it ever wrote is already in the pipe.
+        # Joining with a bound collects it; a join that times out means something
+        # ELSE still holds the write end, which is recorded rather than waited on.
+        for t in readers:
+            t.join(timeout=30)
+            if t.is_alive():
+                pipe_held_open = True
+        so = b"".join(chunks["out"])
+        se = b"".join(chunks["err"])
         rc = proc.returncode
     finally:
         if gate:
@@ -1346,6 +2937,11 @@ def run_once(spec, out, layer, rundir, exe, launch_index, display_helper):
         "exit_code": rc,
         "timed_out": timed_out,
         "abandoned_unkillable_pid": abandoned,
+        # True when the guest exited but something still held the write end of
+        # its stdout/stderr -- a lingering Wine service, usually. An observation
+        # about the layer, never a verdict: everything the guest wrote was
+        # already collected by the time this is decided.
+        "stdio_pipe_still_held_after_exit": pipe_held_open,
         "duration_ms": duration,
         "oracle_file": oracle_name,
         "oracle_file_present": bool(oracle_text),
@@ -1448,6 +3044,41 @@ def _rest_of_checks(spec, layer, launches, post_state):
     return problems
 
 
+def settle_for(spec, rundir):
+    """Wait for the work that continues after the launched process has exited.
+
+    A FIXED settle is a race, not a margin. `pe-tree-gui-leaf` proved it: its
+    window node holds a window for 2500 ms and then writes its terminal line, and
+    with settle=6.0 it lost the FIRST of five identical repeats under Wine --
+    cold-start cost landed the node's last write after the files were collected.
+    The specimen then reported the host's warm-up as a missing post-run line, and
+    a bigger number would only have moved the threshold.
+
+    So where a specimen names a terminal line per post-run file, this waits for
+    that line to APPEAR and treats settle_s as a CEILING. Nothing is weakened by
+    it: the declaration is still that the file contains its declared lines, and if
+    the work never finishes the wait expires and the specimen fails as it should.
+    Specimens that name no terminal line keep the plain sleep.
+    """
+    ceiling = spec["settle_s"]
+    if not ceiling:
+        return
+    until = spec["declared"].get("post_files_complete_when") or {}
+    if not until:
+        time.sleep(ceiling)
+        return
+    deadline = time.time() + ceiling
+    while time.time() < deadline:
+        if all(os.path.exists(os.path.join(rundir, name))
+               and needle in open(os.path.join(rundir, name), "r",
+                                  errors="replace").read()
+               for name, needle in until.items()):
+            time.sleep(0.3)      # let the writer close, not only finish writing
+            return
+        time.sleep(0.2)
+    # Expired: collect whatever is there and let the declaration fail honestly.
+
+
 def collect_post(spec, rundir):
     state = {}
     for name in spec["declared"]["post_files"]:
@@ -1513,8 +3144,7 @@ def process(spec, out, layers, repeats, support, display_helper):
             rundir, exe = stage_run_dir(spec, out, layer, repeat, support)
             launches = [run_once(spec, out, layer, rundir, exe, i, display_helper)
                         for i in range(spec["runs"])]
-            if spec["settle_s"]:
-                time.sleep(spec["settle_s"])
+            settle_for(spec, rundir)
             post = collect_post(spec, rundir)
             verdicts.append(verdict_for_layer(spec, layer, launches, post))
             repeat_records.append({
@@ -1785,13 +3415,18 @@ def main():
     stop_corpus_display()
 
     # Leave no wineserver behind.
-    for prefix in (os.path.join(out, "prefix-wine"),
-                   os.path.join(out, "prefix-protonwine"),
-                   os.path.join(out, "prefix-protonrun", "pfx")):
+    for prefix, server in ((os.path.join(out, "prefix-wine"), "wineserver"),
+                           (os.path.join(out, "prefix-wine-gui"), "wineserver"),
+                           (os.path.join(out, "prefix-protonwine"),
+                            wineserver_for("proton-wine")),
+                           (os.path.join(out, "prefix-protonwine-gui"),
+                            wineserver_for("proton-wine")),
+                           (os.path.join(out, "prefix-protonrun", "pfx"),
+                            "wineserver")):
         if os.path.isdir(prefix):
             env = dict(BASE_ENV)
             env["WINEPREFIX"] = prefix
-            sh(["wineserver", "-k"], env=env)
+            sh([server, "-k"], env=env, timeout=60)
 
     print("\n%d specimens, %s, repeats=%d, %.1fs -> %s"
           % (len(results), ", ".join("%s=%d" % kv for kv in sorted(counts.items())),

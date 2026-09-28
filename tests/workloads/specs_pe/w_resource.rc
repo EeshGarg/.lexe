@@ -1,0 +1,48 @@
+/* A Win32 RESOURCE script. This is the only source file in the corpus that is not
+ * compiled by a C compiler: windres turns it into a COFF object carrying a .rsrc
+ * section, and the linker puts a PE resource DIRECTORY in the image.
+ *
+ * Almost every real Windows executable has one -- its icon, its version block, its
+ * strings, its manifest all live there -- and it is a part of the PE format nothing
+ * else in this corpus touches. */
+
+#include <windows.h>
+
+STRINGTABLE
+BEGIN
+    101, "lexe-workload-resource-string"
+    102, "second-string"
+END
+
+/* Sixteen bytes, chosen here so the specimen's declared hash is a property of this
+ * file and not of anything that ran. */
+BLOB RCDATA
+BEGIN
+    0x2301, 0x6745, 0xAB89, 0xEFCD, 0x1032, 0x5476, 0x9866, 0xDCBA
+END
+
+1 VERSIONINFO
+FILEVERSION 3, 1, 4, 1
+PRODUCTVERSION 3, 1, 4, 1
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "lexe-workload"
+            VALUE "FileDescription", "PE resource specimen"
+            VALUE "FileVersion", "3.1.4.1"
+            VALUE "ProductName", "lexe-workload-resource"
+            VALUE "ProductVersion", "3.1.4.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
