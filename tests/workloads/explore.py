@@ -1850,16 +1850,16 @@ def run_permission_scenarios(cfg):
 # to be rewritten the moment somebody answers it.
 TAXONOMY_QUESTIONS = [
     {
-        "id": "already-current-install-is-the-untyped-1",
-        "question": ("`lexe install` of the version that is ALREADY current exits "
-                     "1 — the catch-all docs/ERRORS.md §1 describes as \"the "
-                     "operation failed for a reason with no more specific code\". "
-                     "The condition is specific, benign and has its own remedy "
-                     "(`lexe repair`), and §1 already has a code for exactly this "
-                     "shape: 6, \"busy, or an OPERATION CONFLICT\". A script that "
-                     "re-runs an installer idempotently, or races two of them, "
-                     "cannot tell this apart from a real failure. Seen in 22 of 32 "
-                     "install||install races and reproducible in one command."),
+        "id": "already-current-install-now-carries-its-own-code",
+        "question": ("RESOLVED, and kept because a resolved question with no "
+                     "check behind it becomes an unresolved one again. `lexe "
+                     "install` of the version that is ALREADY current used to "
+                     "exit 1 — the catch-all docs/ERRORS.md §1 describes as "
+                     "\"the operation failed for a reason with no more specific "
+                     "code\" — and now exits 6, \"busy, or an OPERATION "
+                     "CONFLICT\". This records both codes on every run so a "
+                     "revert shows up here as a changed number rather than as "
+                     "nothing at all."),
     },
     {
         "id": "rollback-with-no-target-is-indistinguishable-from-a-typo",
@@ -1871,6 +1871,17 @@ TAXONOMY_QUESTIONS = [
                      "reading 4 must conclude the App ID is wrong, which here it "
                      "is not. The remedies are unrelated: fix the id, versus there "
                      "is nothing to roll back to."),
+    },
+    {
+        "id": "remove-of-an-already-removed-app-is-indistinguishable-from-a-typo",
+        "question": ("The same shape as the install case §6 of docs/ERRORS.md "
+                     "resolved, in the verb it was not applied to. `lexe remove "
+                     "<app that is already gone>` and `lexe remove <no such "
+                     "app>` exit 4 with the SAME sentence, \"application not "
+                     "installed: <id>\" — so here even the prose collides, "
+                     "which the rollback case at least avoids. The loser of two "
+                     "concurrent removes is told its App ID is wrong. Observed "
+                     "in 40 of 40 forced uninstall||uninstall races."),
     },
 ]
 
@@ -1902,6 +1913,23 @@ def check_taxonomy(cfg):
                     "no_such_application_rc": no_app["rc"],
                     "indistinguishable": no_target["rc"] == no_app["rc"],
                     "message": (no_target["err"] or no_target["out"]).strip()[:200]})
+        ws.cli("remove", APP_ID, "--yes", label="remove")
+        gone = ws.cli("remove", APP_ID, "--yes", label="remove again")
+        absent = ws.cli("remove", "no.such.app.at.all", "--yes",
+                        label="remove no app")
+        gone_msg = (gone["err"] or gone["out"]).strip()[:200]
+        absent_msg = (absent["err"] or absent["out"]).strip()[:200]
+        out.append({**TAXONOMY_QUESTIONS[2],
+                    "already_removed_rc": gone["rc"],
+                    "no_such_application_rc": absent["rc"],
+                    "indistinguishable": gone["rc"] == absent["rc"],
+                    # The rollback arm's prose at least differs. This one's does
+                    # not, so the collision is recorded for BOTH channels a
+                    # caller could read.
+                    "prose_also_identical": (
+                        gone_msg.replace(APP_ID, "<id>") ==
+                        absent_msg.replace("no.such.app.at.all", "<id>")),
+                    "message": gone_msg})
     finally:
         ws.close()
     return out
@@ -3021,6 +3049,12 @@ def cmd_model(a):
             print("        already-current install exits %s; a package that is "
                   "genuinely broken exits %s"
                   % (t["already_current_rc"], t["genuinely_broken_package_rc"]))
+        elif "already_removed_rc" in t:
+            print("        removing an already-removed app exits %s; no such "
+                  "application exits %s; indistinguishable=%s, and the sentence "
+                  "is identical too=%s"
+                  % (t["already_removed_rc"], t["no_such_application_rc"],
+                     t["indistinguishable"], t["prose_also_identical"]))
         else:
             print("        no rollback target exits %s; no such application exits "
                   "%s; indistinguishable=%s"
