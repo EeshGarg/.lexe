@@ -1029,6 +1029,44 @@ P("portable-outcome-text-product", "outcomes",
         "fails with ENOEXEC. 'Executable bit set' and 'executable' are "
         "different claims, and this is the specimen where they come apart.")
 
+# The shape that defeats an existence check, and the one Role A's build
+# verification most needs: the package SHIPS a product at the declared entrypoint,
+# left over from a previous build and committed with the sources. This build
+# compiles something else, exits 0, and never touches it. Afterwards the
+# entrypoint exists, is executable, runs and exits 0 -- and nothing about it came
+# from the build that just ran.
+#
+# Compare portable-outcome-no-product, where the entrypoint is simply ABSENT and
+# any existence check catches it. Here only a check that compares the artifact
+# against what THIS build produced can tell, which is exactly the difference
+# between "the product exists" and "the build produced the product".
+P("portable-outcome-stale-artifact", "outcomes",
+  "bin/portable-outcome-stale-artifact", "make",
+  toolchain=["make", "cc"], makefile_variant="stale-artifact",
+  prop="a pre-built artifact shipped in the source tree that the build never rebuilds",
+  product_kind="script",
+  starts_in_build_tree=True, starts_relocated=True,
+  extra_products=["bin/portable-outcome-stale-artifact-fresh"],
+  host_dependency="No product_mode is declared. This artifact is SHIPPED in the "
+                  "package rather than produced by the build, so its mode is "
+                  "whatever the packaging filesystem gave it -- measured 0o777 "
+                  "here, because the recipe sources live on a DrvFS mount. That "
+                  "is a fact about where this repository is checked out, not "
+                  "about the recipe, and declaring it would make the recipe fail "
+                  "on an ext4 clone.",
+  build_stdout_contains=["build finished; the entrypoint was not rebuilt"],
+  expect={"PORTABLE_STALE_ARTIFACT": "yes",
+          "PORTABLE_PRODUCED_BY":
+              "a-previous-build-shipped-in-the-source-tree"},
+  expect_relocated={"PORTABLE_STALE_ARTIFACT": "yes"},
+  notes="It RUNS, and that is the finding. Every check short of comparing the "
+        "artifact to this build's output passes: the file is present, it has the "
+        "right name, the executable bit is set, it exits 0. The marker it prints "
+        "is the only thing that says the build did not make it, and a real stale "
+        "artifact would not be so obliging -- it would print whatever the "
+        "PREVIOUS version of the program printed, which is why a consumer must "
+        "not rely on recognising the content.")
+
 P("portable-outcome-script-wrapper", "outcomes",
   "bin/portable-outcome-script.sh", "make",
   toolchain=["make", "cc"], makefile_variant="script-wrapper",

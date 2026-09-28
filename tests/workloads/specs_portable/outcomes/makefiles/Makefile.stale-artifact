@@ -1,0 +1,31 @@
+# outcomes variant: stale-artifact
+#
+# Succeeds, and never touches the declared entrypoint -- because the package
+# ALREADY SHIPS a file there, left over from a previous build and committed
+# along with the sources.
+#
+# This build compiles main.c to a different name. It exits 0. Afterwards the
+# declared entrypoint exists, is executable, runs, and exits 0 -- and the
+# program sitting there is the one from before, not the one this build made.
+#
+# The difference from `no-product` is the whole point: there, the entrypoint is
+# absent and any existence check catches it. Here the check passes, and only
+# something that compares the artifact against what THIS build produced -- a
+# timestamp, a hash, a marker, an empty output directory to begin with -- can
+# tell. It is the shape that defeats "does the file exist?".
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+FRESH    = $(BINDIR)/portable-outcome-stale-artifact-fresh
+
+all: $(FRESH)
+
+$(FRESH): main.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ main.c
+	@echo "build finished; the entrypoint was not rebuilt"
+
+clean:
+	rm -f $(FRESH)
+
+.PHONY: all clean

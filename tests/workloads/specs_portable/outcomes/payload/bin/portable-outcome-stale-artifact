@@ -1,0 +1,23 @@
+#!/bin/sh
+# A PRE-BUILT artifact shipped inside a source package, sitting at exactly the
+# path the manifest names as the entrypoint.
+#
+# It is here on purpose. This is what a stale product looks like: somebody built
+# the package once, the output landed in the source tree, and it got committed
+# along with the sources. The next build compiles something else entirely and
+# never touches this file, so the entrypoint exists, is executable, runs, and
+# exits 0 -- and none of that was produced by the build that just ran.
+#
+# A build-verification check that asks "does the declared product exist?" passes
+# here. One that asks "did THIS build produce it?" does not. That is the whole
+# point of the specimen, and the marker below is how a consumer tells which
+# question it actually asked.
+# FIXTURE_ID is how the harness recognises that a product reached its own code
+# at all. A stale artifact prints it just as readily as a fresh one -- which is
+# the uncomfortable part: "the product started" is not evidence that the build
+# produced the product.
+echo "FIXTURE_ID=${FIXTURE_ID:-portable-outcome-stale-artifact}"
+echo "PORTABLE_STALE_ARTIFACT=yes"
+echo "PORTABLE_PRODUCED_BY=a-previous-build-shipped-in-the-source-tree"
+echo "RESULT=PASS"
+exit 0
