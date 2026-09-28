@@ -26,15 +26,17 @@ material.**
 
 ## Regenerating
 
-> **`/tmp` does not survive a WSL restart.** The default corpus root is
-> `/tmp/lexe-workloads`, and WSL has been restarted twice in a single day here.
-> A corpus that was generated before a restart is simply gone, so **regenerate
-> before citing any of it**, and check `index.json`'s `generated_at` against the
-> time of the claim you are making. An `index.json` from a previous boot is not
-> stale in any way you can see by reading it; it is a complete, plausible,
-> internally consistent description of files that no longer exist. The same
-> applies to `/tmp/lexe-workloads-pe`, `/tmp/lexe-workloads-portable` and
-> `/tmp/lexe-workloads-foreign`.
+> **`/tmp` does not survive a WSL restart — three times in one day here.**
+> The default corpus root is `/tmp/lexe-workloads`, and a corpus generated
+> before a restart is simply gone. **Prefer `--out ~/lexe-workloads`**, which
+> survives; the `/tmp` default is kept only because other lanes already point at
+> it, and changing it is a cross-role decision rather than this directory's.
+>
+> Either way, **regenerate before citing any of it**, and check `index.json`'s
+> `generated_at` against the time of the claim you are making. An `index.json`
+> from a previous boot is not stale in any way you can see by reading it; it is
+> a complete, plausible, internally consistent description of files that no
+> longer exist. The same applies to the PE, portable and foreign corpora.
 
 Inside WSL (the corpus is Linux-native and must not be built on `/mnt/c`):
 
@@ -112,6 +114,53 @@ top of `specs/oracle.h`):
 | `RESULT=PASS` / `RESULT=FAIL` | the specimen's own self-check verdict, last line of the oracle stream. `FAIL` means the program ran and reported that its environment did not behave as it requires. |
 | no `RESULT` line | the specimen did not reach its end: crash, signal, timeout — or it `exec`ed into something else on purpose. |
 | `EXPECT_DEATH=<how>` | printed by specimens that are **supposed** to die, so a missing `RESULT` is still distinguishable from an accident. |
+| `FIXTURE_BUILD_ID=<id>` | **the identity oracle.** Compiled into the binary. The same value under direct execution and under anything else. |
+| `FIXTURE_ID=<id>` | the identity the **environment** claimed. Treat it as an observation. |
+
+### Which specimen is this? Use `FIXTURE_BUILD_ID`, not `FIXTURE_ID`
+
+`FIXTURE_ID` reaches the program through the environment — this generator sets
+it — and a conforming runtime is **required to reset the environment**
+(FORMAT-0.1 §9.5.2). So under one, every specimen falls back to the literal its
+*source* was written with, and several specimens share a source: `io_stream.c`
+backs five fixtures and all five answer `linux-io-stream`. An independent test
+pass took **16 false violations** from exactly that before it was found.
+
+This is the same shape as the `ERR_PAYLOAD_OFFSET` defect below, and worth
+stating as a rule: **a value can be perfectly stable across every baseline run
+precisely because the baseline holds the environment constant**, and diverge the
+moment something legitimately does not. A baseline cannot see that class of
+problem at all, because the thing that varies is the thing the baseline fixes.
+
+So every specimen also carries `FIXTURE_BUILD_ID`, put in the binary at compile
+time with `-DLEXE_FIXTURE_BUILD_ID="<fixture id>"`. Nothing outside the program
+can clear, rewrite or forget it. The generator **checks** it — a specimen whose
+compiled-in identity disagrees with the fixture it was built as, or that reaches
+its end without emitting one at all, is a `baseline-mismatch` — so this is an
+enforced property and not a convention.
+
+Measured, on two specimens built from one source:
+
+```
+# as the generator runs them
+[linux-io-stream-4mib]   FIXTURE_BUILD_ID=linux-io-stream-4mib   FIXTURE_ID=linux-io-stream-4mib
+[linux-io-stream-64mib]  FIXTURE_BUILD_ID=linux-io-stream-64mib  FIXTURE_ID=linux-io-stream-64mib
+
+# under `env -i`, as a conforming runtime leaves them
+[linux-io-stream-4mib]   FIXTURE_BUILD_ID=linux-io-stream-4mib   FIXTURE_ID=linux-io-stream
+[linux-io-stream-64mib]  FIXTURE_BUILD_ID=linux-io-stream-64mib  FIXTURE_ID=linux-io-stream
+```
+
+Two different specimens, indistinguishable by `FIXTURE_ID` — that is the shape
+of the 16 false violations — and correctly told apart by `FIXTURE_BUILD_ID`.
+`linux-env-emptied` makes the point without needing a runtime at all: it
+re-executes itself with `environ` literally empty, and its second phase reports
+`FIXTURE_BUILD_ID=linux-env-emptied` and `ENVIRON_COUNT=0`.
+
+Consumers: compare `FIXTURE_BUILD_ID` to know which specimen produced a stream.
+Both identity lines are excluded from the compiler-differential comparison, for
+two different reasons: `FIXTURE_ID` because the generator sets it per specimen,
+`FIXTURE_BUILD_ID` because a differential is a different binary by definition.
 
 The oracle stream is stdout unless `declared.oracle_stream` says `stderr` (used
 by the specimens whose property is that stdout carries binary or bulk data).
@@ -681,6 +730,33 @@ these were caught by something other than the declaration itself.
     death by SIGBUS came back as `generator-error: KeyError('SIGBUS')` — a
     verdict that blames the fixture for a gap in the generator's lookup table.
     The table now covers the signals a specimen can plausibly declare.
+
+12. **`FIXTURE_ID` was never an identity oracle, and the baseline could not have
+    said so.** Found not here but by the independent pass that runs this corpus
+    through `.LEXE`, at a cost of **16 false violations**: `FIXTURE_ID` is
+    injected by this generator *through the environment*, and FORMAT-0.1 §9.5.2
+    requires a conforming runtime to reset the environment — so under one, every
+    specimen reports the literal its **source** was written with. Several
+    specimens share a source (`io_stream.c` backs five), so that literal names
+    the program, not the fixture, and a consumer asking "which specimen is this"
+    gets the same answer for five different streams.
+
+    Not a defect in the generator; a property of the contract that the corpus
+    had not stated. And the same shape as number 6 above: a value stable across
+    every baseline run *because* the baseline holds the environment constant.
+    Twice now, so it is written up as a rule in **The behavioural oracle** rather
+    than as another entry in this list.
+
+    Fixed by giving every specimen a second identity that is **in the binary**:
+    `-DLEXE_FIXTURE_BUILD_ID="<fixture id>"` at compile time, emitted as
+    `FIXTURE_BUILD_ID`, and checked by the generator, so a specimen that does not
+    carry one or carries the wrong one is a `baseline-mismatch` rather than a
+    convention nobody enforces. The check immediately found four sources that
+    print their own preamble instead of calling `orc_begin` and had therefore
+    been missed — including `linux-env-emptied`, which re-executes itself with an
+    **empty** environment and is now the corpus's direct demonstration of the
+    point: in its second phase there is no `FIXTURE_ID` to be had at all, and the
+    compiled-in identity is still there.
 
 11. **A helper named `yn` collided with a built-in.** `yn` is the Bessel function
     of the second kind, `double yn(int, double)`, so the specimen compiled with a

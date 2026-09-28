@@ -11,8 +11,7 @@ int main(void) {
     unsigned long h = 14695981039346656037UL;
     unsigned long written = 0;
     unsigned long x = 0x9E3779B97F4A7C15UL;
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    fprintf(stderr, "FIXTURE_ID=linux-io-bulk-stdout\n");
+    orc_ebegin("linux-io-bulk-stdout");
     while (written < BULK) {
         size_t i, chunk = sizeof buf;
         if (BULK - written < chunk) chunk = BULK - written;

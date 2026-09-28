@@ -34,6 +34,7 @@ struct WorkloadError : std::runtime_error {
 
 int main() {
     std::cout.setf(std::ios::unitbuf);
+    std::cout << "FIXTURE_BUILD_ID=" << LEXE_FIXTURE_BUILD_ID << "\n";
     std::cout << "FIXTURE_ID=linux-cxx-runtime\n";
     std::cout << "STATIC_INIT_ORDER=" << construction_order << "\n";
 

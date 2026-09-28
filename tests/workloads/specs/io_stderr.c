@@ -5,8 +5,7 @@
 
 int main(void) {
     int i;
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    fprintf(stderr, "FIXTURE_ID=linux-io-stderr-only\n");
+    orc_ebegin("linux-io-stderr-only");
     for (i = 1; i <= 10; i++) fprintf(stderr, "LINE=%d\n", i);
     fprintf(stderr, "STDOUT_BYTES_WRITTEN=0\n");
     fprintf(stderr, "RESULT=PASS\n");

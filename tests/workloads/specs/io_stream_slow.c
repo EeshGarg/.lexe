@@ -47,10 +47,8 @@ int main(int argc, char **argv) {
     long ticks, gap_ms, tail_ms, i;
     unsigned long long written = 0;
     double t0, t_first = 0.0, t_last = 0.0;
-    const char *id = getenv("FIXTURE_ID");
 
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    fprintf(stderr, "FIXTURE_ID=%s\n", id ? id : "linux-io-stream-slow");
+    orc_ebegin("linux-io-stream-slow");
     if (argc < 4) {
         fprintf(stderr, "USAGE=io_stream_slow <ticks> <gap_ms> <tail_ms>\nRESULT=FAIL\n");
         return 2;

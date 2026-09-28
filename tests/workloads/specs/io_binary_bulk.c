@@ -42,7 +42,6 @@ int main(int argc, char **argv) {
     unsigned long fnv = 14695981039346656037UL;
     int seen = 0, i, all_hazards_placed = 1;
     size_t h;
-    const char *id = getenv("FIXTURE_ID");
 
     struct hazard hazards[] = {
         { 1024,           HAZARD_CRLF,    sizeof HAZARD_CRLF,   "crlf"    },
@@ -52,8 +51,7 @@ int main(int argc, char **argv) {
         { 1048576 + 64,   HAZARD_BADUTF,  sizeof HAZARD_BADUTF, "badutf8" },
     };
 
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    fprintf(stderr, "FIXTURE_ID=%s\n", id ? id : "linux-io-binary-bulk");
+    orc_ebegin("linux-io-binary-bulk");
     if (argc < 2) {
         fprintf(stderr, "USAGE=io_binary_bulk <mib>\nRESULT=FAIL\n");
         return 2;

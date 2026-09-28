@@ -1634,6 +1634,14 @@ def compile_cmd(spec, out, target, stagelib=None):
                "STAGELIB": stagelib or os.path.join(out, "lib"),
                "OUT": out}
     srcs = [os.path.join(SPECS, s) for s in spec["sources"]]
+    # The specimen's identity, COMPILED IN. FIXTURE_ID reaches the program
+    # through the environment, and a conforming runtime is required to reset the
+    # environment (FORMAT-0.1 §9.5.2) -- so under one, every specimen falls back
+    # to the literal its source was written with, which names the PROGRAM and
+    # not the fixture, because several specimens share a source. An independent
+    # test pass took 16 false violations from that before it was found. This
+    # value is in the binary and nothing outside the program can clear it.
+    flags = flags + ['-DLEXE_FIXTURE_BUILD_ID="%s"' % spec["id"]]
     cmd = [driver] + flags + srcs + ["-o", target] + subst(spec["cflags"], mapping)
     if spec["id"].startswith("linux-fs-posix-shm") or "compound_service" in spec["sources"][0]:
         cmd += ["-lrt"]
@@ -2364,6 +2372,23 @@ def verdict_for(spec, runs, post_state):
 
     problems += check_stdio(spec, last)
 
+    # The identity oracle, enforced rather than assumed. Every specimen that
+    # reaches its own end must say which specimen it is, from the value compiled
+    # into it -- so a consumer can answer "which specimen is this" without
+    # trusting an environment variable that a conforming runtime is required to
+    # clear.
+    build_id = last["oracle"].get("FIXTURE_BUILD_ID")
+    if build_id is None:
+        if d.get("reaches_result_line", True):
+            problems.append(
+                "no FIXTURE_BUILD_ID line: this specimen cannot be identified by "
+                "anything that resets the environment, and FIXTURE_ID alone is "
+                "not an identity oracle")
+    elif build_id != spec["id"]:
+        problems.append("FIXTURE_BUILD_ID is %r, expected %r -- the compiled-in "
+                        "identity does not match the fixture it was built as"
+                        % (build_id, spec["id"]))
+
     # A private-display specimen cannot declare death by signal: the wrapper is
     # a shell chain and flattens it to exit 128+n. Refusing the declaration is
     # the honest response -- accepting 139 AS SIGSEGV would be the generator
@@ -2525,9 +2550,14 @@ def main():
         if not base or not r.get("baseline") or not base.get("baseline"):
             continue
 
+        # Both identity lines are excluded, for the same reason and not the same
+        # one. FIXTURE_ID differs because the generator sets it per specimen;
+        # FIXTURE_BUILD_ID differs because each binary has its OWN id compiled
+        # in, and a differential is a different binary by definition. Neither is
+        # a behavioural difference, and everything else must still agree.
         def det(rec):
             return [ln for ln in rec["baseline"]["runs"][-1]["oracle_deterministic_lines"]
-                    if not ln.startswith("FIXTURE_ID=")]
+                    if not ln.startswith(("FIXTURE_ID=", "FIXTURE_BUILD_ID="))]
 
         a, b = det(base), det(r)
         only_base = [ln for ln in a if ln not in b]

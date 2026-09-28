@@ -30,10 +30,8 @@ int main(int argc, char **argv) {
     unsigned long long want, written = 0;
     unsigned long fnv = 14695981039346656037UL;
     int exit_code = 0;
-    const char *id = getenv("FIXTURE_ID");
 
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    fprintf(stderr, "FIXTURE_ID=%s\n", id ? id : "linux-io-stream");
+    orc_ebegin("linux-io-stream");
     if (argc < 2) {
         fprintf(stderr, "USAGE=io_stream <mib> [exit_code]\nRESULT=FAIL\n");
         return 2;

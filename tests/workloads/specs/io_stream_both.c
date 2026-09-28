@@ -110,6 +110,10 @@ int main(int argc, char **argv) {
     const char *id = getenv("FIXTURE_ID");
     int ok;
 
+    /* Both lines through eout(), which is this specimen's own unbuffered stderr
+     * writer -- the oracle here is APPENDED to a 128 MiB stderr payload, so it
+     * cannot go through stdio like the other specimens' preambles do. */
+    eout("FIXTURE_BUILD_ID=%s\n", LEXE_FIXTURE_BUILD_ID);
     eout("FIXTURE_ID=%s\n", id ? id : "linux-io-stream-both");
     if (argc < 2) {
         eout("USAGE=io_stream_both <mib-per-stream>\nRESULT=FAIL\n");

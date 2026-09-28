@@ -33,6 +33,35 @@
 
 #define ORC_UNUSED __attribute__((unused))
 
+/* The specimen's own identity, COMPILED IN by the generator
+ * (-DLEXE_FIXTURE_BUILD_ID="<fixture id>"). This exists because FIXTURE_ID does
+ * not survive being run by anything:
+ *
+ *   FIXTURE_ID       comes from the ENVIRONMENT. The generator sets it, so it is
+ *                    stable across every baseline run -- and a conforming
+ *                    runtime is required to reset the environment
+ *                    (FORMAT-0.1 §9.5.2), so under one, every specimen falls
+ *                    back to the literal its SOURCE was written with. Several
+ *                    sources back several specimens, so that literal names the
+ *                    program and not the fixture. Treat FIXTURE_ID as an
+ *                    OBSERVATION: it tells you what the environment said.
+ *
+ *   FIXTURE_BUILD_ID is in the binary. Nothing outside the program can clear,
+ *                    rewrite or forget it, so it is the same value under direct
+ *                    execution and under anything else. This is the identity
+ *                    oracle: "which specimen is this" is answered by this line.
+ *
+ * The distinction is the same one that bit ERR_PAYLOAD_OFFSET: a value can be
+ * perfectly stable across every baseline run precisely BECAUSE the baseline
+ * holds the environment constant, and diverge the moment something does not.
+ * That cost an independent test pass 16 false violations before it was found.
+ */
+#ifndef LEXE_FIXTURE_BUILD_ID
+#define LEXE_FIXTURE_BUILD_ID "(not-compiled-in)"
+#endif
+
+#define ORC_UNUSED_ATTR ORC_UNUSED
+
 static int orc_failures ORC_UNUSED = 0;
 
 ORC_UNUSED static void orc_begin(const char *id) {
@@ -40,7 +69,17 @@ ORC_UNUSED static void orc_begin(const char *id) {
      * the stream is a pipe rather than a terminal. */
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
+    printf("FIXTURE_BUILD_ID=%s\n", LEXE_FIXTURE_BUILD_ID);
     printf("FIXTURE_ID=%s\n", id);
+}
+
+/* The same preamble for a specimen whose oracle stream is stderr, because
+ * stdout is carrying binary or bulk data and must not be written to. */
+ORC_UNUSED static void orc_ebegin(const char *fallback) {
+    const char *env = getenv("FIXTURE_ID");
+    setvbuf(stderr, NULL, _IOLBF, 0);
+    fprintf(stderr, "FIXTURE_BUILD_ID=%s\n", LEXE_FIXTURE_BUILD_ID);
+    fprintf(stderr, "FIXTURE_ID=%s\n", (env && *env) ? env : fallback);
 }
 
 ORC_UNUSED static void orc_kv(const char *key, const char *fmt, ...) {

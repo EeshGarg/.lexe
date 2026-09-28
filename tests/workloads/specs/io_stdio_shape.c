@@ -86,7 +86,6 @@ int main(void) {
     static unsigned char payload[PAYLOAD_BYTES];
     orb_sha256 sha;
     char hex[65];
-    const char *id = getenv("FIXTURE_ID");
     unsigned long long total = 0;
     unsigned char inbuf[8192];
     ssize_t n;
@@ -97,8 +96,7 @@ int main(void) {
     unsigned long long written = 0;
     int self_consistent = 1;
 
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    orc_ekv("FIXTURE_ID", "%s", id ? id : "linux-stdio-shape");
+    orc_ebegin("linux-stdio-shape");
 
     report_fd("STDIN", 0);
     report_fd("STDOUT", 1);

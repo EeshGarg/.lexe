@@ -7,9 +7,8 @@
 int main(void) {
     unsigned char all[256];
     int i;
-    setvbuf(stderr, NULL, _IOLBF, 0);
+    orc_ebegin("linux-io-binary-stdout");
     for (i = 0; i < 256; i++) all[i] = (unsigned char)i;
-    fprintf(stderr, "FIXTURE_ID=linux-io-binary-stdout\n");
     if (fwrite(all, 1, sizeof all, stdout) != sizeof all) {
         fprintf(stderr, "RESULT=FAIL\n");
         return 1;
