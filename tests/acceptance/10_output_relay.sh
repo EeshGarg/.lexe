@@ -29,6 +29,20 @@
 # So: run everything here with both streams redirected to FILES. A version of
 # this test that used a terminal would pass against all three defects.
 #
+# And `launch.mode: "console"` is LOAD-BEARING, which this test learned the
+# embarrassing way. The manifest default is `gui`, and the runtime only captures
+# and relays for a CONSOLE launch -- every other mode hands the child our streams
+# to inherit. Without that line this test ran gui-mode launches, the child wrote
+# straight to the redirected files, and the relay was never involved at all.
+#
+# It therefore passed 10/10 with the sandboxed stderr relay deliberately disabled
+# -- including the two checks named "stderr reaches the caller on a SUCCESSFUL
+# exit" and "stderr is relayed even though the application exited non-zero". A
+# regression written for a defect, which did not execute the code path of that
+# defect, reporting success for a reason unrelated to what it claimed to check.
+# It was only found when an independent audit broke the relay on purpose and
+# noticed this lane did not care.
+#
 # Found by putting 184 independently written programs through the runtime and
 # comparing against their recorded direct-execution baselines, which is why the
 # specimen here is a purpose-built program with an exactly known output rather
@@ -50,6 +64,7 @@ mkdir -p "$PROJECT/payload/bin" "$PROJECT/src"
 cat > "$PROJECT/src/main.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 int main(int argc, char** argv) {
     long n = argc > 1 ? atol(argv[1]) : 0;
     int rc = argc > 2 ? atoi(argv[2]) : 0;
@@ -64,6 +79,9 @@ int main(int argc, char** argv) {
         free(buf);
     }
     if (use_err) { fputs("STDERR_REPORT=present\n", stderr); fflush(stderr); }
+    /* argv[4]: linger this many seconds, so a DETACHED launch is still
+       running when the caller checks whether its pipe was released. */
+    if (argc > 4) sleep((unsigned)atoi(argv[4]));
     return rc;
 }
 EOF
@@ -91,6 +109,7 @@ build_and_install() { # $1=args-json
   "applicationType": "native",
   "architectures": ["x86_64"],
   "entrypoint": { "executable": "bin/relay", "arguments": $1 },
+  "launch": { "mode": "console" },
   "install": { "scope": "user", "mode": "bundled" },
   "permissions": []
 }
@@ -168,5 +187,69 @@ acc_true "$(grep -q 'STDERR_REPORT=present' "$ERR" && echo 0 || echo 1)" \
 acc_true "$([[ -d "$(acc_error_dir)" ]] && echo 0 || echo 1)" \
     "a failing launch still records a diagnostic as well as relaying output" \
     "expected an error record under $(acc_error_dir)"
+
+# ------------------------------------------------- 4. a DETACHED service
+# must not hold the caller's stdout open.
+#
+# The classic "backgrounded service hangs the shell that started it": a command
+# substitution, a pipeline or a CI step waits for EOF on the pipe, and a detached
+# child that inherited the descriptor never gives it. The runtime redirects a
+# detached launch's stdio to /dev/null for exactly this reason.
+#
+# Checked here because an independent mutation audit removed that redirect and
+# NOTHING noticed -- not the 740 unit cases, not the eleven acceptance scripts,
+# not the 196-specimen corpus. A guard with no test is a guard until somebody
+# tidies it away.
+#
+# The observation is external and needs no cooperation from the runtime: run the
+# launch inside a command substitution, which blocks by definition until every
+# writer closes the pipe, and give it a deadline. The service lingers well past
+# that deadline, so returning promptly means the descriptor was released and
+# timing out means it was not.
+cat > "$PROJECT/lexe.json" <<EOF
+{
+  "lexeVersion": "0.1",
+  "id": "$APP_ID.svc",
+  "name": "Relay Probe Service",
+  "version": "1.0.0",
+  "publisher": { "name": "Lexe Tests", "publicKey": "AUTO" },
+  "applicationType": "native",
+  "architectures": ["x86_64"],
+  "entrypoint": { "executable": "bin/relay", "arguments": ["0","0","0","30"] },
+  "launch": { "mode": "service" },
+  "install": { "scope": "user", "mode": "bundled" },
+  "permissions": []
+}
+EOF
+rm -rf "$LEXE_HOME"; mkdir -p "$LEXE_HOME"
+if "$LEXE" build "$PROJECT" -o "$ACC_ROOT/work/svc.lexe" --key "$KEY" \
+        >"$ACC_ROOT/work/svcbuild.log" 2>&1 &&
+   "$LEXE" install "$ACC_ROOT/work/svc.lexe" --yes --trust \
+        >"$ACC_ROOT/work/svcinstall.log" 2>&1; then
+    svc_start="$(date +%s)"
+    # `set -e` is in force, and a timeout returns 124: without the `if` the
+    # script would abort here and the lane would fail with no message at all --
+    # detection, but mute, which is barely better than the blind spot this check
+    # was written to close.
+    # `cmd || var=$?`, not `if ! cmd; then var=$?`: inside the `then` branch of a
+    # negated test, $? is the status of the NEGATION (always 0), so the first
+    # version recorded success for a run that had just timed out. The elapsed
+    # check caught the mutant anyway, which is the argument for having two
+    # independent observations of one property rather than one.
+    svc_rc=0
+    timeout 20 bash -c "out=\$(\"$LEXE\" run \"$APP_ID.svc\" 2>/dev/null); exit 0"         || svc_rc=$?
+    svc_elapsed=$(( $(date +%s) - svc_start ))
+    acc_true "$([[ $svc_rc -ne 124 ]] && echo 0 || echo 1)" \
+        "a detached service releases the caller's stdout (no hang)" \
+        "the command substitution never saw EOF: the detached child kept the" \
+        "caller's pipe open, which hangs any shell, pipeline or CI step that" \
+        "starts a service and then waits for its output"
+    acc_true "$([[ $svc_elapsed -lt 15 ]] && echo 0 || echo 1)" \
+        "and it returns promptly rather than waiting the service out" \
+        "took ${svc_elapsed}s while the service lingers 30s"
+    pkill -f "$PROJECT/payload/bin/relay" 2>/dev/null || true
+else
+    skip "could not build/install the service variant"
+fi
 
 acc_summary
