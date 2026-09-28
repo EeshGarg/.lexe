@@ -48,29 +48,38 @@ python3 generate.py --out /tmp/lexe-workloads --only linux-socket
 Exit status 0 means every selected specimen reached `baseline-ok`. Build
 products, run directories and `index.json` all land under `--out`
 (default `/tmp/lexe-workloads`); nothing is written back into the repository.
-**Cost, measured rather than remembered.** Eight consecutive full generations,
+**Cost, measured rather than remembered.** Eleven consecutive full generations,
 every one of them `201 specimens, baseline-ok=201`, on 24 cores at `--jobs 12`:
 
 | | value |
 |---|---|
-| wall time | median **24.6 s**, p95 26.0 s, range 23.9–27.0 s (8 samples) |
-| CPU time | median **71.9 CPU-seconds** (47.9–55.8 user + 19.8–21.8 sys, 4 samples) |
+| wall time | median **25.2 s**, p90 25.7 s, max 27.0 s (11 samples) |
+| CPU time | median **72.2 CPU-seconds** (50.3–55.8 user + 19.6–21.8 sys, 7 samples) |
 | direct execution, per specimen | median **14.6 ms**, p95 2.19 s, p99 6.86 s, max 10.0 s; 152 of 201 finish under 100 ms |
 | direct execution, total | 66.3 s across all 201 specimens |
 
-The 1-minute load average was between **8.1 and 19.3** for every one of those
-samples, because three other roles were working on this machine and it did not
-drop below 3 once in fifteen minutes of waiting. That is why **CPU time is the
-figure to quote** and wall time is given with its load: a wall time taken on a
-contended host is a measurement of the other work. The wall figures happen to be
-stable across a 2× swing in load — 24.62 s at load 19.3 and 23.87 s at load
-12.0 — which is itself the evidence that 12 jobs on 24 cores were not fighting
-for CPU here; without that check the numbers would not be quotable at all.
+**Why there is a control.** Three other roles were working on this machine and
+the 1-minute load average did not drop below 3 once in fifteen minutes of
+waiting, so the first eight samples were taken at loads between **8.1 and 19.3**.
+A wall time taken on a contended host is a measurement of the other work, and
+quoting one as a figure is how 37–41 s of Wine prefix creation once became a
+documented 152 s and manufactured a mystery that did not exist. So three more
+samples were taken later, the first of them at **load 2.51**:
 
-The p99 and the maximum are dominated by four specimens that are *supposed* to
-be slow: `linux-run-long-10s` sleeps for ten seconds on purpose, and the 256 MiB
-and 2×128 MiB streams take as long as they take. The median of 14.6 ms is the
-honest description of a specimen.
+| | loaded (8 samples, load 8.1–19.3) | quiet (3 samples, load 2.5–10.8) |
+|---|---|---|
+| wall | 23.87 – 26.97 s | 25.44 – 25.70 s |
+| CPU | 68.3 – 77.6 CPU-s | 69.9 – 73.2 CPU-s |
+
+They agree, so the loaded samples were measuring the generator and not the other
+roles — 12 jobs on 24 cores were not fighting for CPU here. Without that control
+neither set would be quotable, and **CPU time is still the figure to prefer**,
+because it is what the generator costs rather than what this afternoon cost.
+
+The p99 and the maximum of the per-specimen distribution are dominated by four
+specimens that are *supposed* to be slow: `linux-run-long-10s` sleeps for ten
+seconds on purpose, and the 256 MiB and 2×128 MiB streams take as long as they
+take. The median of 14.6 ms is the honest description of a specimen.
 
 Layout produced:
 
