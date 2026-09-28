@@ -35,7 +35,18 @@ fi
 
 # Everything git has, once.
 tracked="$(git -C "$ACC_REPO" ls-files)"
-is_tracked() { printf '%s\n' "$tracked" | grep -qxF "$1"; }
+# A here-string, NOT a pipe. `grep -q` stops at the first match and closes the
+# pipe; the writer then takes SIGPIPE and exits 141, and `set -o pipefail` (line
+# 20) makes 141 the status of the whole pipeline. So this predicate answered
+# FALSE for every file that IS tracked, as soon as the list outgrew grep's read
+# buffer -- which it has: 687 paths, 27 KiB. The script reported 54 failures,
+# every one of them false, including "scripts/test.sh is in the repository", and
+# the acceptance lane has been red because of it.
+#
+# Measured: PIPESTATUS=(141 0) for a path at line 143 of the list, (0 0) for the
+# LAST path in the list -- that asymmetry is the tell, and it is why the fault
+# does not look like one.
+is_tracked() { grep -qxF "$1" <<<"$tracked"; }
 
 check_tracked() {
     local path="$1" why="$2"

@@ -74,7 +74,14 @@ acc_equals "$declared" "service" \
     "the manifest DECLARES launch.mode service — background is declared, not guessed"
 
 log="$LEXE_HOME/data/$SVC_ID/heartbeat.log"
-beats() { [[ -f "$log" ]] && grep -c '^beat ' "$log" 2>/dev/null | head -1 || echo 0; }
+# `grep -c` prints 0 AND exits 1 when it matches nothing. Piped, `pipefail` makes
+# the pipeline non-zero, `|| echo 0` fires, and the value becomes TWO zeros --
+# 3 bytes, "0\n0" -- which every numeric comparison below then reads wrongly.
+# Measured. `|| true` keeps grep's own single 0 on stdout and adds nothing.
+beats() {
+    [[ -f "$log" ]] || { printf '0\n'; return; }
+    grep -c '^beat ' "$log" 2>/dev/null || true
+}
 # Version-agnostic on purpose: the update below makes 2.0.0 current, so a
 # pattern pinned to 1.0.0 reports the RESTARTED service as absent -- which it
 # did, while the very next check (that work resumed) passed. Two checks

@@ -136,11 +136,38 @@ conc_codes() {
 
 # A timeout kill shows up as 124, and it is never an acceptable outcome: it means
 # the operation neither completed nor refused.
+#
+# Reads the result files that EXIST rather than assuming numeric indices.
+# `conc_race_same` writes <label>.0.rc, <label>.1.rc ...; `conc_race_pair` writes
+# <label>.a.rc and <label>.b.rc. This function indexed 0..n-1 for BOTH, so after
+# every PAIR race it read two files that do not exist, `conc_rc` returned the
+# string "missing", nothing ever equalled "124", and it fell straight through to
+# `pass`. Five assertions -- update-update, update-rollback, repair-uninstall,
+# install-uninstall and order-<direction>, which are precisely the
+# deadlock-prone pairings -- could not fail. Demonstrated by planting a real 124
+# in <label>.a.rc and watching the assertion pass.
+#
+# Discovering NO result files is now a failure too: an assertion that observed
+# nothing has not been performed.
 conc_assert_no_timeouts() {
-    local label="$1" n="$2" bad=""
-    for ((i = 0; i < n; ++i)); do
-        [[ "$(conc_rc "$label" "$i")" == "124" ]] && bad+="$i "
+    local label="$1" n="${2:-}" bad="" found=0 f idx
+    for f in "$CONC_DIR/$label".*.rc; do
+        [[ -f "$f" ]] || continue
+        found=$((found + 1))
+        idx="${f##*/}"; idx="${idx#"$label."}"; idx="${idx%.rc}"
+        [[ "$(cat "$f" 2>/dev/null)" == "124" ]] && bad+="$idx "
     done
+    if [[ $found -eq 0 ]]; then
+        fail "$label: no participant timed out" \
+            "no participant recorded an exit status at all, so this assertion" \
+            "observed nothing -- which is not a pass"
+        return 1
+    fi
+    if [[ -n "$n" && "$found" -ne "$n" ]]; then
+        fail "$label: no participant timed out" \
+            "expected $n participants, found $found result file(s)"
+        return 1
+    fi
     if [[ -n "$bad" ]]; then
         fail "$label: no participant timed out" \
             "participant(s) $bad hit the ${CONC_TIMEOUT}s timeout — neither" \

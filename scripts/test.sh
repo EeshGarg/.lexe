@@ -671,7 +671,15 @@ run_lane() {
     local log; log="$(mktemp)"
     local status=0
     if [[ $VERBOSE -eq 1 ]]; then
-        "${lane}_run" 2>&1 | tee "$log" || status=$?
+        # NOT `... | tee "$log" || status=$?` before reading PIPESTATUS.
+        # `status=$?` is itself a command, and running ANY command resets
+        # PIPESTATUS to (0) -- so the real status was captured and then
+        # immediately overwritten with zero. `-v` therefore reported PASS for
+        # every lane that FAILED, printing the lane's own "0 passed, 1 failed"
+        # on the same line as the word PASS. Demonstrated against this runner:
+        # the integration lane, emptied so it returns 1, recorded FAIL without
+        # -v and PASS with it.
+        "${lane}_run" 2>&1 | tee "$log"
         status=${PIPESTATUS[0]}
     else
         "${lane}_run" >"$log" 2>&1 || status=$?
@@ -689,8 +697,17 @@ run_lane() {
     # honestly and the composition lied. And it is the EXPECTED state after a WSL
     # restart wipes /tmp, since the Linux corpus regenerates in seconds and the
     # Windows one needs MinGW and a Wine prefix.
+    #
+    # The HIGHEST count anywhere in the log, not the LAST one. A multi-script
+    # lane prints one `N passed ... B blocked` line PER SCRIPT, so `tail -1`
+    # read only the final script's count and a block anywhere earlier vanished.
+    # Measured on this runner: acceptance script 01 printed `1 blocked`, the
+    # last line printed `0 blocked`, and the lane was recorded
+    # `PASS acceptance  all 11 automated acceptance scripts passed` over a check
+    # that was never performed.
     local in_lane_blocked
-    in_lane_blocked="$(grep -oE '[0-9]+ blocked' "$log" | tail -1 | grep -oE '^[0-9]+' || true)"
+    in_lane_blocked="$(grep -oE '[0-9]+ blocked' "$log" | grep -oE '^[0-9]+' |
+                       sort -rn | head -1 || true)"
     if [[ $status -eq 0 && -n "$in_lane_blocked" && "$in_lane_blocked" -gt 0 ]]; then
         say "${C_BLUE}  BLOCKED${C_OFF} $(lane_summary "$lane" "$log")"
         record "$lane" "BLOCKED" "$(lane_summary "$lane" "$log")"
@@ -918,44 +935,68 @@ if [[ $blocked -gt 0 ]]; then
 fi
 
 RUN_FINGERPRINT_AFTER="$(source_fingerprint)"
+EVIDENCE_INVALID=0
+
+# THREE INDEPENDENT QUESTIONS, each asked at the top level, each able to
+# invalidate the run on its own.
+#
+# They used to be nested, and the nesting cancelled them out. The drift scan and
+# the modification-time reading both lived inside the `the endpoints differ`
+# branch, and the drift scan was further guarded by a condition requiring the
+# endpoints to AGREE -- which that branch had just ruled out. So the mechanism
+# built to catch A -> B -> A was unreachable for A -> B -> A, which is the only
+# thing it was for.
+#
+# Underneath that was a second fault. At top level `local` is an ERROR, not a
+# no-op: the assignment never happened, `set -u` killed the script on the next
+# read, and the headline EVIDENCE INVALID line never printed at all -- a bash
+# "unbound variable" message printed in its place.
+#
+# Both were found by making a source file appear and vanish across a lane
+# boundary during a real run. The endpoints agreed, nothing was reported, and the
+# runner said `no failures` -- which is exactly what docs/TESTING.md §1.6 says
+# cannot happen.
+base_sample="${FINGERPRINT_SAMPLES[0]:-}"
+drifted=()
+for i in "${!FINGERPRINT_SAMPLES[@]}"; do
+    [[ "${FINGERPRINT_SAMPLES[$i]}" != "$base_sample" ]] &&
+        drifted+=( "${FINGERPRINT_LANES[$i]}" )
+done
+if [[ ${#drifted[@]} -gt 0 ]]; then
+    printf '\n  %sEVIDENCE INVALID: the tree changed underneath this run.%s\n' \
+        "$C_RED" "$C_OFF"
+    printf '  These lane boundaries read a different tree from the first one:\n'
+    printf '    %s\n' "${drifted[*]}"
+    printf '  Whether the endpoints agree is not the question: those lanes did\n'
+    printf '  not all test the same tree. Discard and repeat.\n'
+    EVIDENCE_INVALID=1
+fi
+
+newest_after="$(newest_mtime)"
+if [[ -n "$RUN_NEWEST_MTIME_BEFORE" && -n "$newest_after" &&
+      "$newest_after" != "$RUN_NEWEST_MTIME_BEFORE" ]]; then
+    printf '\n  %sEVIDENCE INVALID: a source file was written during this run.%s\n' \
+        "$C_RED" "$C_OFF"
+    printf '  The newest modification time moved from %s to %s.\n' \
+        "$RUN_NEWEST_MTIME_BEFORE" "$newest_after"
+    printf '  It does not matter whether the content ended up identical:\n'
+    printf '  some lanes ran before that write and some after, so this run\n'
+    printf '  describes no single tree. Discard it and repeat.\n'
+    EVIDENCE_INVALID=1
+fi
+
 if [[ -n "$RUN_FINGERPRINT_BEFORE" &&
       "$RUN_FINGERPRINT_BEFORE" != "$RUN_FINGERPRINT_AFTER" ]]; then
-    # Something was WRITTEN during the run, whatever the tree looks like now.
-    local newest_after; newest_after="$(newest_mtime)"
-    if [[ -n "$RUN_NEWEST_MTIME_BEFORE" && -n "$newest_after" &&
-          "$newest_after" != "$RUN_NEWEST_MTIME_BEFORE" ]]; then
-        printf '\n  %sEVIDENCE INVALID: a source file was written during this run.%s\n' \
-            "$C_RED" "$C_OFF"
-        printf '  The newest modification time moved from %s to %s.\n' \
-            "$RUN_NEWEST_MTIME_BEFORE" "$newest_after"
-        printf '  It does not matter whether the content ended up identical:\n'
-        printf '  some lanes ran before that write and some after, so this run\n'
-        printf '  describes no single tree. Discard it and repeat.\n'
-    fi
-
-    # The endpoints matching is NOT proof that nothing moved. Report any lane
-    # boundary whose reading differed from the first, so a change-and-revert
-    # names the lanes it straddled instead of vanishing.
-    local base_sample="${FINGERPRINT_SAMPLES[0]:-}"
-    local drifted=() i
-    for i in "${!FINGERPRINT_SAMPLES[@]}"; do
-        [[ "${FINGERPRINT_SAMPLES[$i]}" != "$base_sample" ]] &&
-            drifted+=( "${FINGERPRINT_LANES[$i]}" )
-    done
-    if [[ ${#drifted[@]} -gt 0 && "$RUN_FINGERPRINT_BEFORE" == "$(source_fingerprint)" ]]; then
-        printf '\n  %sEVIDENCE INVALID: the tree changed and changed back.%s\n' \
-            "$C_RED" "$C_OFF"
-        printf '  The run started and ended in the same state, so the endpoints\n'
-        printf '  agree, but these lane boundaries saw something different:\n'
-        printf '    %s\n' "${drifted[*]}"
-        printf '  Those lanes did not all test the same tree. Discard and repeat.\n'
-    fi
     printf '\n  %sEVIDENCE INVALID: the source tree changed during this run.%s\n' \
         "$C_RED" "$C_OFF"
     printf '  Some lanes tested the code before the change and some after, and the\n'
     printf '  object files may be a mixture. Whatever the results above say, they\n'
     printf '  describe no single state of the tree — discard them and run again\n'
     printf '  against a still tree.\n'
+    EVIDENCE_INVALID=1
+fi
+
+if [[ $EVIDENCE_INVALID -ne 0 ]]; then
     exit 1
 fi
 
