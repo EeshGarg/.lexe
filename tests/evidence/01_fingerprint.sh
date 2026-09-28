@@ -63,19 +63,37 @@ fail=0
 # worthless. A per-probe before/after pair is immune to drift between probes,
 # and drift DURING a probe is reported as its own outcome (DRIFTED) rather than
 # being blamed on the fingerprint.
-verdict_for() { # expect, before, now, after -> prints verdict, sets fail
+#
+# It PRINTS its verdict and sets nothing. The previous version also did
+# `fail=1` -- from inside a function only ever called as `$(verdict_for ...)`,
+# which is a command substitution, which is a SUBSHELL. Every one of those
+# assignments died with the subshell, `exit "$fail"` always saw 0, and this lane
+# COULD NOT FAIL.
+#
+# An independent audit proved it by reintroducing the exact defect the lane was
+# written for -- a fingerprint that hashes nothing and approves everything --
+# and watching the lane print six WRONG verdicts, then "ok", then exit 0.
+#
+# So this is instance seven of the pattern documented in docs/ERRORS.md section
+# 7, committed by the author of the lane, inside the lane whose entire purpose is
+# catching it. The lesson is not "be careful with subshells": it is that a value
+# which has to cross a subshell boundary is not a signal, and that a check nobody
+# has watched FAIL is not yet a check.
+verdict_for() { # expect, before, now, after -> prints "<moved>|<verdict>"
     local expect="$1" before="$2" now="$3" after="$4"
     local moved="same"; [[ "$now" != "$before" ]] && moved="change"
     local verdict="ok"
-    [[ "$moved" == "$expect" ]] || { verdict="WRONG"; fail=1; }
+    [[ "$moved" == "$expect" ]] || verdict="WRONG"
     # Must return to where it started, or the fingerprint is not a function of
     # the tree and comparing two readings proves nothing.
     if [[ "$after" != "$before" ]]; then
         verdict="DRIFTED (tree changed under the probe; rerun on a quiet tree)"
-        fail=1
     fi
     printf '%s|%s' "$moved" "$verdict"
 }
+
+# Judge a printed verdict in the CALLER's shell, where `fail` is real.
+judge() { case "$1" in *WRONG*|*DRIFTED*) fail=1 ;; esac; }
 
 check() { # label, expect(change|same), path-to-create
     local label="$1" expect="$2" path="$3"
@@ -88,6 +106,7 @@ check() { # label, expect(change|same), path-to-create
     local r; r="$(verdict_for "$expect" "$before" "$now" "$after")"
     printf '  %-48s expect %-6s got %-6s  %s\n' \
         "$label" "$expect" "${r%%|*}" "${r#*|}"
+    judge "${r#*|}"
 }
 
 printf '\n  must CHANGE the fingerprint:\n'
@@ -133,6 +152,7 @@ touch_check() { # label, expect, tracked-path
     local r; r="$(verdict_for "$expect" "$before" "$now" "$after")"
     printf '  %-48s expect %-6s got %-6s  %s\n' \
         "$label" "$expect" "${r%%|*}" "${r#*|}"
+    judge "${r#*|}"
 }
 
 printf '\n  the find half specifically — a tracked file touched, content unchanged\n'

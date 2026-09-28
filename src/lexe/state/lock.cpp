@@ -11,7 +11,9 @@
 
 #include <cassert>
 #include <chrono>
+#include <optional>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -47,6 +49,48 @@ std::string LockOwner::to_line() const {
        << " at=" << acquired_at << "\n";
     return os.str();
 }
+
+namespace {
+
+/// A TEST-ONLY hold, in milliseconds, read once from the environment.
+///
+/// Exists because a race that can only be provoked by luck is not a test. The
+/// per-application mutation lock is held for roughly 10-30 ms and nothing
+/// observable marks the moment it is taken, so an independent pass trying to
+/// force `install||install`, `repair||repair` and `update||rollback`
+/// interleavings could only run them under CPU pressure and hope -- it forced
+/// 160 windows out of 448 attempts and reported that ratio honestly rather than
+/// calling the rest "tested".
+///
+/// Widening the window on request makes those interleavings deterministic. The
+/// value is read ONCE, is absent in every ordinary run, and costs a single
+/// getenv at startup; with it unset this is not merely a no-op but an
+/// unreachable branch.
+///
+/// Deliberately in the LOCK layer rather than sprinkled through callers: the
+/// window that matters is the one between taking the lock and doing the work,
+/// which is a property of the lock and not of any one operation.
+std::chrono::milliseconds test_hold(const char* name) {
+    static const auto parse = [](const char* var) -> long {
+        const std::optional<std::string> value = util::get_env(var);
+        if (!value.has_value() || value->empty()) return 0;
+        try {
+            const long ms = std::stol(*value);
+            // A negative or absurd value is a typo, not an instruction.
+            return (ms > 0 && ms <= 600000) ? ms : 0;
+        } catch (const std::exception&) {
+            return 0;
+        }
+    };
+    if (std::string_view(name) == "LEXE_TEST_HOLD_APPLOCK_MS") {
+        static const long ms = parse("LEXE_TEST_HOLD_APPLOCK_MS");
+        return std::chrono::milliseconds(ms);
+    }
+    static const long ms = parse("LEXE_TEST_HOLD_BEFORE_COMMIT_MS");
+    return std::chrono::milliseconds(ms);
+}
+
+} // namespace
 
 namespace {
 
@@ -213,6 +257,12 @@ public:
                             ") holds its mutation lock");
         }
         write_owner_record(fd, self_owner(op));
+        // Test-only: widen the window a competing operation can be caught in.
+        // Unset in every ordinary run; see test_hold.
+        if (const auto hold = test_hold("LEXE_TEST_HOLD_APPLOCK_MS");
+            hold.count() > 0) {
+            std::this_thread::sleep_for(hold);
+        }
         return AppLock(std::make_unique<FlockHandle>(fd, LockClass::AppMutation),
                        id, op);
     }

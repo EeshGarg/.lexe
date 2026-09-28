@@ -121,7 +121,7 @@ lane_desc() {
     lifecycle)  echo "install -> run -> update -> rollback -> repair -> uninstall, and the same interrupted" ;;
     concurrency) echo "the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection" ;;
     session) echo "the session-manager boundary, against the real systemd --user of this session" ;;
-    conformance) echo "lexe verify vs the independent validator: a 181-case corpus derived from the SPEC, plus verify/install gate agreement" ;;
+    conformance) echo "lexe verify vs the independent validator: a 182-case corpus derived from the SPEC, plus verify/install gate agreement" ;;
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;
@@ -197,6 +197,13 @@ session_check() {
 workloads_check() {
     acceptance_check || return 1
     have python3 || { echo "skip: no python3, and the workload engine is Python"; return 1; }
+    # BOTH corpora, not just the cheap one. Gating on the ELF index alone let
+    # `--all` run with the Windows corpus absent and still record PASS.
+    local pe_index="${LEXE_WORKLOAD_PE_INDEX:-/tmp/lexe-workloads-pe/index.json}"
+    [[ -f "$pe_index" ]] || {
+        echo "blocked: the PE workload corpus is not generated (python3 tests/workloads/generate_pe.py); an unexecuted specimen is not coverage"
+        return 1
+    }
     local elf_index="${LEXE_WORKLOAD_ELF_INDEX:-/tmp/lexe-workloads/index.json}"
     [[ -f "$elf_index" ]] || {
         echo "blocked: the ELF workload corpus is not generated (python3 tests/workloads/generate.py); an unexecuted specimen is not coverage"
@@ -563,7 +570,24 @@ run_lane() {
         "${lane}_run" >"$log" 2>&1 || status=$?
     fi
 
-    if [[ $status -eq 0 ]]; then
+    # A lane can exit 0 having blocked part of its work, and several do: the
+    # shared lib.sh summary returns 0 whenever nothing FAILED, so BLOCKED is
+    # invisible to the exit status. Read the lane's own count instead.
+    #
+    # This mattered. `--all` could report `PASS workloads  1 passed, 0 failed,
+    # 0 skipped` over a run in which the entire 72-specimen Windows corpus was
+    # never executed -- because the availability check gated on the Linux index
+    # alone, the lane exited 0 with one corpus done, and the summary regex could
+    # not even match the word "blocked". Three separate mechanisms each reported
+    # honestly and the composition lied. And it is the EXPECTED state after a WSL
+    # restart wipes /tmp, since the Linux corpus regenerates in seconds and the
+    # Windows one needs MinGW and a Wine prefix.
+    local in_lane_blocked
+    in_lane_blocked="$(grep -oE '[0-9]+ blocked' "$log" | tail -1 | grep -oE '^[0-9]+' || true)"
+    if [[ $status -eq 0 && -n "$in_lane_blocked" && "$in_lane_blocked" -gt 0 ]]; then
+        say "${C_BLUE}  BLOCKED${C_OFF} $(lane_summary "$lane" "$log")"
+        record "$lane" "BLOCKED" "$(lane_summary "$lane" "$log")"
+    elif [[ $status -eq 0 ]]; then
         say "${C_GREEN}  PASS${C_OFF} $(lane_summary "$lane" "$log")"
         record "$lane" "PASS" "$(lane_summary "$lane" "$log")"
     else
@@ -585,7 +609,7 @@ lane_summary() {
     acceptance)
         grep -oE 'all [0-9]+ automated acceptance scripts passed' "$2" | tail -1 || true ;;
     *)
-        grep -oE '[0-9]+ passed, [0-9]+ failed(, [0-9]+ skipped)?' "$2" | tail -1 || true ;;
+        grep -oE '[0-9]+ passed, [0-9]+ failed(, [0-9]+ skipped)?(, [0-9]+ blocked)?' "$2" | tail -1 || true ;;
     esac
 }
 

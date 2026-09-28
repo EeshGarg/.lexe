@@ -115,7 +115,7 @@ std::vector<std::string> provider_search_paths(const std::string& id) {
     for (const ProviderSpec& spec : provider_specs()) {
         if (spec.id != id) continue;
         for (const char* candidate : spec.candidates) {
-            const std::string resolved = util::find_on_path(candidate);
+            const std::string resolved = util::find_on_path(candidate, /*skip_foreign_mounts=*/true);
             if (!resolved.empty()) paths.push_back(resolved);
         }
     }
@@ -279,7 +279,7 @@ ProviderSet probe_providers() {
         provider.kind = chain_layer_kind(spec.id);
         provider.guest_isa = spec.guest_isa;
         for (const char* candidate : spec.candidates) {
-            const std::string resolved = util::find_on_path(candidate);
+            const std::string resolved = util::find_on_path(candidate, /*skip_foreign_mounts=*/true);
             if (!resolved.empty()) {
                 provider.available = true;
                 provider.executable = resolved;

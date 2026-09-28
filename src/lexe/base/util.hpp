@@ -209,6 +209,29 @@ std::string now_utc_string();
 /// "" when it is not there. A `name` containing a '/' is treated as a path and
 /// only checked for existence. Never executes anything: probing what a host
 /// has must be cheap and free of side effects.
-std::string find_on_path(const std::string& name);
+/// Find `name` on PATH.
+///
+/// `skip_foreign_mounts` drops PATH entries under `/mnt/`, where a Linux host
+/// mounts a foreign OS's filesystem. It exists for a measured reason and the
+/// same one twice over.
+///
+/// On a WSL host the inherited PATH carries the whole Windows PATH -- around
+/// thirty-six directories on a DrvFS mount where a single failed stat costs
+/// roughly 4 ms -- so a lookup that MISSES walks all of them. Provider discovery
+/// asks for several candidates across several providers, so the misses multiply:
+/// `lexe doctor` was measured at 3466 ms against 22 ms with a clean PATH, and
+/// `lexe runtime list` at 2239 ms against 6 ms. 734 `newfstatat` calls, 576 of
+/// them under /mnt/c, accounted for 2.2 s of a 2.5 s command.
+///
+/// Nothing was wrong with the search except where it was looking. A Windows
+/// executable cannot be a Linux compatibility provider or a Linux build tool, so
+/// those directories can never hold an answer and the cost buys nothing. Left
+/// off by default, where PATH means what the caller says it means.
+///
+/// This is the second instance of the identical defect -- the first was the
+/// launcher hunting terminal emulators across the same directories, at 1634 ms
+/// in 511 stats. Any lookup that expects to MISS on a WSL host should pass true.
+std::string find_on_path(const std::string& name,
+                         bool skip_foreign_mounts = false);
 
 } // namespace lexe::util

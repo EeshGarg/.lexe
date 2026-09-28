@@ -489,13 +489,34 @@ void refresh_desktop_databases(const Paths& paths) {
     // Best effort: these tools rebuild the desktop's caches. Their absence or
     // failure is not an integration failure — the files we wrote are the
     // durable state; the caches are derived.
+    // Resolved to an ABSOLUTE path first, deliberately.
+    //
+    // Spawning by bare name makes libc search PATH itself, and on a WSL host
+    // PATH carries 36 Windows directories on a DrvFS mount where a failed stat
+    // costs milliseconds. Two tools that are usually absent therefore cost ~550
+    // failed stats: `lexe doctor` was measured at 1001 ms against 33 ms with a
+    // clean PATH, and every scripted invocation paid it.
+    //
+    // find_on_path with skip_foreign_mounts does the lookup once, over the
+    // directories that could actually hold a Linux desktop tool. A tool that is
+    // not found is simply not run, which was already the contract: these rebuild
+    // derived caches, and their absence is not an integration failure.
+    //
+    // This is the third instance of the identical defect -- the launcher hunting
+    // terminal emulators, provider discovery hunting emulators, and now this.
+    // The shape to watch for is a lookup that EXPECTS to miss.
     for (const std::vector<std::string>& argv :
          {std::vector<std::string>{"update-desktop-database",
                                    paths.applications_dir().string()},
           std::vector<std::string>{"update-mime-database",
                                    paths.mime_dir().string()}}) {
+        const std::string tool =
+            util::find_on_path(argv.front(), /*skip_foreign_mounts=*/true);
+        if (tool.empty()) continue; // absent: nothing to rebuild, by contract
+        std::vector<std::string> resolved = argv;
+        resolved.front() = tool;
         try {
-            (void)util::run_process(argv);
+            (void)util::run_process(resolved);
         } catch (const std::exception&) {
             // ignored by design
         }

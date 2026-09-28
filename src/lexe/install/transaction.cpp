@@ -5,6 +5,10 @@
 
 #include "lexe/install/transaction.hpp"
 
+#include <chrono>
+#include <thread>
+#include <optional>
+
 #include "lexe/base/error.hpp"
 #include "lexe/base/fault.hpp"
 #include "lexe/base/json_strict.hpp"
@@ -157,7 +161,35 @@ void InstallTransaction::begin(const std::string& previous_version,
 void InstallTransaction::mark_staged() { write_journal(TxnPhase::Staged); }
 void InstallTransaction::mark_verified() { write_journal(TxnPhase::Verified); }
 
+/// A TEST-ONLY hold before the promote, in milliseconds, read once.
+///
+/// Companion to LEXE_TEST_HOLD_APPLOCK_MS in lock.cpp, and placed here for the
+/// same reason: the window that matters cannot be provoked reliably from
+/// outside. The promote is the moment the installed state changes from the old
+/// version to the new one, and it is short; a competing reader or a fault
+/// injected "during" it is otherwise a matter of luck.
+///
+/// Absent in every ordinary run, a single getenv when set, and a negative or
+/// absurd value is treated as a typo rather than an instruction.
+static std::chrono::milliseconds hold_before_commit() {
+    static const long ms = [] () -> long {
+        const std::optional<std::string> v =
+            util::get_env("LEXE_TEST_HOLD_BEFORE_COMMIT_MS");
+        if (!v.has_value() || v->empty()) return 0;
+        try {
+            const long parsed = std::stol(*v);
+            return (parsed > 0 && parsed <= 600000) ? parsed : 0;
+        } catch (const std::exception&) {
+            return 0;
+        }
+    }();
+    return std::chrono::milliseconds(ms);
+}
+
 void InstallTransaction::promote() {
+    if (const auto hold = hold_before_commit(); hold.count() > 0) {
+        std::this_thread::sleep_for(hold);
+    }
     const fs::path version_target = registry_.version_dir(id_, target_version_);
     const fs::path meta_target = registry_.meta_dir(id_, target_version_);
 

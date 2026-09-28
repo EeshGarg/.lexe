@@ -265,7 +265,17 @@ std::string which_executable(const std::string& name,
 
 std::string detect_terminal_emulator() {
     for (const TerminalSpec& spec : kTerminals) {
-        const std::string path = which_executable(spec.executable);
+        // skip_foreign_mounts for the same reason terminal_argv passes it, and
+        // this is the site that was MISSED when that one was fixed: `lexe doctor`
+        // calls here, so it kept paying 288 failed stats across 36 interop
+        // directories — 890 ms against 29 ms with a clean PATH — while the
+        // launcher's own lookup had already been corrected.
+        //
+        // Two call sites, one fixed. The lesson is not about PATH: a fix applied
+        // to the site where a defect was FOUND, rather than to every site with the
+        // same shape, leaves the defect alive somewhere quieter.
+        const std::string path =
+            which_executable(spec.executable, /*skip_foreign_mounts=*/true);
         if (!path.empty()) return path;
     }
     return {};

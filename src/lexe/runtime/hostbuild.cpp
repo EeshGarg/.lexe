@@ -36,7 +36,9 @@ ToolchainReport probe_toolchain(const BuildRecipe& recipe) {
     for (const std::string& tool : recipe.toolchain) {
         ToolchainEntry entry;
         entry.name = tool;
-        entry.path = util::find_on_path(tool);
+        // A build toolchain is a Linux toolchain; a Windows executable cannot be one,
+        // and a missing tool otherwise walks every interop directory.
+        entry.path = util::find_on_path(tool, /*skip_foreign_mounts=*/true);
         entry.present = !entry.path.empty();
         if (!entry.present) report.missing.push_back(tool);
         report.entries.push_back(std::move(entry));

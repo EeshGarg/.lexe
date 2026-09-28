@@ -893,7 +893,8 @@ std::string now_utc_string() {
     return std::string(buf);
 }
 
-std::string find_on_path(const std::string& name) {
+std::string find_on_path(const std::string& name,
+                         bool skip_foreign_mounts) {
     if (name.empty()) return {};
     if (name.find('/') != std::string::npos ||
         name.find('\\') != std::string::npos) {
@@ -912,6 +913,11 @@ std::string find_on_path(const std::string& name) {
         const std::size_t sep = path_env->find(kSeparator, start);
         const std::string dir = path_env->substr(
             start, sep == std::string::npos ? std::string::npos : sep - start);
+        if (skip_foreign_mounts && dir.rfind("/mnt/", 0) == 0) {
+            if (sep == std::string::npos) break;
+            start = sep + 1;
+            continue;
+        }
         if (!dir.empty()) {
             const fs::path candidate = fs::path(dir) / name;
             std::error_code ec;
