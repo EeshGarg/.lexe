@@ -2935,6 +2935,31 @@ def cmd_model(a):
             cons[(tuple(u["key"]), u["op"])][u["class"]] += 1
     inconsistent = {k: v for k, v in cons.items() if len(v) > 1}
 
+    # --- coverage, because "0 divergences" over a walk that never left the
+    # first state is not a result. The asserted-operations ratio below says how
+    # much of the work was CHECKED; this says how much of the machine was
+    # REACHED, and the two answer different objections. A campaign that reports
+    # neither is asking to be believed.
+    cells, states_seen, ops_seen = set(), set(), set()
+    for t in traces:
+        for e in t["ops"]:
+            if e.get("fixture"):
+                ops_seen.add(e["op"])
+                continue
+            cells.add((e.get("model_state"), e.get("op")))
+            states_seen.add(e.get("model_state"))
+            ops_seen.add(e.get("op"))
+    final_states = {}
+    for t in traces:
+        fs = t.get("final_model")
+        final_states[fs] = final_states.get(fs, 0) + 1
+    coverage = {"distinct_state_op_cells": len(cells),
+                "distinct_model_states_entered": len(states_seen),
+                "distinct_operations_attempted": len(ops_seen),
+                "model_states": sorted(x for x in states_seen if x),
+                "operations": sorted(x for x in ops_seen if x),
+                "final_state_distribution": final_states}
+
     ops_run = sum(len(t["ops"]) for t in traces)
     kinds = {}
     for t in traces:
@@ -2945,6 +2970,12 @@ def cmd_model(a):
           % (len(traces), ops_run, elapsed, len(traces) / max(1e-9, elapsed)))
     print("  %d divergence groups, %d inconsistent (state,op) cells"
           % (len(groups), len(inconsistent)))
+    print("  coverage: %d distinct (abstract state, operation) cells across %d "
+          "model states and %d operations; final states %s"
+          % (coverage["distinct_state_op_cells"],
+             coverage["distinct_model_states_entered"],
+             coverage["distinct_operations_attempted"],
+             dict(sorted(final_states.items(), key=lambda kv: -kv[1])[:6])))
     # A clean run is evidence only in proportion to how much of it was ASSERTED.
     # Printed so that "0 divergences" can never be read as "0 divergences out of
     # nothing checked".
@@ -3035,6 +3066,7 @@ def cmd_model(a):
                "elapsed_s": round(elapsed, 2),
                "sequences_per_s": round(len(traces) / max(1e-9, elapsed), 1),
                "expectation_kinds": kinds, "asserted_operations": asserted,
+               "coverage": coverage,
                "divergence_groups": list(groups.values()),
                "inconsistent_cells": [{"state_key": list(k[0]), "op": k[1],
                                        "classes": v}
