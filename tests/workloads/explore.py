@@ -2709,7 +2709,8 @@ def execution_witness(payload):
     per-unit records to count, which is itself reported rather than assumed away.
     """
     for key, label in (("runs", "race rows"), ("cases", "sample cases"),
-                       ("minimised", "minimised traces")):
+                       ("minimised", "minimised traces"),
+                       ("ops", "replayed operations")):
         v = payload.get(key)
         if isinstance(v, list):
             return len(v), label
