@@ -2687,9 +2687,24 @@ def build_cfg(a):
     return cfg
 
 
-def execution_witness(payload):
-    """A count of work done, derived from the payload's own records rather than
-    from the number the engine hands to emit().
+def execution_witness(payload, witness=None):
+    """A count of work done, derived from a DIFFERENT accumulator than the one
+    the engine hands to emit() as `executed`.
+
+    The first version of this guessed, by looking for whichever of a list of
+    well-known keys the payload happened to carry. That was wrong, and wrong in
+    the way this whole mechanism exists to catch: a model report carries BOTH
+    `operations` and `minimised`, `minimised` is empty on a clean run, the guess
+    took the empty list, and a campaign of 81,212 operations with zero
+    divergences was refused with "the engine reports 81212 executed and its own
+    records contain no minimised traces". A check that fires on a correct run is
+    not a stricter check, it is a broken one, and it went out over a shared lane.
+
+    So the witness is now SUPPLIED by each command, which knows which of its
+    accumulators is genuinely a second one, and the guessing is gone. Where a
+    command has no independent second count — `replay` and `reduce` each have
+    exactly one list and it is the same list `executed` is derived from — it
+    passes None, and the report says so rather than inventing one.
 
     `meta.executed` is the engine reporting on itself, and
     `against_lexe_matrix.sh` fails a lane when it is zero — which is the right
@@ -2699,35 +2714,21 @@ def execution_witness(payload):
     That is docs/ERRORS.md §7 exactly: self-reporting machinery cannot detect
     its own absence.
 
-    These counts are built by different code from the summing that produces
-    `executed`: they are the per-unit records each engine writes as it goes. The
-    two need not be EQUAL — a model report counts operations while keeping only
-    diverging traces — so only the zero/non-zero disagreement is an error, which
-    is the disagreement that matters.
+    The two counts need not be EQUAL — a model counts every operation while its
+    expectation tallies skip fixture actions — so only the zero/non-zero
+    disagreement is an error, which is the disagreement that matters.
 
-    Returns (count, what_was_counted) or (None, None) when the payload carries no
-    per-unit records to count, which is itself reported rather than assumed away.
+    Returns (count, what_was_counted), or (None, None) when the command has no
+    second count to offer, which is reported rather than assumed away.
     """
-    for key, label in (("runs", "race rows"), ("cases", "sample cases"),
-                       ("minimised", "minimised traces"),
-                       ("ops", "replayed operations")):
-        v = payload.get(key)
-        if isinstance(v, list):
-            return len(v), label
-    for key, label in (("operations", "model operations"),
-                       ("sequences", "model sequences")):
-        v = payload.get(key)
-        if isinstance(v, int):
-            return v, label
-    v = payload.get("ops")
-    if isinstance(v, dict) and v:
-        return sum(int(x.get("n") or 0) for x in v.values()
-                   if isinstance(x, dict)), "cost samples"
+    if witness is not None:
+        count, label = witness
+        return (None, None) if count is None else (int(count), label)
     return None, None
 
 
-def emit(a, payload, failures, executed, headline):
-    witness, witness_of = execution_witness(payload)
+def emit(a, payload, failures, executed, headline, witness=None):
+    witness, witness_of = execution_witness(payload, witness)
     payload["meta"] = {
         "headline": headline, "executed": executed, "failures": failures,
         "executed_witness": witness, "executed_witness_source": witness_of,
@@ -2781,7 +2782,11 @@ def cmd_cost(a):
         print("    pinned PATH %d entries:                  median %.0fms"
               % (len(PINNED_PATH.split(":")), pe["doctor_pinned_path_ms"]["median"]))
     return emit(a, r, 0, sum(v["n"] for v in r["ops"].values()),
-                "cost: %d operations timed" % sum(v["n"] for v in r["ops"].values()))
+                "cost: %d operations timed" % sum(v["n"] for v in r["ops"].values()),
+                # `executed` sums the samples; this counts the operations that
+                # produced a row at all. A timing loop that ran zero operations
+                # and a sample counter that summed nothing fail differently.
+                witness=(len(r["ops"]), "operations with a timing row"))
 
 
 # --------------------------------------------------------------------------- #
@@ -2876,7 +2881,8 @@ def cmd_sample(a):
                                          if not r.get("skipped")])}
     payload["harness_errors"] = HARNESS_ERRORS
     return emit(a, payload, len(viol) + len(missing) + len(HARNESS_ERRORS), executed,
-                "sample: %d cases, %d violations" % (executed, len(viol)))
+                "sample: %d cases, %d violations" % (executed, len(viol)),
+                witness=(len(results), "case records"))
 
 
 def cmd_model(a):
@@ -3083,7 +3089,13 @@ def cmd_model(a):
     return emit(a, payload, failures, ops_run,
                 "model: %d sequences / %d operations, %d divergence groups, "
                 "%d inconsistent cells" % (len(traces), ops_run, len(groups),
-                                           len(inconsistent)))
+                                           len(inconsistent)),
+                # `ops_run` sums the per-trace operation lists. This sums the
+                # expectation tallies, which are incremented at a different
+                # place in the loop, so a walk that appended operations without
+                # ever evaluating one — or evaluated without appending — shows
+                # up as one of the two being zero.
+                witness=(sum(kinds.values()), "evaluated expectations"))
 
 
 def cmd_race(a):
@@ -3179,7 +3191,8 @@ def cmd_race(a):
                "still_unforceable": STILL_UNFORCEABLE}
     return emit(a, payload, len(viol) + len(HARNESS_ERRORS), executed,
                 "race: %d runs, %d forced, %d violations"
-                % (executed, forced, len(viol)))
+                % (executed, forced, len(viol)),
+                witness=(len(rows), "schedule rows"))
 
 
 # This used to be a REQUEST. The hold points it asked for now exist
