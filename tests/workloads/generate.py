@@ -19,22 +19,38 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPECS = os.path.join(HERE, "specs")
+REPO = os.path.dirname(os.path.dirname(HERE))
+
+# The project's own namespaced private X server. No automated test may put a
+# window on the developer's screen, and on WSLg that needs a private mount AND
+# network namespace -- see the header of the script itself. The GUI specimens use
+# it unchanged rather than starting an Xvfb of their own.
+PD_LIB = os.path.join(REPO, "scripts", "lib", "private-display.sh")
 
 COMMON_C = ["-std=gnu11", "-Wall", "-Wextra", "-D_GNU_SOURCE", "-I" + SPECS]
 COMMON_CXX = ["-std=gnu++17", "-Wall", "-Wextra", "-I" + SPECS]
 
+# -O3 is not "-O2 but more": it turns on automatic vectorisation and far more
+# aggressive inlining and loop transformation, which is where hand-written
+# integer code stops agreeing with itself if it had undefined behaviour in it,
+# and where a fault the specimen depends on can be optimised out of existence.
+# It is therefore a real axis and not a third spelling of the same build.
 TOOLCHAINS = {
     "gcc-O0":   {"cc": "gcc",   "cxx": "g++",     "opt": ["-O0", "-g"]},
     "gcc-O2":   {"cc": "gcc",   "cxx": "g++",     "opt": ["-O2"]},
+    "gcc-O3":   {"cc": "gcc",   "cxx": "g++",     "opt": ["-O3"]},
     "clang-O0": {"cc": "clang", "cxx": "clang++", "opt": ["-O0", "-g"]},
     "clang-O2": {"cc": "clang", "cxx": "clang++", "opt": ["-O2"]},
+    "clang-O3": {"cc": "clang", "cxx": "clang++", "opt": ["-O3"]},
 }
 
 
@@ -148,6 +164,10 @@ LIBS = [
     {"name": "libplugin.so", "src": ["plugin.c"], "extra": []},
     {"name": "libver.so", "src": ["libver.c"],
      "extra": ["-Wl,--version-script=" + os.path.join(SPECS, "libver.map")]},
+    # A C++ library, built with the C++ driver. Its whole reason to exist is that
+    # an exception thrown inside it must be caught in the executable, which only
+    # works if the two share one typeinfo, one vtable and one unwinder.
+    {"name": "libthrower.so", "src": ["libthrower.cpp"], "lang": "c++", "extra": []},
 ]
 
 SPECIMENS = []
@@ -167,6 +187,20 @@ def S(fid, src, family, prop, **kw):
         "argv": list(kw.get("argv", [])),
         "env": dict(kw.get("env", {})),
         "stdin": kw.get("stdin", b""),
+        # How the three standard streams are connected. See STDIO_SHAPES.
+        "stdio": kw.get("stdio", "pipe"),
+        "stdio_limit": kw.get("stdio_limit", 4096),
+        "stdio_reference": kw.get("stdio_reference", False),
+        # "private" = the project's namespaced X server; "none" = DISPLAY and
+        # WAYLAND_DISPLAY removed outright; absent = inherited (console specimens
+        # never look at it).
+        "display": kw.get("display"),
+        # Seconds to keep the private X server alive AFTER the launched process
+        # has exited. Only meaningful with display="private".
+        "display_hold_s": kw.get("display_hold_s", 0),
+        # A path (relative to the run directory) whose APPEARANCE ends the hold.
+        # Turns a fixed margin, which is a race, into a condition.
+        "display_hold_until": kw.get("display_hold_until"),
         "declared": {
             "exit_code": kw.get("exit", 0),
             "signal": kw.get("signal"),
@@ -179,6 +213,14 @@ def S(fid, src, family, prop, **kw):
             "process_behaviour": kw.get("procbeh", "single-process"),
             "elf": dict(kw.get("elf", {})),
             "bulk_check": kw.get("bulk"),
+            # Facts about the CONNECTION rather than about the program, declared
+            # before the shape is ever built. Checked in verdict_for.
+            "stdio_expect": dict(kw.get("stdio_expect", {})),
+            # None means "this must compile with NO diagnostics at all". A
+            # string means a diagnostic is EXPECTED and must contain it. The
+            # corpus compiling clean was previously an observation that happened
+            # to hold; declaring it makes it a property the generator enforces.
+            "build_warning_contains": kw.get("expect_build_warning"),
             "reaches_result_line": kw.get("signal") is None,
             "requires_result_pass": kw.get("result", True) and kw.get("signal") is None,
         },
@@ -225,6 +267,52 @@ S("linux-format-large-binary", "big_data.c", "format", "a deliberately large exe
   expect={"BIG_BYTES": "50331648", "BIG_FIRST": "yes", "BIG_LAST": "yes"},
   duration="sub-second", timeout=120.0,
   notes="48 MiB of initialised .data, checksummed at runtime so the pages must arrive.")
+# `-static` was applied to exactly one program, self_report.c, which does almost
+# nothing -- so the corpus declared static linking without ever exercising the
+# parts of libc where static linking actually changes the answer. These three are
+# those parts. The first two must produce EXACTLY the same oracle as their
+# dynamic twins, which is the whole claim; the third must not, and says so.
+S("linux-format-static-threads", "thread_modes.c", "format",
+  "fully static AND threaded: the same answers as the dynamic build",
+  cflags=["-static", "-pthread"], argv=["condvar"],
+  elf={"statically_linked": True, "interpreter": None, "needed": []},
+  procbeh="multi-threaded",
+  expect={"THREAD_MODE": "condvar", "CONSUMER_STARTED": "yes",
+          "ITEMS_PRODUCED": "64", "CONSUMED_SUM": "2080", "SUM_IS_2080": "yes"},
+  notes="Static libpthread pulls in a different set of libc startup and "
+        "cancellation paths than the shared one. Every deterministic line must "
+        "match linux-thread-condvar-handoff exactly; if one does not, static "
+        "linking changed behaviour and the corpus needs to know which line.")
+S("linux-format-static-cxx-exceptions", "cxx_core.cpp", "format",
+  "fully static C++: exceptions unwound by a statically linked libgcc",
+  cflags=["-std=c++17", "-static"],
+  elf={"statically_linked": True, "interpreter": None,
+       "needed_excludes": ["libstdc++.so.6"]},
+  expect={"CXX_STANDARD": "201703", "STATIC_INIT_ORDER": "12",
+          "EXCEPTION_CAUGHT_BY_BASE_REF": "yes",
+          "DESTRUCTOR_RAN_DURING_UNWIND": "yes",
+          "TYPEID_MATCHES_DYNAMIC_TYPE": "yes",
+          "DYNAMIC_CAST_DOWN_SUCCEEDS": "yes",
+          "SORTED": "alpha,beta,gamma", "LAMBDA_RESULT": "133"},
+  notes="Exception unwinding and RTTI through a statically linked libgcc and "
+        "libstdc++ is the classic place a fully static C++ binary stops working "
+        "-- the unwinder needs to find frame tables that are no longer where it "
+        "looks for them. The twin is linux-cxx-core-cpp17.")
+S("linux-format-static-resolver", "sock_resolve.c", "format",
+  "fully static and calling getaddrinfo, which is the case glibc warns about",
+  cflags=["-static"],
+  elf={"statically_linked": True, "interpreter": None},
+  expect_build_warning="statically linked applications requires at runtime",
+  expect={"LOCALHOST_RC_IS_ZERO": "yes", "BOGUS_RC_IS_ZERO": "no",
+          "ETC_HOSTS_READABLE": "yes", "SURVIVED_RESOLUTION": "yes"},
+  caps=["/etc/hosts and the NSS configuration"],
+  notes="THE specimen that is supposed to warn, and the reason the generator now "
+        "treats compiler diagnostics as a declared property rather than a field "
+        "nobody reads. glibc's name resolution loads NSS modules at runtime, so "
+        "a static binary still needs shared libraries it does not list in "
+        "NEEDED and no tool can see the dependency by reading the file. That is "
+        "a legitimate and extremely common shape -- not a broken build -- and "
+        "the link-time warning is the only place it is ever stated.")
 S("linux-format-selfcontained", "embedded_blob.c", "format",
   "single self-contained executable with no external inputs",
   cflags=["-static"], elf={"statically_linked": True, "needed": []},
@@ -578,6 +666,205 @@ S("linux-io-dup2-redirect", "io_dup2.c", "io", "rewires its own stdout mid-run",
   expect={"DUP_SAVED": "yes", "DUP2_OK": "yes", "RESTORE_OK": "yes",
           "FILE_BYTES": "20", "FILE_CONTENT_OK": "yes", "STDOUT_RESTORED": "yes"})
 
+# ---- stdio shapes --------------------------------------------------------
+#
+# A launcher once discarded the program's output entirely, so the CONNECTION got
+# its own family. Two groups live here.
+#
+# The first is a matrix: io_stdio_shape.c, compiled once, launched through all
+# eight shapes in STDIO_SHAPES. It varies nothing itself and reports what its
+# three fds actually ARE -- fifo, regular file, character device or closed;
+# seekable or not; writable or EBADF -- so each shape has a different
+# deterministic answer and the difference between them is the measurement. A pipe
+# and /dev/null both give STDIN_BYTES=0, which is why byte counts alone cannot
+# tell the shapes apart and STDIN_KIND exists.
+#
+# The second group pushes specimens that already exist through the shapes that
+# TRANSFORM a stream, because that is where output is actually lost:
+#   - `tee` must be byte-exact, including NUL bytes;
+#   - a command substitution strips trailing newlines and silently drops NULs;
+#   - a consumer that closes early truncates, and whether the writer even NOTICES
+#     depends entirely on whether the stream was bigger than one pipe buffer.
+# That last pair is the most useful thing in this family: 4158 bytes fit in a
+# pipe buffer, so the writer reports complete success while the consumer keeps
+# 1024 bytes and nothing anywhere returns an error. 4 MiB does not fit, so the
+# same shape kills the writer with SIGPIPE. Same shape, opposite symptoms, and a
+# consumer that tested only one size would conclude the wrong thing about both.
+
+SHAPE_PAYLOAD = {"stream": "stdout", "bytes_key": "STDOUT_CLAIMED_BYTES",
+                 "sha_key": "STDOUT_CLAIMED_SHA256"}
+SHAPE_OK = {"WRITE_STDOUT": "ok", "SELF_CONSISTENT": "yes",
+            "STDOUT_PAYLOAD_DELIMITER": "<<<LEXE-STDIO-SHAPE-PAYLOAD>>>",
+            "STDOUT_CLAIMED_BYTES": "4158"}
+
+S("linux-stdio-shape-pipe", "io_stdio_shape.c", "stdio",
+  "all three streams are pipes: the control shape", oracle="stderr",
+  bulk=SHAPE_PAYLOAD,
+  expect=dict(SHAPE_OK, STDIN_KIND="fifo", STDOUT_KIND="fifo", STDERR_KIND="fifo",
+              STDIN_ISATTY="no", STDOUT_ISATTY="no", STDERR_ISATTY="no",
+              STDIN_SEEKABLE="no", STDOUT_SEEKABLE="no", STDOUT_OPEN="yes",
+              STDOUT_APPEND="no", STDIN_BYTES="0", READ_STDIN="ok",
+              STDIN_AT_EOF="yes"),
+  notes="Every other shape in this family is compared against this one. The "
+        "specimen is identical in all eight; only the connection differs.")
+S("linux-stdio-shape-file", "io_stdio_shape.c", "stdio",
+  "stdout and stderr are regular files", oracle="stderr", stdio="file",
+  bulk=SHAPE_PAYLOAD,
+  expect=dict(SHAPE_OK, STDIN_KIND="fifo", STDOUT_KIND="regular",
+              STDERR_KIND="regular", STDOUT_SEEKABLE="yes", STDOUT_ISATTY="no",
+              STDOUT_OPEN="yes", STDOUT_APPEND="no", STDIN_BYTES="0"),
+  notes="A regular file is seekable and glibc fully buffers it, so `prog >out` "
+        "is not merely a pipe pointed somewhere else. The runner reads the file "
+        "back and recomputes the digest the specimen attested to.")
+S("linux-stdio-shape-tee", "io_stdio_shape.c", "stdio",
+  "stdout through tee: two copies of one stream, which must be identical",
+  oracle="stderr", stdio="tee", stdio_reference=True, bulk=SHAPE_PAYLOAD,
+  stdio_expect={"tee_copy_matches_captured": True, "captured_equals_reference": True},
+  expect=dict(SHAPE_OK, STDOUT_KIND="fifo", STDIN_KIND="fifo", STDERR_KIND="fifo"),
+  notes="tee is declared LOSSLESS here and verified twice: its file copy against "
+        "the copy that reached the runner, and both against a reference capture "
+        "of the same program through a plain pipe.")
+S("linux-stdio-shape-cmdsub", "io_stdio_shape.c", "stdio",
+  "stdout captured by a shell command substitution, which strips trailing newlines",
+  oracle="stderr", stdio="cmdsub", stdio_reference=True,
+  stdio_expect={"captured_equals_reference": False,
+                "captured_equals_reference_rstrip_newlines": True,
+                "trailing_newlines_lost": 1},
+  expect=dict(SHAPE_OK, STDOUT_KIND="fifo"),
+  notes="`out=$(prog)` is how an enormous amount of real scripting invokes a "
+        "program, and it is LOSSY BY DESIGN. There is no bulk digest check here "
+        "because the specimen's attested SHA-256 is of what it WROTE and the "
+        "shape altered it; the loss is declared as an exact relation to the "
+        "reference capture instead, so it is measured rather than assumed.")
+S("linux-stdio-shape-earlyclose", "io_stdio_shape.c", "stdio",
+  "a consumer that closes after 1024 bytes, on a stream small enough to fit one "
+  "pipe buffer", oracle="stderr", stdio="earlyclose", stdio_limit=1024,
+  stdio_reference=True,
+  stdio_expect={"consumer_reached_limit": True, "consumer_closed_after_bytes": 1024,
+                "captured_is_prefix_of_reference": True},
+  expect=dict(SHAPE_OK, STDOUT_KIND="fifo", STDERR_KIND="regular"),
+  notes="THE quiet case. All 4158 bytes fit in the 64 KiB pipe buffer, so every "
+        "write succeeds, WRITE_STDOUT=ok, RESULT=PASS and the exit code is 0 -- "
+        "while the consumer kept 1024 bytes and threw the rest away. Nothing "
+        "anywhere returns an error. Compare linux-stdio-earlyclose-4mib, the "
+        "same shape over a stream that does not fit, where the writer dies.")
+S("linux-stdio-shape-devnull-stdin", "io_stdio_shape.c", "stdio",
+  "stdin is /dev/null: a character device at EOF, not a pipe",
+  oracle="stderr", stdio="devnull-stdin", bulk=SHAPE_PAYLOAD,
+  expect=dict(SHAPE_OK, STDIN_KIND="chardev", STDIN_BYTES="0", READ_STDIN="ok",
+              STDIN_AT_EOF="yes", STDIN_ISATTY="no", STDIN_SEEKABLE="yes",
+              STDOUT_KIND="fifo"),
+  notes="The byte count is 0, exactly as it is for an empty pipe. STDIN_KIND is "
+        "the only thing that separates them, and the difference matters: a "
+        "launcher that 'connects stdin' by handing over a pipe it never closes "
+        "makes a program that reads to EOF hang rather than fail.")
+S("linux-stdio-shape-file-stdin", "io_stdio_shape.c", "stdio",
+  "stdin is a regular file: seekable, with real content",
+  oracle="stderr", stdio="file-stdin", stdin=STDIN_4K, bulk=SHAPE_PAYLOAD,
+  expect=dict(SHAPE_OK, STDIN_KIND="regular", STDIN_SEEKABLE="yes",
+              STDIN_BYTES="4096", READ_STDIN="ok", STDIN_AT_EOF="yes",
+              STDOUT_KIND="fifo"),
+  notes="`prog <in.dat`. The same 4096 bytes linux-io-stdin-consumed is fed "
+        "through a pipe, arriving through a seekable fd instead.")
+S("linux-stdio-shape-closed-stdout", "io_stdio_shape.c", "stdio",
+  "fd 1 is closed outright, so writing to it fails with EBADF",
+  oracle="stderr", stdio="closed-stdout",
+  expect={"STDOUT_KIND": "closed", "STDOUT_OPEN": "no", "STDOUT_SEEKABLE": "no",
+          "STDOUT_ISATTY": "no", "WRITE_STDOUT": "EBADF", "SELF_CONSISTENT": "yes",
+          "STDERR_KIND": "fifo", "STDIN_BYTES": "0"},
+  notes="`prog >&-`, which a careless supervisor produces by closing a handle it "
+        "meant to redirect. The specimen survives it and says so; a program that "
+        "assumed fd 1 was open would write its output into whatever opened next.")
+
+# ---- the transforming shapes over streams that already exist -------------
+S("linux-stdio-file-4mib", "io_stream.c", "stdio",
+  "4 MiB to a regular file rather than a pipe", argv=["4"], oracle="stderr",
+  stdio="file",
+  bulk={"stream": "stdout", "bytes_key": "STREAM_BYTES", "sha_key": "STREAM_SHA256"},
+  expect={"STREAM_BYTES": "4194304", "STREAM_COMPLETE": "yes"}, timeout=120.0,
+  notes="The same stream as linux-io-stream-4mib into a seekable destination, "
+        "where nothing throttles the writer and there is no 64 KiB buffer to "
+        "block on. The digest must be identical to the pipe capture's.")
+S("linux-stdio-tee-4mib", "io_stream.c", "stdio",
+  "4 MiB through tee, verified as two identical copies", argv=["4"],
+  oracle="stderr", stdio="tee", stdio_reference=True,
+  bulk={"stream": "stdout", "bytes_key": "STREAM_BYTES", "sha_key": "STREAM_SHA256"},
+  stdio_expect={"tee_copy_matches_captured": True, "captured_equals_reference": True},
+  expect={"STREAM_BYTES": "4194304", "STREAM_COMPLETE": "yes"}, timeout=180.0,
+  notes="At volume, `tee` is a second consumer that can fall behind. Both copies "
+        "and the reference capture must agree byte for byte.")
+S("linux-stdio-earlyclose-4mib", "io_stream.c", "stdio",
+  "a consumer that closes after 64 KiB of a 4 MiB stream, killing the writer",
+  argv=["4"], oracle="stderr", stdio="earlyclose", stdio_limit=65536,
+  stdio_reference=True, signal="SIGPIPE", exit=None, result=False,
+  stdio_expect={"consumer_reached_limit": True,
+                "consumer_closed_after_bytes": 65536,
+                "captured_is_prefix_of_reference": True},
+  expect={"STREAM_REQUESTED_BYTES": "4194304"}, timeout=180.0,
+  notes="THE loud case, and the counterpart to linux-stdio-shape-earlyclose. "
+        "4 MiB does not fit in a pipe buffer, so when the consumer goes away the "
+        "writer is killed by SIGPIPE mid-stream and never prints its attestation "
+        "or a RESULT line. What was captured must still be a genuine PREFIX of "
+        "the full stream -- a truncated stream and a reordered one have the same "
+        "length, so the prefix relation is the check and the length is not.")
+S("linux-stdio-cmdsub-oracle", "self_report.c", "stdio",
+  "the oracle stream itself passes through a command substitution",
+  stdio="cmdsub", stdio_reference=True,
+  stdio_expect={"captured_equals_reference": False,
+                "captured_equals_reference_rstrip_newlines": True,
+                "trailing_newlines_lost": 1},
+  expect={"ARGC": "1", "ARGV0_PRESENT": "yes", "DOUBLE_MATH": "1.000000"},
+  notes="The KEY=VALUE contract has to survive the most common capture idiom "
+        "there is. It does: the final newline is stripped and the last line is "
+        "still parseable, which is why the oracle parser must not require a "
+        "trailing newline. Declared, rather than left to luck.")
+S("linux-stdio-binary-tee", "io_binary_stdout.c", "stdio",
+  "all 256 byte values through tee, which must not alter one of them",
+  oracle="stderr", stdio="tee", stdio_reference=True,
+  bulk={"stream": "stdout", "bytes_key": "BINARY_BYTES", "fnv_key": "BINARY_FNV1A"},
+  stdio_expect={"tee_copy_matches_captured": True, "captured_equals_reference": True},
+  expect={"BINARY_BYTES": "256"},
+  notes="The lossless half of the binary pair. tee moves NUL, 0x1A, CR and "
+        "invalid UTF-8 through unchanged, and both copies are checked.")
+S("linux-stdio-binary-cmdsub", "io_binary_stdout.c", "stdio",
+  "all 256 byte values through a command substitution, which loses the NULs",
+  oracle="stderr", stdio="cmdsub", stdio_reference=True,
+  stdio_expect={"captured_equals_reference": False,
+                "captured_equals_reference_nuls_removed_rstrip_newlines": True},
+  expect={"BINARY_BYTES": "256"},
+  notes="The lossy half. A shell variable cannot hold a NUL byte, so the shape "
+        "silently deletes them and strips the trailing newlines. Declared as an "
+        "exact relation to the reference capture -- remove the NULs, strip the "
+        "trailing newlines, and the two are equal -- so the damage is measured "
+        "rather than merely expected. No digest check: the specimen attested to "
+        "what it wrote, and this shape did not deliver that.")
+S("linux-stdio-both-to-files", "io_both.c", "stdio",
+  "both streams to separate regular files, so neither can mask the other",
+  stdio="file", expect={"OUT_TOTAL": "8"},
+  notes="linux-io-both-streams captures both through pipes and can therefore "
+        "assert only the per-stream content, never the interleaving. Two files "
+        "make each stream independently complete and independently checkable.")
+S("linux-stdio-slow-to-file", "io_stream_slow.c", "stdio",
+  "output that arrives in bursts, into a regular file", argv=["8", "120", "500"],
+  oracle="stderr", stdio="file", duration="seconds",
+  bulk={"stream": "stdout", "bytes_key": "SLOW_BYTES", "sha_key": "SLOW_SHA256"},
+  expect={"SLOW_TICKS_REQUESTED": "8", "SLOW_TICKS_WRITTEN": "8",
+          "SLOW_GAP_MS": "120", "SLOW_TAIL_MS": "500", "SLOW_BYTES": "262144",
+          "SLOW_TAIL_ELAPSED": "yes"}, timeout=120.0,
+  notes="Pacing survives to a file: eight bursts and half a second of silence "
+        "with the fd still open. Half the ticks of linux-io-stream-slow-paced so "
+        "the shape is covered without paying for the duration twice.")
+S("linux-stdio-stdin-required-devnull", "io_stdin.c", "stdio",
+  "a program that REQUIRES stdin, launched with /dev/null",
+  stdio="devnull-stdin", result=False,
+  expect={"STDIN_BYTES": "0", "READ_TO_EOF": "yes", "STDIN_NOT_EMPTY": "no",
+          "RESULT": "FAIL"},
+  notes="RESULT=FAIL is the correct outcome and the specimen is behaving "
+        "perfectly: it ran, found its environment did not meet its stated "
+        "requirement, and said so on the stream instead of hanging or crashing. "
+        "An exit code of 0 with RESULT=FAIL is exactly the case a consumer that "
+        "reads only the exit code cannot see.")
+
 # ---- filesystem ----------------------------------------------------------
 S("linux-fs-tmpfile-mkstemp", "fs_tmpfile.c", "filesystem",
   "a temporary file created and removed under TMPDIR",
@@ -795,6 +1082,394 @@ S("linux-compound-unix-service", "compound_service.c", "compound",
   caps=["threads", "AF_UNIX sockets", "/dev/shm", "signals"],
   notes="Threads, sockets, signals, shared memory, fork and files at once.")
 
+# ---- more ways to die ----------------------------------------------------
+# The corpus had two deaths: a null write and an abort(). These are the other
+# mechanisms, and they are not interchangeable -- an illegal instruction, an
+# integer division by zero, a mapping whose file was truncated, an exhausted
+# stack and a failed assertion arrive through five different paths. Every one is
+# provoked genuinely rather than by raise(), because raise() proves only that
+# raise() works.
+S("linux-outcome-sigill", "crash_modes.c", "outcome",
+  "dies from SIGILL on a genuine undefined instruction", argv=["ill"],
+  signal="SIGILL", exit=None,
+  expect={"CRASH_MODE": "ill", "FAULT_KIND": "illegal-instruction",
+          "EXPECT_DEATH": "sigill"},
+  notes="__builtin_trap emits ud2. The fault comes from the CPU, not from libc.")
+S("linux-outcome-sigfpe", "crash_modes.c", "outcome",
+  "dies from SIGFPE on integer division by zero", argv=["fpe"],
+  signal="SIGFPE", exit=None,
+  expect={"CRASH_MODE": "fpe", "FAULT_KIND": "integer-division-by-zero",
+          "EXPECT_DEATH": "sigfpe"},
+  notes="Both operands are volatile so no optimiser can fold the division away. "
+        "SIGFPE from an INTEGER divide surprises people who expect it to be "
+        "about floating point.")
+S("linux-outcome-sigbus", "crash_modes.c", "outcome",
+  "dies from SIGBUS touching a mapping whose file was truncated", argv=["bus"],
+  signal="SIGBUS", exit=None, effects=["creates bus.dat"],
+  expect={"CRASH_MODE": "bus", "FAULT_KIND": "mapping-truncated-under-us",
+          "SETUP_OK": "yes", "EXPECT_DEATH": "sigbus"},
+  notes="The address stays mapped; the page behind it stops existing. This is "
+        "what a program gets when the file it mapped is replaced underneath it.")
+S("linux-outcome-stack-overflow", "crash_modes.c", "outcome",
+  "dies from SIGSEGV by exhausting its stack", argv=["stack"],
+  signal="SIGSEGV", exit=None, timeout=120.0,
+  expect={"CRASH_MODE": "stack", "FAULT_KIND": "stack-exhaustion",
+          "EXPECT_DEATH": "sigsegv-stack-guard"},
+  notes="A guard-page fault, not a null dereference: same signal, entirely "
+        "different cause, and the address is nowhere near zero. Anything that "
+        "classifies crashes by the faulting address gets these two confused.")
+S("linux-outcome-assert-failure", "crash_modes.c", "outcome",
+  "dies from SIGABRT through a failed assert()", argv=["assert"],
+  signal="SIGABRT", exit=None,
+  expect={"CRASH_MODE": "assert", "FAULT_KIND": "failed-assertion",
+          "EXPECT_DEATH": "sigabrt-assert"},
+  notes="assert() writes its own message to stderr before aborting, so this "
+        "specimen dies with diagnostic output on a stream that is not the "
+        "oracle's. Same signal as linux-outcome-abort, different route.")
+
+# ---- exit codes that mean something else to somebody --------------------
+# 0, 1, 42 and 255 were already here. These are the ones that get MISREAD,
+# which is the property: 126 and 127 are what a shell invents when it cannot
+# run a program at all, and 128+n is what a shell invents for death by signal n.
+# A program that legitimately exits 137 is indistinguishable, from the status
+# alone, from one the OOM killer reached -- and only one of them is a problem.
+for _code, _why in ((2, "the conventional 'wrong usage' status"),
+                    (77, "a plain application-defined status in the middle of "
+                         "the range"),
+                    (126, "what a shell reports when a file exists but cannot be "
+                          "executed -- here it is the program's own chosen status"),
+                    (127, "what a shell reports for 'command not found' -- here "
+                          "the command was found and chose this"),
+                    (128, "the boundary above which a shell starts reading a "
+                          "status as a signal number"),
+                    (130, "128+SIGINT: indistinguishable from Ctrl-C to anything "
+                          "that only sees the status"),
+                    (137, "128+SIGKILL: indistinguishable from an OOM kill"),
+                    (200, "well above any signal encoding and still perfectly "
+                          "legal")):
+    S("linux-outcome-exit-%d" % _code, "exit_code.c", "outcome",
+      "exits with status %d after a complete run" % _code,
+      argv=[str(_code)], exit=_code,
+      expect={"EXIT_CODE_INTENDED": str(_code), "WORK_DONE": "yes"},
+      notes="RESULT=PASS with exit %d. %s. The specimen ran to completion; the "
+            "status is its declared outcome and nothing died." % (_code, _why))
+
+# ---- threads beyond the count -------------------------------------------
+S("linux-thread-tls", "thread_modes.c", "process",
+  "thread-local storage: four threads, four private copies",
+  cflags=["-pthread"], argv=["tls"], procbeh="multi-threaded",
+  expect={"THREAD_MODE": "tls", "THREADS_STARTED": "yes",
+          "MAIN_TLS_AFTER_JOINS": "7", "MAIN_TLS_UNDISTURBED": "yes",
+          "TLS_SEEN_0": "1000", "TLS_SEEN_1": "1001", "TLS_SEEN_2": "1002",
+          "TLS_SEEN_3": "1003", "TLS_ALL_DISTINCT": "yes"},
+  notes="The TLS model is a compiler decision, which is why this one is worth a "
+        "differential: initial-exec and general-dynamic generate different code "
+        "and the answer must not change.")
+S("linux-thread-detached", "thread_modes.c", "process",
+  "a detached thread nobody joins, which finishes before the process does",
+  cflags=["-pthread"], argv=["detached"], procbeh="multi-threaded",
+  duration="sub-second",
+  expect={"THREAD_MODE": "detached", "DETACH_ATTR": "yes",
+          "DETACHED_STARTED": "yes", "DETACHED_MARKER": "d00d",
+          "DETACHED_WORK_COMPLETED": "yes", "NEVER_JOINED": "yes"})
+S("linux-thread-main-exits-first", "thread_modes.c", "process",
+  "main returns while a detached thread is still working, so the work is lost",
+  cflags=["-pthread"], argv=["mainexits"], procbeh="multi-threaded",
+  expect={"THREAD_MODE": "mainexits", "DETACHED_STARTED": "yes",
+          "WORK_UNFINISHED_AT_EXIT": "yes"},
+  notes="The counterpart to linux-thread-detached and the same source: there the "
+        "process waits and the work completes, here it does not and the work "
+        "vanishes with the process. Exit 0 either way, which is the point.")
+S("linux-thread-crash-off-main", "thread_modes.c", "process",
+  "a fault in a NON-main thread kills the whole process",
+  cflags=["-pthread"], argv=["crash"], procbeh="multi-threaded",
+  signal="SIGSEGV", exit=None, timeout=60.0,
+  expect={"THREAD_MODE": "crash", "FAULT_KIND": "null-write-in-a-non-main-thread",
+          "EXPECT_DEATH": "sigsegv-off-main-thread"},
+  notes="The main thread is healthy and doing nothing wrong throughout. Anything "
+        "that watches only the main thread sees a process that was fine and then "
+        "was not.")
+S("linux-thread-fork-in-threaded", "thread_modes.c", "process",
+  "fork() from a threaded process: the child gets exactly one thread",
+  cflags=["-pthread"], argv=["forkinthread"], procbeh="multi-threaded-and-forks",
+  expect={"THREAD_MODE": "forkinthread", "PARENT_THREADS_STARTED": "yes",
+          "FORK_OK": "yes", "REAPED": "yes", "CHILD_EXIT": "21",
+          "CHILD_EXIT_21": "yes", "CHILD_THREAD_COUNT": "1",
+          "CHILD_ROLE": "forked-from-threaded"},
+  notes="However many threads the parent had, the child has one, and any lock "
+        "another thread was holding is frozen in the child for ever. The child "
+        "here does only async-signal-safe work for exactly that reason.")
+S("linux-thread-condvar-handoff", "thread_modes.c", "process",
+  "a real producer/consumer handoff over a condition variable",
+  cflags=["-pthread"], argv=["condvar"], procbeh="multi-threaded",
+  expect={"THREAD_MODE": "condvar", "CONSUMER_STARTED": "yes",
+          "ITEMS_PRODUCED": "64", "CONSUMED_SUM": "2080", "SUM_IS_2080": "yes"},
+  notes="64 items handed across, summed on the other side. A lost or duplicated "
+        "wakeup changes the sum, so the total is the check rather than a count "
+        "of iterations.")
+
+# ---- C++, as an axis rather than a footnote ------------------------------
+# Two C++ specimens of one program made "C/C++" a dimension in name only. This
+# source is built under four language standards and reports which it got, so
+# __cplusplus differs per specimen BY DESIGN and everything else must not.
+for _std, _val in (("c++11", "201103"), ("c++14", "201402"),
+                   ("c++17", "201703"), ("c++20", "202002")):
+    S("linux-cxx-core-%s" % _std.replace("+", "p"), "cxx_core.cpp", "linkage",
+      "the C++ runtime surface under -std=%s" % _std,
+      cflags=["-std=%s" % _std],
+      elf={"needed_contains": ["libstdc++.so.6"]},
+      expect={"CXX_STANDARD": _val, "STATIC_INIT_ORDER": "12",
+              "STATIC_INIT_IN_DECLARATION_ORDER": "yes",
+              "TYPEID_MATCHES_DYNAMIC_TYPE": "yes",
+              "TYPEID_DISTINGUISHES_SIBLINGS": "yes",
+              "DYNAMIC_CAST_DOWN_SUCCEEDS": "yes",
+              "DYNAMIC_CAST_SIDEWAYS_FAILS": "yes",
+              "VIRTUAL_DISPATCH_IS_2": "yes",
+              "EXCEPTION_CAUGHT_BY_BASE_REF": "yes",
+              "EXCEPTION_WHAT": "deliberate",
+              "DESTRUCTOR_RAN_DURING_UNWIND": "yes",
+              "SORTED": "alpha,beta,gamma", "MAP_SIZE": "3", "MAP_ALPHA": "5",
+              "LAMBDA_RESULT": "133", "LAMBDA_THROUGH_STD_FUNCTION": "yes",
+              "DESTRUCTOR_CALLS": "1"},
+      caps=["libstdc++"],
+      notes="RTTI, dynamic_cast, unwinding with destructors, containers and a "
+            "lambda through std::function. CXX_STANDARD is the only key that "
+            "differs across the four; if any other one moves, the behaviour "
+            "depended on the standard and the corpus needs to know.")
+S("linux-cxx-so-exception", "cxx_so_throw.cpp", "linkage",
+  "an exception thrown in a shared library and caught in the executable",
+  cflags=["-L{LIBDIR}", "-lthrower", "-Wl,--enable-new-dtags",
+          "-Wl,-rpath,$ORIGIN/../lib"],
+  stage="origin", argv=["caught"],
+  elf={"needed_contains": ["libthrower.so", "libstdc++.so.6"],
+       "runpath": "$ORIGIN/../lib"},
+  expect={"MODE": "caught", "TYPEINFO_UNIFIED_ACROSS_SO": "yes",
+          "CAUGHT_STD_RUNTIME_ERROR_FROM_SO": "yes",
+          "RUNTIME_WHAT": "from-the-library",
+          "CAUGHT_BY_BASE_REFERENCE": "yes", "DYNAMIC_CAST_ACROSS_SO": "yes",
+          "CUSTOM_CODE": "42", "CUSTOM_WHAT": "custom-from-the-library",
+          "CAUGHT_EXACT_DERIVED_TYPE": "yes", "SCOPE_CODE": "77",
+          "LIBRARY_DESTRUCTORS_RUN": "1", "UNWOUND_THROUGH_THE_LIBRARY": "yes",
+          "CAUGHT_NON_CLASS_EXCEPTION": "yes", "INT_EXCEPTION_VALUE": "1234"},
+  caps=["libstdc++", "relocatable-directory-tree"],
+  notes="The C++ ABI's most load-bearing cross-module guarantee, and the one a "
+        "packaging step is most likely to break by giving the library its own "
+        "copy of the runtime. Identity of typeinfo is compared across the "
+        "boundary; the mangled NAME is never asserted, because that would be "
+        "asserting the compiler's mangling scheme instead.")
+S("linux-cxx-so-exception-uncaught", "cxx_so_throw.cpp", "outcome",
+  "an exception from a shared library escapes main and std::terminate aborts",
+  cflags=["-L{LIBDIR}", "-lthrower", "-Wl,--enable-new-dtags",
+          "-Wl,-rpath,$ORIGIN/../lib"],
+  stage="origin", argv=["uncaught"], signal="SIGABRT", exit=None,
+  elf={"needed_contains": ["libthrower.so"]},
+  expect={"MODE": "uncaught", "EXCEPTION_SOURCE": "shared-library",
+          "EXPECT_DEATH": "sigabrt-std-terminate"},
+  caps=["libstdc++"],
+  notes="Same binary as linux-cxx-so-exception, one argument different. "
+        "std::terminate writes 'terminate called after throwing...' to stderr "
+        "and aborts, so this dies with diagnostics on a stream the oracle is "
+        "not on. Declared as a death so it stays distinguishable from the "
+        "accident it looks like.")
+
+# ---- filenames are byte strings -----------------------------------------
+# The corpus declares ARGUMENTS containing spaces, Unicode and quotes. A FILENAME
+# is a different surface: it goes through the directory entry, readdir, and every
+# path-joining and quoting layer in between.
+for _fid, _name, _prop in (
+        ("spaces", "two words in a name.txt", "a filename containing spaces"),
+        ("unicode", "café-日本-Ωmega.txt", "a UTF-8 filename outside ASCII"),
+        ("leading-dash", "-not-an-option.txt",
+         "a filename that begins with a dash"),
+        ("shell-metachars", 'quote"and$dollar`and;semi.txt',
+         "a filename full of shell metacharacters"),
+        ("newline", "line-one\nline-two.txt",
+         "a filename containing a newline, which is legal and ruins line-based "
+         "tooling")):
+    S("linux-fs-name-%s" % _fid, "fs_names.c", "filesystem", _prop,
+      argv=[_name],
+      expect={"NAME_LEN": str(len(_name.encode())),
+              "NAME_HEX": _name.encode().hex(),
+              "NAME_NON_EMPTY": "yes", "CREATED": "yes", "LSTAT_OK": "yes",
+              "IS_REGULAR": "yes", "REOPENED": "yes",
+              "CONTENT_ROUNDTRIP": "yes",
+              "CONTENT_DELIMITER": "<<<LEXE-FS-NAME-PAYLOAD>>>",
+              "OPENDIR": "yes", "FOUND_BY_EXACT_BYTES_IN_READDIR": "yes",
+              "UNLINKED": "yes", "GONE": "yes"},
+      effects=["creates and removes one file with an awkward name"],
+      notes="Declared by byte length and by hex, never by appearance, so a "
+            "mangled name is unambiguous. The file is located in the directory "
+            "by an exact byte comparison of the entry, not by a pattern.")
+
+# ---- a large memory image that is small on disk --------------------------
+S("linux-format-large-bss", "big_bss.c", "format",
+  "256 MiB of .bss: a large program that occupies almost nothing on disk",
+  expect={"BSS_BYTES": "268435456", "STRIDE_BYTES": "1048576",
+          "PAGES_PROBED": "256", "BSS_READS_AS_ZERO": "yes",
+          "WRITEBACK_SUM": "32640", "PAGES_ARE_DISTINCT": "yes"},
+  caps=["256 MiB of anonymous memory"], timeout=120.0,
+  notes="The opposite shape to linux-format-large-binary's 48 MiB of .data. "
+        "Together they are what makes 'file size is not memory size' measurable: "
+        "compare binary.size_bytes across the two.")
+
+# ---- exec by name, through PATH -----------------------------------------
+S("linux-proc-exec-path-lookup", "exec_path.c", "process",
+  "execvp of a bare name found on PATH", stage="helper", argv=["helper_child"],
+  env={"PATH": "{BINDIR}:/usr/bin:/bin"}, exit=29, result=False,
+  procbeh="replaces-own-image",
+  expect={"TARGET_NAME": "helper_child", "TARGET_NAME_HAS_NO_SLASH": "yes",
+          "PATH_PRESENT": "yes", "PHASE": "pre-exec", "LOOKUP": "execvp",
+          "CHILD_ROLE": "exec-path", "CHILD_ARGC": "3",
+          "CHILD_EXIT_INTENT": "29"},
+  notes="Every other exec specimen names an absolute path, so until now nothing "
+        "in the corpus depended on PATH being right -- while real software "
+        "depends on it constantly. The exit status proves WHICH program took "
+        "over; the looked-up name alone would not.")
+
+# ---- locale: a claim about the host --------------------------------------
+S("linux-env-locale-utf8", "env_locale.c", "interface",
+  "a UTF-8 locale that this host does have", argv=["C.UTF-8"],
+  expect={"REQUESTED_LOCALE": "C.UTF-8", "C_LOCALE_AVAILABLE": "yes",
+          "C_LOCALE_IS_SINGLE_BYTE": "yes",
+          "REQUESTED_LOCALE_AVAILABLE": "yes", "MB_CUR_MAX": "6",
+          "MULTIBYTE_IN_EFFECT": "yes", "SAMPLE_BYTES": "19",
+          "SAMPLE_WIDE_CHARS": "13", "MBSTOWCS": "ok", "WCSTOMBS_OK": "yes",
+          "UTF8_ROUNDTRIPS": "yes"},
+  caps=["a UTF-8 locale"],
+  notes="Multibyte text round-trips only when a multibyte locale is in effect. "
+        "The same program under the C locale decodes the same bytes differently.")
+S("linux-env-locale-absent", "env_locale.c", "interface",
+  "a locale this host does not have, refused and survived",
+  argv=["en_US.UTF-8"],
+  expect={"REQUESTED_LOCALE": "en_US.UTF-8", "C_LOCALE_AVAILABLE": "yes",
+          "REQUESTED_LOCALE_AVAILABLE": "no", "FELL_BACK_TO": "C",
+          "MB_CUR_MAX_AFTER_REFUSAL": "1", "SURVIVED_MISSING_LOCALE": "yes"},
+  notes="This host has exactly three locales and en_US.UTF-8 is not one of them. "
+        "setlocale returning NULL is a fact about the MACHINE, not a fault in "
+        "the program, and the corpus needs a specimen that demonstrates the "
+        "difference rather than one that avoids the question.")
+S("linux-env-locale-from-environment", "env_locale.c", "interface",
+  "setlocale(LC_ALL, \"\"): whatever the environment says", argv=["-"],
+  expect={"REQUESTED_LOCALE": "-", "ENV_LOCALE_ACCEPTED": "yes",
+          "MB_CUR_MAX": "6", "MULTIBYTE_IN_EFFECT": "yes",
+          "UTF8_ROUNDTRIPS": "yes"},
+  notes="The single most environment-dependent call in the C library. The "
+        "runner supplies LC_ALL=C.UTF-8; change that and every value below "
+        "MB_CUR_MAX changes with it, which is why the locale name itself is an "
+        "observation and not a deterministic key.")
+
+# ---- GUI -----------------------------------------------------------------
+# The ELF corpus had no GUI specimen at all. These run on the project's own
+# namespaced private X server -- a private mount AND network namespace in which
+# the developer's real display is not merely unbound but invisible. Raw Xlib,
+# because a toolkit would put a dozen libraries and a settings daemon between
+# the specimen and the property. What is asserted is the window's state read
+# back from the SERVER, never a pixel and never a screenshot.
+GUI_OK = {"XOPEN_DISPLAY": "ok", "WINDOW_CREATED": "yes",
+          "WINDOW_VIEWABLE": "yes", "WINDOW_MAP_STATE": "viewable",
+          "WINDOW_WIDTH": "320", "WINDOW_HEIGHT": "200",
+          "GEOMETRY_AS_REQUESTED": "yes"}
+
+S("linux-gui-window-mapped", "gui_window.c", "gui",
+  "a top-level window, mapped, confirmed viewable by the X server",
+  cflags=["-lX11"], argv=["map"], display="private", timeout=120.0,
+  elf={"needed_contains": ["libX11.so.6"]},
+  expect=dict(GUI_OK, GUI_MODE="map", DISPLAY_SET="yes", WINDOW_DESTROYED="yes"),
+  caps=["an X display"], procbeh="gui-single-window",
+  notes="map_state == IsViewable is the server agreeing the window is on "
+        "screen. XMapWindow is asynchronous, so the specimen round-trips until "
+        "the server answers rather than asking once and racing.")
+S("linux-gui-no-display", "gui_window.c", "gui",
+  "the same GUI binary with no display at all: refused, cleanly",
+  cflags=["-lX11"], argv=["nodisplay"], display="none", exit=3,
+  elf={"needed_contains": ["libX11.so.6"]},
+  expect={"GUI_MODE": "nodisplay", "DISPLAY_SET": "no",
+          "XOPEN_DISPLAY": "fail", "NEEDS": "an X display",
+          "FAILED_AS_DECLARED": "yes"},
+  notes="THE pair that matters, and the same binary as linux-gui-window-mapped: "
+        "one difference in the environment, two fully declared outcomes. It is "
+        "what makes 'the GUI program could not start' distinguishable from 'the "
+        "GUI program was never run', which from the outside look identical.")
+S("linux-gui-two-windows", "gui_window.c", "gui",
+  "two top-level windows from one process", cflags=["-lX11"], argv=["twowin"],
+  display="private", timeout=120.0, elf={"needed_contains": ["libX11.so.6"]},
+  expect=dict(GUI_OK, GUI_MODE="twowin", SECOND_WINDOW_CREATED="yes",
+              SECOND_WINDOW_VIEWABLE="yes", TWO_DISTINCT_WINDOWS="yes",
+              TOP_LEVEL_WINDOWS="2"),
+  caps=["an X display"], procbeh="gui-two-windows",
+  notes="Anything that assumes one process means one window is wrong here, and "
+        "so is anything that identifies an application by its window.")
+S("linux-gui-long-running", "gui_window.c", "gui",
+  "a window held up for two seconds, then taken down deliberately",
+  cflags=["-lX11"], argv=["hold", "2000"], display="private",
+  duration="seconds", timeout=180.0, elf={"needed_contains": ["libX11.so.6"]},
+  expect=dict(GUI_OK, GUI_MODE="hold", HOLD_MS="2000",
+              STILL_VIEWABLE_AFTER_HOLD="yes", WINDOW_DESTROYED="yes"),
+  caps=["an X display"], procbeh="gui-long-running",
+  notes="The shape of an actual application: it starts, it is on screen for a "
+        "while, it exits when it decides to. The window is confirmed viewable "
+        "again at the END of the hold, not only at the start.")
+S("linux-gui-crash-with-window", "gui_window.c", "gui",
+  "crashes with a window still mapped", cflags=["-lX11"], argv=["crash"],
+  display="private", exit=139, result=False, timeout=120.0,
+  elf={"needed_contains": ["libX11.so.6"]},
+  expect={"GUI_MODE": "crash", "XOPEN_DISPLAY": "ok", "WINDOW_VIEWABLE": "yes",
+          "FAULT_KIND": "null-write-with-a-window-mapped",
+          "EXPECT_DEATH": "sigsegv-while-gui"},
+  caps=["an X display"], procbeh="gui-crashes",
+  notes="The X connection dies with the process and the server reaps the window. "
+        "A console crash and a crash with a window up are not the same event to "
+        "anything watching the display. DECLARED AS EXIT 139, NOT AS SIGSEGV, "
+        "and that is not a weakening: the private display is reached through "
+        "unshare plus bash, which report a signal as exit 128+n, and nothing "
+        "downstream can tell that apart from a program that exited 139. The "
+        "generator refuses a signal= declaration here rather than accepting 139 "
+        "as if it were a signal. linux-outcome-sigsegv on the console is what "
+        "proves signal death is observable; this specimen proves the crash "
+        "happens with a window up, which is a different claim.")
+S("linux-gui-orphan-window", "gui_window.c", "gui",
+  "a child keeps the window after the launched process has exited",
+  cflags=["-lX11"], argv=["orphan", "300"], display="private",
+  display_hold_s=30.0, display_hold_until="gui_orphan.log",
+  settle=1.0, timeout=180.0,
+  elf={"needed_contains": ["libX11.so.6"]},
+  expect={"GUI_MODE": "orphan", "XOPEN_DISPLAY": "ok", "FORK_OK": "yes",
+          "PARENT_CLOSED_ITS_DISPLAY_BEFORE_FORK": "yes",
+          "PARENT_EXITS_FIRST": "yes", "CHILD_OWNS_THE_WINDOW": "yes"},
+  post={"gui_orphan.log": ["ORPHAN_WINDOW_VIEWABLE=yes",
+                           "ORPHAN_SURVIVED_PARENT=yes", "ORPHAN_RESULT=PASS"]},
+  caps=["an X display"], procbeh="gui-orphan",
+  effects=["gui_orphan.log appears after the launched process has exited"],
+  notes="The Linux counterpart of the Windows launcher-exits shape, and the "
+        "reason a window on screen is not evidence that the process somebody "
+        "started is still alive. The proof is the post-run file, because by the "
+        "time the child does its work there is nothing left reading its stdout. "
+        "The stage is held open after the launched process exits because pd_run "
+        "kills Xvfb the instant the command it launched returns, so the orphan "
+        "lost its display and then its namespace before it could do any work, "
+        "and the specimen measured the harness rather than the program. A real "
+        "X server does not die when one application exits. The hold is a "
+        "CONDITION and not a duration: three seconds passed on an idle host and "
+        "failed under load, eight seconds passed alone and failed again with "
+        "twelve other specimens running, and each of those failures was the "
+        "fixture reporting the state of the machine rather than the state of "
+        "the program. It now waits for gui_orphan.log to appear, with 30 s only "
+        "as a ceiling. Nothing is weakened by that: the declaration is still "
+        "that the file exists and contains the declared lines, so if the orphan "
+        "never writes it the wait expires and the specimen fails exactly as it "
+        "should.")
+
+# ---- a genuinely long run ------------------------------------------------
+S("linux-run-long-10s", "run_sleep.c", "outcome",
+  "a ten-second run: long enough that something will decide it has hung",
+  argv=["10000"], duration="tens-of-seconds", timeout=120.0,
+  expect={"SLEEP_REQUESTED_MS": "10000", "SLEPT_AT_LEAST_REQUESTED": "yes",
+          "DURATION_CLASS": "seconds"},
+  notes="The corpus topped out at three seconds, which is under every default "
+        "timeout there is. Ten is over some of them. It costs ten seconds of "
+        "wall time per generation and buys the only specimen that is slow "
+        "enough to be mistaken for stuck.")
+
 # --------------------------------------------------------------------------
 # Compiler differentials (FORMAT/SPEC section 9).
 #
@@ -840,6 +1515,47 @@ DIFFERENTIALS = [
      "under another toolchain, the header has undefined behaviour in it and every "
      "specimen that includes it is worthless. 4 MiB is the cheapest size that "
      "would show it."),
+    # -O3 arrived with the rest of this wave. It is on the specimens where
+    # automatic vectorisation and aggressive inlining could actually change the
+    # answer, and NOT sprayed across the table: a differential that cannot fail
+    # is not evidence, it is a bigger number.
+    ("linux-format-dynamic-pie", ["gcc-O3", "clang-O3"],
+     "The control case at -O3 under both compilers, so every other -O3 entry "
+     "has a baseline to be compared against."),
+    ("linux-run-cpu-bound", ["gcc-O3", "clang-O3"],
+     "-O3 vectorises integer loops. The checksum is a pure integer reduction "
+     "and must be bit-identical to the scalar result; if it is not, the "
+     "arithmetic depended on something the language does not promise."),
+    ("linux-io-stream-4mib", ["gcc-O3"],
+     "The hand-written SHA-256 and xorshift in specs/orc_bulk.h are exactly the "
+     "shape an -O3 vectoriser transforms most. One differing digest means the "
+     "header has undefined behaviour in it and every bulk specimen is worthless."),
+    ("linux-outcome-sigfpe", ["gcc-O3", "clang-O3"],
+     "An integer division by zero is undefined behaviour and an optimiser is "
+     "entitled to delete it. Both operands are volatile, which is what is being "
+     "tested: a specimen that stops raising SIGFPE at -O3 is a broken fixture."),
+    ("linux-outcome-stack-overflow", ["clang-O2", "gcc-O3"],
+     "The whole fault depends on the recursion NOT being turned into a loop. "
+     "Tail-call elimination is exactly what a second compiler at a higher "
+     "optimisation level is most likely to do differently."),
+    ("linux-outcome-sigill", ["clang-O2"],
+     "__builtin_trap lowers to a different instruction sequence per compiler, "
+     "and some lower it to a call rather than to ud2."),
+    ("linux-thread-tls", ["clang-O2", "gcc-O3"],
+     "__thread is lowered through a TLS model the compiler chooses -- "
+     "initial-exec or general-dynamic -- and the two generate entirely "
+     "different access sequences for the same source."),
+    ("linux-cxx-core-cpp17", ["clang-O2"],
+     "clang++ against the same libstdc++: a different front end, the same C++ "
+     "ABI, and RTTI and unwinding that must agree with gcc's exactly."),
+    ("linux-cxx-so-exception", ["clang-O2"],
+     "The exception crosses a .so built by GCC into an executable built by "
+     "clang. If the typeinfo is not unified the catch is skipped silently, and "
+     "this is the only specimen that would notice."),
+    ("linux-stdio-shape-pipe", ["clang-O2"],
+     "The fd-shape prober under a second compiler: fstat, fcntl and lseek "
+     "results are the kernel's and must not vary, so any difference here is a "
+     "problem with the specimen rather than with the shape."),
     ("linux-io-binary-bulk-16mib", ["clang-O2"],
      "The histogram and the hazard placement write over the stream at absolute "
      "offsets across chunk boundaries, with mixed integer widths. Agreement "
@@ -890,9 +1606,14 @@ for _sid in list(_by_id):
 # Build
 # --------------------------------------------------------------------------
 
-SIGNAMES = {"SIGHUP": 1, "SIGINT": 2, "SIGQUIT": 3, "SIGILL": 4, "SIGABRT": 6,
-            "SIGFPE": 8, "SIGKILL": 9, "SIGSEGV": 11, "SIGPIPE": 13,
-            "SIGALRM": 14, "SIGTERM": 15}
+# The x86-64 Linux numbering. SIGBUS and SIGTRAP were missing until a specimen
+# declared death by SIGBUS and the generator raised KeyError -- which reported a
+# fixture as `generator-error` rather than telling anyone the table was short.
+SIGNAMES = {"SIGHUP": 1, "SIGINT": 2, "SIGQUIT": 3, "SIGILL": 4, "SIGTRAP": 5,
+            "SIGABRT": 6, "SIGBUS": 7, "SIGFPE": 8, "SIGKILL": 9,
+            "SIGUSR1": 10, "SIGSEGV": 11, "SIGUSR2": 12, "SIGPIPE": 13,
+            "SIGALRM": 14, "SIGTERM": 15, "SIGCHLD": 17, "SIGXCPU": 24,
+            "SIGXFSZ": 25, "SIGSYS": 31}
 
 
 def subst(items, mapping):
@@ -926,11 +1647,14 @@ def build_libs(out):
     records = []
     for lib in LIBS:
         target = os.path.join(libdir, lib["name"])
-        cmd = ([tc["cc"]] + COMMON_C + tc["opt"] + ["-shared", "-fPIC"]
+        cxx = lib.get("lang") == "c++"
+        cmd = ([tc["cxx"] if cxx else tc["cc"]]
+               + (COMMON_CXX if cxx else COMMON_C) + tc["opt"] + ["-shared", "-fPIC"]
                + [os.path.join(SPECS, s) for s in lib["src"]]
                + ["-o", target] + subst(lib["extra"], {"LIBDIR": libdir}))
         r = sh(cmd)
-        records.append({"name": lib["name"], "command": " ".join(cmd),
+        records.append({"name": lib["name"], "language": lib.get("lang", "c"),
+                        "command": " ".join(cmd),
                         "ok": r.returncode == 0,
                         "stderr": r.stderr.strip()[:2000],
                         "sha256": sha256_file(target) if os.path.exists(target) else None})
@@ -1014,6 +1738,275 @@ def parse_oracle(text):
     return kv, order, det, repeats
 
 
+# --------------------------------------------------------------------------
+# Stdio shapes.
+#
+# A launcher once discarded the program's output entirely, so HOW a specimen's
+# streams are connected earned its own axis. Every shape below is an ordinary
+# thing a shell, a supervisor or a CI system does to a program every day; none of
+# them is a trick. The specimen is the constant and the shape is the variable, so
+# one source can report a different DETERMINISTIC answer under each of them --
+# which is what makes this a matrix rather than eight near-copies.
+#
+# Two of these shapes TRANSFORM the stream, and that is the point of having them:
+# a command substitution strips trailing newlines and an early-closing consumer
+# truncates. Those are declared per specimen and verified against a reference
+# capture of the same program through a plain pipe, so the transformation is a
+# measured fact rather than an assumption about what the shell does.
+# --------------------------------------------------------------------------
+
+STDIO_SHAPES = {
+    "pipe":
+        "stdout and stderr are pipes the runner drains, stdin is a pipe carrying "
+        "the declared input and then closed. The control shape, and what every "
+        "other specimen in the corpus uses.",
+    "file":
+        "stdout and stderr are redirected to regular files, as `prog >out 2>err`. "
+        "A regular file is seekable and glibc chooses FULL buffering for it "
+        "rather than the line buffering it would pick for a terminal, so this is "
+        "not merely a different destination.",
+    "tee":
+        "stdout goes through `tee` to a file AND onward to the runner, as "
+        "`prog | tee out`. Two independent copies of one stream must be "
+        "byte-identical; if they are not, something in the middle is editing it.",
+    "cmdsub":
+        "stdout is captured by a shell command substitution, `out=$(prog)`. This "
+        "shape is LOSSY BY DESIGN: the shell strips every trailing newline and "
+        "cannot carry NUL bytes at all. Declared and verified as a "
+        "transformation of the reference capture.",
+    "earlyclose":
+        "the consumer reads a bounded prefix of stdout and then closes its end, "
+        "as `prog | head -c N`. A specimen that keeps writing gets SIGPIPE. "
+        "Implemented with a real pipe rather than a shell so the specimen's own "
+        "wait status is exact instead of bash's 128+n encoding.",
+    "devnull-stdin":
+        "stdin is /dev/null: reads return EOF immediately and the fd is a "
+        "character device. Indistinguishable from an empty pipe by byte count "
+        "alone, which is why STDIN_KIND exists.",
+    "file-stdin":
+        "stdin is a regular file holding the declared input, as `prog <in.dat`. "
+        "Seekable, unlike a pipe.",
+    "closed-stdout":
+        "fd 1 is closed outright, as `prog >&-`. Writing to it fails with EBADF. "
+        "Run through `exec` so the shell is REPLACED by the specimen and the wait "
+        "status is the specimen's own.",
+}
+
+# Shapes whose status for the specimen comes from bash's ${PIPESTATUS}/$? rather
+# than from waitpid. bash encodes death-by-signal as 128+n, which it cannot tell
+# apart from an exit code of 128+n, so these shapes are used only for specimens
+# declared to exit normally with a code below 128.
+SHELL_STATUS_SHAPES = {"tee", "cmdsub"}
+
+
+# --------------------------------------------------------------------------
+# The private display.
+#
+# docs/TESTING.md forbids any automated test putting a window on the developer's
+# screen, and on WSLg that is not a matter of setting DISPLAY: /tmp/.X11-unix is
+# mounted read-only with the user's real X0 in it, Xvfb's abstract socket lives
+# in the network namespace, and a stale lock on the shared /tmp blocks display
+# numbers that look free. scripts/lib/private-display.sh handles all three. It is
+# used here unchanged rather than reimplemented, and the GUI specimens run inside
+# a mount and network namespace where the user's display is not visible at all.
+# --------------------------------------------------------------------------
+
+DISPLAY_COUNTER = [140]
+DISPLAY_LOCK = threading.Lock()
+
+
+def next_display():
+    with DISPLAY_LOCK:
+        DISPLAY_COUNTER[0] += 1
+        if DISPLAY_COUNTER[0] > 168:
+            DISPLAY_COUNTER[0] = 141
+        return DISPLAY_COUNTER[0]
+
+
+def write_display_helper(out):
+    path = os.path.join(out, "run_on_private_display.sh")
+    with open(path, "w", newline="\n") as f:
+        f.write("#!/bin/bash\n"
+                "# Run a command on the project's namespaced private X server.\n"
+                "# Exit 90 means the display could not be created here, which is\n"
+                "# a fact about the host and is recorded as such.\n"
+                "set -u\n"
+                'source "%s"\n'
+                "if ! pd_available; then\n"
+                '  echo "PD_UNAVAILABLE=$PD_UNAVAILABLE_REASON" >&2\n'
+                "  exit 90\n"
+                "fi\n"
+                'num="$1"; shift\n'
+                'pd_run "$num" -- "$@"\n' % PD_LIB)
+    os.chmod(path, 0o755)
+    return {"path": path, "library": PD_LIB,
+            "library_sha256": sha256_file(PD_LIB) if os.path.exists(PD_LIB) else None,
+            "present": os.path.exists(PD_LIB)}
+
+
+def _shape_dir(rundir):
+    d = os.path.join(rundir, "stdio")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return b""
+
+
+def _run(argv, timeout, **kw):
+    """subprocess.run with a uniform (rc, stdout, stderr, timed_out) result."""
+    try:
+        p = subprocess.run(argv, timeout=timeout, **kw)
+        return p.returncode, p.stdout or b"", p.stderr or b"", False
+    except subprocess.TimeoutExpired as e:
+        return None, e.stdout or b"", e.stderr or b"", True
+
+
+def launch_shape(spec, rundir, env, argv, mode=None):
+    """Launch the specimen once through one stdio shape.
+
+    Returns (rc, stdout_bytes, stderr_bytes, timed_out, shape) where `rc` is
+    always the SPECIMEN's own status in subprocess convention -- negative for
+    death by signal -- for every shape that can determine it, and `shape` records
+    everything about the connection as measured fact.
+    """
+    mode = mode or spec["stdio"]
+    t = spec["timeout_s"]
+    sd = _shape_dir(rundir)
+    shape = {"mode": mode, "description": STDIO_SHAPES[mode],
+             "status_source": "waitpid", "status_ambiguous": False}
+    base = dict(cwd=rundir, env=env)
+
+    if mode == "pipe":
+        rc, so, se, to = _run(argv, t, input=spec["stdin"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, **base)
+        return rc, so, se, to, shape
+
+    if mode == "file":
+        outp, errp = os.path.join(sd, "stdout.bin"), os.path.join(sd, "stderr.bin")
+        with open(outp, "wb") as fo, open(errp, "wb") as fe:
+            rc, _, _, to = _run(argv, t, input=spec["stdin"], stdout=fo, stderr=fe,
+                                **base)
+        so, se = _read_bytes(outp), _read_bytes(errp)
+        shape.update({"stdout_file": outp, "stderr_file": errp,
+                      "stdout_file_bytes": len(so),
+                      "stdout_file_sha256": sha256_bytes(so),
+                      "stderr_file_sha256": sha256_bytes(se)})
+        return rc, so, se, to, shape
+
+    if mode == "devnull-stdin":
+        rc, so, se, to = _run(argv, t, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, **base)
+        shape["stdin_path"] = os.devnull
+        return rc, so, se, to, shape
+
+    if mode == "file-stdin":
+        inp = os.path.join(sd, "stdin.dat")
+        with open(inp, "wb") as f:
+            f.write(spec["stdin"])
+        with open(inp, "rb") as f:
+            rc, so, se, to = _run(argv, t, stdin=f, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, **base)
+        shape.update({"stdin_path": inp, "stdin_file_bytes": len(spec["stdin"]),
+                      "stdin_file_sha256": sha256_bytes(spec["stdin"])})
+        return rc, so, se, to, shape
+
+    if mode == "closed-stdout":
+        # exec: the shell process BECOMES the specimen, so the wait status is the
+        # specimen's own and there is no wrapper to confuse it with.
+        wrapped = ["/bin/bash", "-c", 'exec "$@" >&-', "bash"] + argv
+        rc, so, se, to = _run(wrapped, t, input=spec["stdin"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, **base)
+        shape.update({"wrapper": " ".join(wrapped[:3]),
+                      "status_source": "waitpid (bash exec'd the specimen, so no "
+                                       "wrapper process survives to report its own "
+                                       "status)"})
+        return rc, so, se, to, shape
+
+    if mode in ("tee", "cmdsub"):
+        q = " ".join(shlex.quote(a) for a in argv)
+        stp = os.path.join(sd, "specimen.status")
+        if mode == "tee":
+            teep = os.path.join(sd, "tee.bin")
+            script = ("set -o pipefail; %s | tee -- %s; "
+                      'printf %%s "${PIPESTATUS[0]}" > %s'
+                      % (q, shlex.quote(teep), shlex.quote(stp)))
+        else:
+            script = ('out=$(%s); printf %%s "$?" > %s; printf %%s "$out"'
+                      % (q, shlex.quote(stp)))
+        rc_wrap, so, se, to = _run(["/bin/bash", "-c", script], t,
+                                   input=spec["stdin"], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, **base)
+        raw = _read_bytes(stp).decode("ascii", "replace").strip()
+        spec_rc = int(raw) if raw.isdigit() else None
+        shape.update({
+            "wrapper_command": script,
+            "wrapper_returncode": rc_wrap,
+            "specimen_status_file": stp,
+            "specimen_status_raw": raw,
+            "status_source": "bash ${PIPESTATUS[0]}" if mode == "tee" else "bash $?",
+            "status_ambiguous": spec_rc is not None and spec_rc >= 128,
+        })
+        if mode == "tee":
+            tee_bytes = _read_bytes(teep)
+            shape.update({"tee_file": teep, "tee_file_bytes": len(tee_bytes),
+                          "tee_file_sha256": sha256_bytes(tee_bytes),
+                          "tee_copy_matches_captured":
+                              sha256_bytes(tee_bytes) == sha256_bytes(so)})
+        else:
+            shape["shell_stripped_trailing_newlines"] = None  # filled by the check
+        return spec_rc, so, se, to, shape
+
+    if mode == "earlyclose":
+        limit = spec["stdio_limit"]
+        if spec["stdin"]:
+            # This shape hands the specimen /dev/null on stdin, because feeding a
+            # pipe while deliberately refusing to drain stdout is a deadlock
+            # waiting to happen. Declared input would be silently discarded, so
+            # say so rather than losing it quietly.
+            raise ValueError("the earlyclose shape does not deliver declared "
+                             "stdin; %s declares %d bytes of it"
+                             % (spec["id"], len(spec["stdin"])))
+        errp = os.path.join(sd, "stderr.bin")
+        rfd, wfd = os.pipe()
+        got = b""
+        rc, to = None, False
+        # stderr goes to a FILE, not a pipe: this shape deliberately stops
+        # draining stdout, and a second undrained pipe would deadlock on a
+        # specimen whose oracle is longer than one pipe buffer.
+        with open(errp, "wb") as fe:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=wfd,
+                                 stderr=fe, **base)
+            os.close(wfd)
+            try:
+                while len(got) < limit:
+                    chunk = os.read(rfd, min(65536, limit - len(got)))
+                    if not chunk:
+                        break
+                    got += chunk
+            finally:
+                os.close(rfd)           # the consumer goes away, mid-stream
+            try:
+                rc = p.wait(timeout=t)
+            except subprocess.TimeoutExpired:
+                to = True
+                p.kill()
+                p.wait()
+        se = _read_bytes(errp)
+        shape.update({"consumer_read_limit": limit,
+                      "stderr_file": errp,
+                      "consumer_closed_after_bytes": len(got),
+                      "consumer_reached_limit": len(got) >= limit})
+        return rc, got, se, to, shape
+
+    raise ValueError("unknown stdio shape %r" % (mode,))
+
+
 def run_once(spec, out, rundir, binary, run_index):
     env = dict(BASE_ENV)
     env["HOME"] = os.path.join(rundir, "home")
@@ -1026,21 +2019,97 @@ def run_once(spec, out, rundir, binary, run_index):
     env["FIXTURE_ID"] = spec["id"]
     if spec["stage"] in ("ldpath", "dlopen"):
         env["LD_LIBRARY_PATH"] = os.path.join(out, "lib")
-    env.update(spec["env"])
     mapping = {"LIBDIR": os.path.join(out, "lib"),
+               "BINDIR": os.path.join(out, "bin"),
                "HELPER": os.path.join(out, "bin", "helper_child")}
+    # Environment VALUES are substituted too, so a specimen can be told to find
+    # something on PATH without the corpus root being baked into the table.
+    env.update({k: subst([v], mapping)[0] for k, v in spec["env"].items()})
     argv = [binary] + subst(spec["argv"], mapping)
+
+    display_run = None
+    if spec.get("display") == "private":
+        helper = os.path.join(out, "run_on_private_display.sh")
+        num = next_display()
+        inner = list(argv)
+        hold = spec.get("display_hold_s") or 0
+        until = spec.get("display_hold_until")
+        if hold:
+            # A real X server does not die when one application exits. This one
+            # does: pd_run kills Xvfb the instant the command it launched
+            # returns, so a child left running loses its display and then its
+            # namespace. Holding the STAGE open after the launched process exits
+            # is the harness providing what a desktop provides; it belongs to the
+            # wrapper and not to the specimen, whose own process still exits
+            # first. Without it, a GUI-orphan specimen measures the harness
+            # rather than the program.
+            #
+            # `until` rather than a fixed sleep, because a fixed margin is a race
+            # and not a fix: eight seconds was enough on a quiet host and not
+            # enough when twelve other specimens were running, so the fixture
+            # failed for a reason that had nothing to do with its property.
+            # Waiting for the artifact to APPEAR removes the race; `hold` is only
+            # the ceiling. This does not weaken anything -- the declaration is
+            # still that the file exists and contains the declared lines, and if
+            # the orphan never writes it, the wait expires and the specimen
+            # fails exactly as it should.
+            if until:
+                script = ('"$@"; rc=$?; '
+                          'for _ in $(seq 1 %d); do [ -e %s ] && break; '
+                          'sleep 0.1; done; sleep 0.3; exit $rc'
+                          % (int(hold * 10), shlex.quote(until)))
+            else:
+                script = '"$@"; rc=$?; sleep %g; exit $rc' % hold
+            inner = ["/bin/bash", "-c", script, "bash"] + inner
+        argv = [helper, str(num)] + inner
+        env.pop("DISPLAY", None)       # pd_run sets it inside the namespace
+        env.pop("WAYLAND_DISPLAY", None)
+        display_run = {
+            "mode": "private",
+            "display_number": num,
+            "helper": helper,
+            "library": PD_LIB,
+            "stage_hold_ceiling_seconds": hold,
+            "stage_held_until_file_appears": until,
+            "status_source":
+                "the private-display wrapper is unshare plus bash, so a specimen "
+                "killed by signal n is reported as EXIT 128+n and cannot be "
+                "distinguished from a specimen that exited 128+n. A specimen "
+                "here therefore declares an exit code, never a signal; the "
+                "console crash specimens are what prove signal death is "
+                "observable at all.",
+        }
+    elif spec.get("display") == "none":
+        env.pop("DISPLAY", None)
+        env.pop("WAYLAND_DISPLAY", None)
+        display_run = {"mode": "none",
+                       "status_source": "waitpid",
+                       "note": "DISPLAY and WAYLAND_DISPLAY removed outright"}
+
+    # A reference capture through a plain pipe, for the shapes that TRANSFORM the
+    # stream. Without it, "the shell stripped the trailing newline" would be an
+    # assumption about bash rather than a measured difference between two
+    # captures of the same program.
+    ref = None
+    if spec.get("stdio_reference") and spec["stdio"] != "pipe":
+        _, ref, _, _, _ = launch_shape(spec, rundir, env, argv, mode="pipe")
+
     t0 = time.time()
-    timed_out = False
-    try:
-        p = subprocess.run(argv, cwd=rundir, env=env, input=spec["stdin"],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=spec["timeout_s"])
-        rc, so, se = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired as e:
-        timed_out = True
-        rc, so, se = None, e.stdout or b"", e.stderr or b""
+    rc, so, se, timed_out, shape = launch_shape(spec, rundir, env, argv)
     dur = round((time.time() - t0) * 1000.0, 1)
+    if ref is not None:
+        shape.update({"reference_mode": "pipe",
+                      "reference_stdout_bytes": len(ref),
+                      "reference_stdout_sha256": sha256_bytes(ref),
+                      "captured_equals_reference": so == ref,
+                      "captured_is_prefix_of_reference": ref.startswith(so),
+                      "captured_equals_reference_rstrip_newlines":
+                          so == ref.rstrip(b"\n"),
+                      "captured_equals_reference_nuls_removed_rstrip_newlines":
+                          so == ref.replace(b"\x00", b"").rstrip(b"\n"),
+                      "trailing_newlines_lost":
+                          len(ref) - len(ref.rstrip(b"\n")) if so == ref.rstrip(b"\n")
+                          else None})
     stream = se if spec["declared"]["oracle_stream"] == "stderr" else so
     kv, order, det, repeats = parse_oracle(stream.decode("utf-8", "replace"))
     return {
@@ -1071,6 +2140,11 @@ def run_once(spec, out, rundir, binary, run_index):
         "observations": {k[4:]: v for k, v in kv.items() if k.startswith("OBS_")},
         "stdout_head": so[:2048].decode("utf-8", "replace"),
         "stderr_head": se[:2048].decode("utf-8", "replace"),
+        "stdio_shape": shape,
+        "display_run": display_run,
+        "display_status_ambiguous": bool(
+            display_run and display_run["mode"] == "private"
+            and rc is not None and 128 < rc < 160),
         "_stdout": so,
         "_stderr": se,
     }
@@ -1205,6 +2279,40 @@ def check_bulk(bulk, last):
     return problems
 
 
+def check_stdio(spec, last):
+    """Check the declared facts about the CONNECTION, not about the program.
+
+    Every key here is a relation between two things that were both measured --
+    the tee'd copy and the captured copy, the captured stream and a reference
+    capture of the same program through a plain pipe. None of them is a byte
+    offset into a stream, and none is a length taken as an identity: a length
+    cannot tell a truncated stream from a reordered one, and a stream that also
+    carries FIXTURE_ID has a length that depends on the environment.
+    """
+    problems = []
+    want = spec["declared"].get("stdio_expect") or {}
+    shape = last.get("stdio_shape") or {}
+    if shape.get("mode") != spec["stdio"]:
+        problems.append("stdio shape recorded as %r, spec declares %r"
+                        % (shape.get("mode"), spec["stdio"]))
+    if spec["stdio"] in SHELL_STATUS_SHAPES and shape.get("status_ambiguous"):
+        problems.append("the %s shape reported status %r through bash, which "
+                        "cannot distinguish an exit code of 128+n from death by "
+                        "signal n; this shape must only be used for specimens "
+                        "declared to exit normally below 128"
+                        % (spec["stdio"], shape.get("specimen_status_raw")))
+    for key, expected in want.items():
+        if key not in shape:
+            problems.append("stdio_expect names %s, which the %s shape does not "
+                            "record" % (key, spec["stdio"]))
+            continue
+        got = shape[key]
+        if got != expected:
+            problems.append("stdio %s: declared %r, measured %r"
+                            % (key, expected, got))
+    return problems
+
+
 def verdict_for(spec, runs, post_state):
     d = spec["declared"]
     problems = []
@@ -1254,6 +2362,20 @@ def verdict_for(spec, runs, post_state):
     if bulk:
         problems += check_bulk(bulk, last)
 
+    problems += check_stdio(spec, last)
+
+    # A private-display specimen cannot declare death by signal: the wrapper is
+    # a shell chain and flattens it to exit 128+n. Refusing the declaration is
+    # the honest response -- accepting 139 AS SIGSEGV would be the generator
+    # quietly inventing a distinction the measurement cannot make.
+    if spec.get("display") == "private" and d["signal"] is not None:
+        problems.append(
+            "declared death by %s, but this specimen runs on the private "
+            "display, where the wrapper reports a signal as exit 128+n and "
+            "nothing can tell that apart from an exit code of 128+n. Declare "
+            "the exit code and say why, or run the crash on the console."
+            % d["signal"])
+
     for name, needles in d["post_files"].items():
         content = post_state.get(name)
         if content is None:
@@ -1300,6 +2422,19 @@ def process(spec, out):
     target = build["target"]
     actual_elf = elf_facts(target)
     elf_problems = check_elf(spec["declared"]["elf"], actual_elf)
+
+    # Compiler diagnostics are a declared property, not an incidental field.
+    want_warn = spec["declared"].get("build_warning_contains")
+    got_warn = build.get("warnings") or ""
+    if want_warn is None:
+        if got_warn:
+            elf_problems.append(
+                "the build emitted diagnostics and none were declared: %r. A "
+                "specimen that warns is either wrong or interesting; say which "
+                "with expect_build_warning=." % got_warn[:300])
+    elif want_warn not in got_warn:
+        elf_problems.append("declared a build diagnostic containing %r; the "
+                            "build said %r" % (want_warn, got_warn[:300]))
     rec["binary"] = {
         "path": target,
         "sha256": sha256_file(target),
@@ -1357,6 +2492,7 @@ def main():
 
     t0 = time.time()
     libs = build_libs(out)
+    display_helper = write_display_helper(out)
     helper = build_helper(out)
 
     chosen = [s for s in SPECIMENS if not args.only or args.only in s["id"]]
@@ -1440,6 +2576,11 @@ def main():
         "absent_toolchains": sorted(set(missing)),
         "corpus_root": out,
         "support_libraries": libs,
+        # How the GUI specimens got a display, and the sha256 of the script that
+        # provided it: the isolation is part of the definition of those runs, so
+        # it belongs in the manifest rather than in a comment.
+        "private_display": display_helper,
+        "stdio_shapes": STDIO_SHAPES,
         "helper_binary": helper,
         "counts": {"specimens": len(results),
                    "differential_specimens": sum(1 for r in results
