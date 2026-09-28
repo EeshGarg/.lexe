@@ -2687,9 +2687,49 @@ def build_cfg(a):
     return cfg
 
 
+def execution_witness(payload):
+    """A count of work done, derived from the payload's own records rather than
+    from the number the engine hands to emit().
+
+    `meta.executed` is the engine reporting on itself, and
+    `against_lexe_matrix.sh` fails a lane when it is zero — which is the right
+    guard read from the wrong place. The count and the guard come from the same
+    code, so an engine that miscounted (planned units instead of run ones, or a
+    sum over the wrong list) would satisfy its own guard with nothing behind it.
+    That is docs/ERRORS.md §7 exactly: self-reporting machinery cannot detect
+    its own absence.
+
+    These counts are built by different code from the summing that produces
+    `executed`: they are the per-unit records each engine writes as it goes. The
+    two need not be EQUAL — a model report counts operations while keeping only
+    diverging traces — so only the zero/non-zero disagreement is an error, which
+    is the disagreement that matters.
+
+    Returns (count, what_was_counted) or (None, None) when the payload carries no
+    per-unit records to count, which is itself reported rather than assumed away.
+    """
+    for key, label in (("runs", "race rows"), ("cases", "sample cases"),
+                       ("minimised", "minimised traces")):
+        v = payload.get(key)
+        if isinstance(v, list):
+            return len(v), label
+    for key, label in (("operations", "model operations"),
+                       ("sequences", "model sequences")):
+        v = payload.get(key)
+        if isinstance(v, int):
+            return v, label
+    v = payload.get("ops")
+    if isinstance(v, dict) and v:
+        return sum(int(x.get("n") or 0) for x in v.values()
+                   if isinstance(x, dict)), "cost samples"
+    return None, None
+
+
 def emit(a, payload, failures, executed, headline):
+    witness, witness_of = execution_witness(payload)
     payload["meta"] = {
         "headline": headline, "executed": executed, "failures": failures,
+        "executed_witness": witness, "executed_witness_source": witness_of,
         "load_before": payload.get("load_before") or host_load(),
         "load_after": host_last_load(), "pinned_path": PINNED_PATH,
         "op_timeout_s": OP_TIMEOUT_S,
@@ -2701,10 +2741,19 @@ def emit(a, payload, failures, executed, headline):
             json.dump(payload, f, indent=2, default=str)
         print("  report: %s" % a.out)
     print("\n  %s" % headline)
-    # A lane that executed nothing must never read as success.
+    # A lane that executed nothing must never read as success — checked twice,
+    # by two counts that are not produced by the same arithmetic.
     if executed == 0:
         print("  FAIL — nothing was executed, which is not a pass")
         return 3
+    if witness == 0:
+        print("  FAIL — the engine reports %d executed and its own records "
+              "contain no %s; one of the two is wrong and neither may be "
+              "trusted" % (executed, witness_of))
+        return 3
+    if witness is None:
+        print("  NOTE  no per-unit records in this report, so the executed "
+              "count (%d) has only one observation behind it" % executed)
     return 1 if failures else 0
 
 
