@@ -194,17 +194,47 @@ session_check() {
 # this check passed the run through, `--all` would report a green lane having
 # executed none of the 184 specimens. Fake coverage is worse than a missing lane,
 # because it is indistinguishable from real coverage in the summary.
+# Where the corpora actually are.
+#
+# They were generated under /tmp, which a WSL restart wipes -- it has done so
+# four times during this project, each time turning a green workloads lane into a
+# blocked one and, before the blocked-accounting fix, into a green lane that ran
+# nothing. The fixture engineer moved them under $HOME for that reason while
+# leaving /tmp as the documented default, because changing it unilaterally would
+# have broken every other consumer.
+#
+# So look in both, preferring the durable one, and EXPORT what was found rather
+# than letting each lane guess separately. A lane and its availability check
+# disagreeing about where the corpus lives is the shape that produced "PASS, 0
+# blocked" over 72 unexecuted specimens.
+discover_corpus() { # env-var-name, leaf directory
+    local var="$1" leaf="$2" candidate
+    # An explicit setting always wins: a caller who named a corpus means it.
+    [[ -n "${!var:-}" ]] && return 0
+    for candidate in "$HOME/$leaf/index.json" "/tmp/$leaf/index.json"; do
+        if [[ -f "$candidate" ]]; then
+            printf -v "$var" '%s' "$candidate"
+            export "${var?}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 workloads_check() {
     acceptance_check || return 1
     have python3 || { echo "skip: no python3, and the workload engine is Python"; return 1; }
     # BOTH corpora, not just the cheap one. Gating on the ELF index alone let
     # `--all` run with the Windows corpus absent and still record PASS.
     local pe_index="${LEXE_WORKLOAD_PE_INDEX:-/tmp/lexe-workloads-pe/index.json}"
+    # Say WHICH corpus is about to be judged, so a run that used a stale copy in
+    # another directory is visible in its own output rather than inferred later.
     [[ -f "$pe_index" ]] || {
         echo "blocked: the PE workload corpus is not generated (python3 tests/workloads/generate_pe.py); an unexecuted specimen is not coverage"
         return 1
     }
     local elf_index="${LEXE_WORKLOAD_ELF_INDEX:-/tmp/lexe-workloads/index.json}"
+    printf '  corpora: %s\n           %s\n' "$elf_index" "$pe_index"
     [[ -f "$elf_index" ]] || {
         echo "blocked: the ELF workload corpus is not generated (python3 tests/workloads/generate.py); an unexecuted specimen is not coverage"
         return 1
@@ -840,6 +870,13 @@ printf '  repository: %s\n' "$REPO"
 printf '  build dir:  %s\n' "$BUILD_DIR"
 printf '  lanes:      %s\n' "${LANES[*]}"
 printf '  tier:       %s (%s)\n' "$LEXE_TIER" "$(tier_desc "$LEXE_TIER")"
+# Discovered HERE, in the top-level shell, because an export inside a lane's
+# check is lost: run_lane captures that check's output in a command
+# substitution, which is a subshell. Exporting from there looks correct and
+# does nothing -- the same shape as a `fail=1` that could never leave its
+# subshell, in a second place.
+discover_corpus LEXE_WORKLOAD_ELF_INDEX lexe-workloads || true
+discover_corpus LEXE_WORKLOAD_PE_INDEX lexe-workloads-pe || true
 export LEXE_TIER
 
 if [[ $DO_BUILD -eq 1 ]]; then
