@@ -644,7 +644,15 @@ class Abstract:
             return "SERVICE_RUNNING"
         if self.running:
             return "RUNNING"
-        if self.prev and self.active != max(self.retained or [self.active]):
+        # `self.prev` is deliberately NOT tested here, and that is the whole
+        # correction. The rollback transition sets `prev = None` — correctly,
+        # because after a rollback there is no further target — so a name that
+        # required `prev` could never be produced by the only operation that
+        # produces the state. ROLLED_BACK was unreachable for the life of this
+        # model: 30,000 sequences across three seeds entered five of its state
+        # names and never this one, which is how it was noticed. What makes the
+        # state real is that the active version is not the newest one on disk.
+        if self.active != max(self.retained or [self.active]):
             return "ROLLED_BACK"
         if self.prev:
             return "UPDATED"
