@@ -1,0 +1,31 @@
+# data_file variant: cwd-relative
+#
+# Looks relative to the current working directory. Declared to fail in BOTH
+# runs, including the one in the tree that built it, because a launcher chooses
+# the working directory and it is never the payload root.
+#
+# The data file is INSTALLED, not merely read out of the source directory: it is
+# copied to payload/share, because payload/src is what an install leaves behind.
+# A recipe that read its data out of sourceDir would pass in the build tree and
+# have nothing to read anywhere else.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+SHAREDIR = ../share
+LOOKUP   = -DLOOKUP_CWD -DLOOKUP_NAME='"cwd-relative"'
+TARGET   = $(BINDIR)/portable-data-cwd-relative
+
+all: $(TARGET) $(SHAREDIR)/message.txt
+
+$(SHAREDIR)/message.txt: message.txt
+	mkdir -p $(SHAREDIR)
+	cp message.txt $@
+
+$(TARGET): main.c $(SHAREDIR)/message.txt
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LOOKUP) -o $@ main.c
+
+clean:
+	rm -rf $(BINDIR) $(SHAREDIR)
+
+.PHONY: all clean

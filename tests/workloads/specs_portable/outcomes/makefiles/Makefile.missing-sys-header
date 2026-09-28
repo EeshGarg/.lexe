@@ -1,0 +1,19 @@
+# outcomes variant: missing-sys-header
+#
+# Fails at the first compile because a system header is not installed. The
+# declared toolchain is entirely present; what is missing is not a tool.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-missing-sys-header
+
+all: $(TARGET)
+
+$(TARGET): needs_sys_header.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ needs_sys_header.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

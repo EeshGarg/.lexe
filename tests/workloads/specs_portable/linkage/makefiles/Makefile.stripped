@@ -1,0 +1,20 @@
+# Linkage variant: stripped
+#
+# The same program with the symbol table removed at link time. Nothing
+# about the run changes; what changes is whether .symtab is in the file.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+LINKMODE = -s
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-link-stripped
+
+all: $(TARGET)
+
+$(TARGET): app.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LINKMODE) -o $@ app.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

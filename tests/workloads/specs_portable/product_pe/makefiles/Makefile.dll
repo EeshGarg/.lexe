@@ -1,0 +1,22 @@
+# The same source as the PE executable next door, linked -shared.
+#
+# mingw-w64 produces a PE32+ DLL: a foreign-format file that is not an
+# executable in either operating system's sense. file(1) calls it a "PE32+
+# executable (DLL)", which is a sentence containing the word executable about a
+# thing that cannot be executed -- the same trap as the ELF shared-object recipe,
+# in the other format.
+CC       = x86_64-w64-mingw32-gcc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-product-pe-dll.dll
+
+all: $(TARGET)
+
+$(TARGET): main.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -shared -o $@ main.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

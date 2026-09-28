@@ -1,0 +1,21 @@
+# Linkage variant: static-pie
+#
+# Both at once, which sounds contradictory and is not: e_type DYN with no
+# program interpreter and an empty DT_NEEDED. The specimen exists because code
+# that infers "dynamically linked" from e_type DYN is wrong exactly here.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+LINKMODE = -static-pie -fPIE
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-link-static-pie
+
+all: $(TARGET)
+
+$(TARGET): app.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LINKMODE) -o $@ app.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

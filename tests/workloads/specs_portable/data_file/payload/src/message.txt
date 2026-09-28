@@ -1,0 +1,4 @@
+portable-data-file-token-1
+Everything after the first line is ignored by the program. The first line is
+the token the specimen compares, so the comparison does not depend on the
+length of this file or on where in it anything sits.

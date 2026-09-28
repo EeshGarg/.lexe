@@ -1,0 +1,21 @@
+# C standard variant: c99
+#
+# Identical to the other four except for STD and TARGET. -pedantic-errors is on
+# deliberately: without it the compiler accepts a great deal that the requested
+# standard does not, and the specimen would not be measuring the standard at all.
+CC      ?= cc
+STD      = -std=c99
+CFLAGS  ?= -O2 -Wall -Wextra -pedantic-errors
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-std-c99
+
+all: $(TARGET)
+
+$(TARGET): main.c
+	mkdir -p $(BINDIR)
+	$(CC) $(STD) $(CFLAGS) -o $@ main.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

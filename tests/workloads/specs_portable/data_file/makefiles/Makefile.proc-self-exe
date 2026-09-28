@@ -1,0 +1,30 @@
+# data_file variant: proc-self-exe
+#
+# Asks the kernel where the running image is and looks beside it. This is the
+# relocatable answer, and the only one of the three that keeps working.
+#
+# The data file is INSTALLED, not merely read out of the source directory: it is
+# copied to payload/share, because payload/src is what an install leaves behind.
+# A recipe that read its data out of sourceDir would pass in the build tree and
+# have nothing to read anywhere else.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+SHAREDIR = ../share
+LOOKUP   = -DLOOKUP_PROC_SELF_EXE -DLOOKUP_NAME='"proc-self-exe"'
+TARGET   = $(BINDIR)/portable-data-proc-self-exe
+
+all: $(TARGET) $(SHAREDIR)/message.txt
+
+$(SHAREDIR)/message.txt: message.txt
+	mkdir -p $(SHAREDIR)
+	cp message.txt $@
+
+$(TARGET): main.c $(SHAREDIR)/message.txt
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LOOKUP) -o $@ main.c
+
+clean:
+	rm -rf $(BINDIR) $(SHAREDIR)
+
+.PHONY: all clean

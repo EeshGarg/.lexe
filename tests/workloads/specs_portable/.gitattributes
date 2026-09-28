@@ -14,3 +14,18 @@
 # so the rule is stated here rather than left to the root file's patterns.
 Makefile.*     eol=lf
 CMakeLists.txt eol=lf
+
+# The same argument applies to two more kinds of file that arrived later:
+#
+#   *.txt   payload/src/message.txt is READ BY A PRODUCT at run time and its
+#           first line is compared against a declared token. Checked out with
+#           CRLF, that line ends "token-1\r" and the comparison fails -- on a
+#           fresh clone only, which is the failure mode this file exists for.
+#           The other .txt files here are install-hygiene fixtures and are
+#           pinned with them rather than by a narrower pattern that would need
+#           editing every time one is added.
+#   .keep   bare_cc ships payload/bin/.keep so that payload/bin is a directory
+#           in the package. Its contents never matter, but leaving it out of the
+#           rule would make it the one file here with no stated line ending.
+*.txt          eol=lf
+.keep          eol=lf

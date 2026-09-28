@@ -1,0 +1,21 @@
+# Linkage variant: pie
+#
+# The distribution default on this toolchain: a position-independent
+# executable, which file(1) calls a "pie executable" and readelf reports as
+# e_type DYN -- the same e_type as a shared library.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+LINKMODE = 
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-link-pie
+
+all: $(TARGET)
+
+$(TARGET): app.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LINKMODE) -o $@ app.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

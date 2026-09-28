@@ -1,0 +1,35 @@
+# rpath variant: origin-dtrpath
+#
+# The relocatable string, recorded under the OLD dynamic tag. Every other
+# variant in this family lands in DT_RUNPATH because this toolchain defaults to
+# new dtags; --disable-new-dtags puts the identical string in DT_RPATH instead.
+# The difference is not cosmetic: DT_RPATH is consulted BEFORE
+# LD_LIBRARY_PATH and cannot be overridden by it, DT_RUNPATH after and can. A
+# reader that greps for RUNPATH finds nothing here and concludes the product
+# has no search path at all.
+#
+# Everything below is identical across the variants except RPATH_ARG and LDEXTRA.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+BINDIR   = ../bin
+LIBDIR   = ../lib
+LIB      = $(LIBDIR)/libutil.so
+APP      = $(BINDIR)/portable-rpath-origin-dtrpath
+RPATH_ARG = '$$ORIGIN/../lib'
+LDEXTRA   = -Wl,--disable-new-dtags
+RPATH_OPT = -Wl,-rpath,$(RPATH_ARG)
+
+all: $(APP)
+
+$(LIB): libutil.c libutil.h
+	mkdir -p $(LIBDIR)
+	$(CC) $(CFLAGS) -shared -o $@ libutil.c
+
+$(APP): app.c libutil.h $(LIB)
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ app.c -L$(LIBDIR) -lutil $(LDEXTRA) $(RPATH_OPT)
+
+clean:
+	rm -rf $(BINDIR) $(LIBDIR)
+
+.PHONY: all clean

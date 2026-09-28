@@ -1,0 +1,20 @@
+# Linkage variant: no-pie
+#
+# The pre-PIE shape, still what a great deal of locally built software
+# produces: e_type EXEC, a fixed load address, still dynamically linked.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+LINKMODE = -no-pie
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-link-no-pie
+
+all: $(TARGET)
+
+$(TARGET): app.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LINKMODE) -o $@ app.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

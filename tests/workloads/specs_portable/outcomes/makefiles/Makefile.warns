@@ -1,0 +1,20 @@
+# outcomes variant: warns
+#
+# A build that succeeds and complains. -Wall -Wextra with source that has an
+# unused variable, an unused parameter and a signed/unsigned comparison: three
+# diagnostics on stderr, exit 0, and a product that works.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-warns
+
+all: $(TARGET)
+
+$(TARGET): warn.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ warn.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

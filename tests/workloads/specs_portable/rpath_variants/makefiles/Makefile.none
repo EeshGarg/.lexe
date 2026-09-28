@@ -1,0 +1,33 @@
+# rpath variant: none
+#
+# The control: a program linked against a shared library in the payload with no
+# run-time search path recorded at all. It links without complaint -- -L is a
+# LINK-time path and says nothing about run time -- and then cannot start
+# anywhere, including the directory it was built in. This is what every other
+# variant is being compared against.
+#
+# Everything below is identical across the variants except RPATH_ARG and LDEXTRA.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+BINDIR   = ../bin
+LIBDIR   = ../lib
+LIB      = $(LIBDIR)/libutil.so
+APP      = $(BINDIR)/portable-rpath-none
+RPATH_ARG =
+LDEXTRA   =
+RPATH_OPT =
+
+all: $(APP)
+
+$(LIB): libutil.c libutil.h
+	mkdir -p $(LIBDIR)
+	$(CC) $(CFLAGS) -shared -o $@ libutil.c
+
+$(APP): app.c libutil.h $(LIB)
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ app.c -L$(LIBDIR) -lutil $(LDEXTRA) $(RPATH_OPT)
+
+clean:
+	rm -rf $(BINDIR) $(LIBDIR)
+
+.PHONY: all clean

@@ -1,0 +1,21 @@
+# outcomes variant: swallowed-error
+#
+# Succeeds because the recipe told make to ignore the compiler's failure. The
+# leading `-` on the recipe line makes make report "Error 1 (ignored)" and
+# carry on, so the build exits 0 with no product and a real compiler error
+# buried in its stderr. Anything that trusts the exit status alone records
+# this as a successful build.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-swallowed-error
+
+all:
+	mkdir -p $(BINDIR)
+	-$(CC) $(CFLAGS) -o $(TARGET) source_that_is_not_here.c
+	@echo "build finished"
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

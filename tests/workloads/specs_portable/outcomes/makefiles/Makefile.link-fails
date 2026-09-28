@@ -1,0 +1,24 @@
+# outcomes variant: link-fails
+#
+# Compiles, then fails to link. The object file is deliberately a separate
+# rule so that it EXISTS when the build fails: a partial tree with a valid .o
+# in it and no product.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-link-fails
+
+all: $(TARGET)
+
+undef_ref.o: undef_ref.c
+	$(CC) $(CFLAGS) -c -o $@ undef_ref.c
+
+$(TARGET): undef_ref.o
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ undef_ref.o
+
+clean:
+	rm -f undef_ref.o
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

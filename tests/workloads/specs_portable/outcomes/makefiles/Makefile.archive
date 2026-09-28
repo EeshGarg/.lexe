@@ -1,0 +1,27 @@
+# outcomes variant: archive
+#
+# The declared entrypoint is a static archive. Worth its own specimen because
+# file(1) and readelf DISAGREE about what this file is: file(1) says "current ar
+# archive" and readelf -h succeeds and reports REL, having read the first
+# member. Any classifier that consults only one of the two gets a different
+# answer here, which is why the corpus records both.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/libportable-outcome-archive.a
+
+all: $(TARGET)
+
+main.o: main.c
+	$(CC) $(CFLAGS) -c -o $@ main.c
+
+$(TARGET): main.o
+	mkdir -p $(BINDIR)
+	ar rcs $@ main.o
+	chmod 0755 $@
+
+clean:
+	rm -f main.o
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

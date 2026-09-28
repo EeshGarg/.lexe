@@ -216,6 +216,21 @@ def P(rid, recipe_dir, entrypoint, system, **kw):
         "toolchain": list(kw["toolchain"]),
         "architectures": list(kw.get("architectures", ["x86_64", "aarch64"])),
         "makefile_variant": kw.get("makefile_variant"),
+        # A file copied over one of the payload's own before the build, so a
+        # family of recipes can share one source tree and differ only in its
+        # build file. `makefile_variant` is the same mechanism with
+        # variant_dest="Makefile"; `variant_dest` generalises it to CMakeLists.txt.
+        "variant_dest": kw.get("variant_dest", "Makefile"),
+        # Extra environment for the DIRECT build, on top of the deliberately
+        # small default. Recorded in build.env, so a recipe that only builds
+        # because of it is visible rather than implied. Every recipe here still
+        # builds with this empty -- that is a separate declaration, not a
+        # fallback -- and the pair of env_flags recipes exists to show both.
+        "build_env_extra": dict(kw.get("build_env_extra", {})),
+        # cmake-only knobs. The cmake argv sequence is THIS generator's choice
+        # (see build_commands), so these are recorded as part of it.
+        "cmake_defines": list(kw.get("cmake_defines", [])),
+        "cmake_install": bool(kw.get("cmake_install", False)),
         "property": kw["prop"],
         "notes": kw.get("notes", ""),
         "declared": {
@@ -234,7 +249,36 @@ def P(rid, recipe_dir, entrypoint, system, **kw):
             "expect": dict(kw.get("expect", {})),
             "build_duration_class": kw.get("build_duration", "seconds"),
             "product_min_bytes": kw.get("product_min_bytes"),
+            "product_max_bytes": kw.get("product_max_bytes"),
             "toolchain_present": kw.get("toolchain_present", True),
+            # ---- what the built FILE is, read out of it with readelf --------
+            # Declared only where the recipe is about linkage; None means "this
+            # recipe makes no claim", not "absent".
+            "e_type": kw.get("e_type"),              # EXEC / DYN / REL
+            "pie": kw.get("pie"),                    # bool
+            "interpreter": kw.get("interpreter"),    # "present" / "absent"
+            "needed_contains": list(kw.get("needed_contains", [])),
+            "needed_empty": kw.get("needed_empty"),  # bool: DT_NEEDED list empty
+            "has_symtab": kw.get("has_symtab"),      # bool
+            "product_mode": kw.get("product_mode"),  # e.g. "0o644"
+            # ---- what the BUILD said ----------------------------------------
+            "build_stdout_contains": list(kw.get("build_stdout_contains", [])),
+            "build_stderr_contains": list(kw.get("build_stderr_contains", [])),
+            # ---- how the product BEHAVES -----------------------------------
+            # A product killed by a signal has no exit code at all, so the two
+            # are declared separately rather than folded into one number.
+            "signal": kw.get("signal"),
+            "run_stderr_contains": list(kw.get("run_stderr_contains", [])),
+            # The relocated run gets its own declarations. Without these the
+            # relocated check only asks whether main was reached, and a product
+            # that starts and then cannot find its data would pass -- which is
+            # exactly the shape the data_file family is about.
+            "relocated_exit_code": kw.get("relocated_exit", kw.get("exit", 0)),
+            "expect_relocated": dict(kw.get("expect_relocated", {})),
+            "relocated_signal": kw.get("relocated_signal", kw.get("signal")),
+            # ---- what an install promotes ----------------------------------
+            "installed_present": list(kw.get("installed_present", [])),
+            "installed_absent": list(kw.get("installed_absent", [])),
             # Stated when a declaration above is true only because of something
             # about THIS host, so nobody inherits the claim on another one. It is
             # not checked; it is a warning attached to the declaration it
@@ -481,6 +525,870 @@ P("portable-rpath-origin", "rpath_variants",
   notes=RPATH_NOTE + " The relocatable idiom, and the only one of the six "
         "predicted to still start once the build tree is gone.")
 
+P("portable-rpath-origin-dtrpath", "rpath_variants",
+  "bin/portable-rpath-origin-dtrpath", "make", toolchain=["make", "cc"],
+  makefile_variant="origin-dtrpath",
+  prop="the relocatable string recorded under DT_RPATH instead of DT_RUNPATH",
+  runpath="$ORIGIN/../lib", rpath_tag="DT_RPATH",
+  extra_products=["lib/libutil.so"],
+  starts_in_build_tree=True, starts_relocated=True,
+  expect=dict(COMMON_OK, UTIL_VALUE="4242", SHARED_LIB_RESOLVED="yes"),
+  notes=RPATH_NOTE + " -Wl,--disable-new-dtags. The string is identical to the "
+        "origin variant and the TAG is different, which changes the search "
+        "order: DT_RPATH is consulted before LD_LIBRARY_PATH and cannot be "
+        "overridden by it, DT_RUNPATH after and can. Anything that reads only "
+        "the RUNPATH field concludes this product has no search path at all.")
+
+P("portable-rpath-none", "rpath_variants", "bin/portable-rpath-none", "make",
+  toolchain=["make", "cc"], makefile_variant="none",
+  prop="a program linked against a payload library with no run-time search path",
+  runpath=None, rpath_tag=None, extra_products=["lib/libutil.so"],
+  starts_in_build_tree=False, starts_relocated=False, expect={},
+  notes=RPATH_NOTE + " The control for the whole family: -L is a LINK-time path "
+        "and says nothing about run time, so the link succeeds without a "
+        "diagnostic and the product cannot start anywhere, including the "
+        "directory that built it.")
+
+P("portable-rpath-origin-double-quoted", "rpath_variants",
+  "bin/portable-rpath-origin-double-quoted", "make", toolchain=["make", "cc"],
+  makefile_variant="origin-double-quoted",
+  prop='-Wl,-rpath,"$$ORIGIN/../lib" in a Makefile (double quotes)',
+  runpath="/../lib", rpath_tag="DT_RUNPATH", extra_products=["lib/libutil.so"],
+  starts_in_build_tree=False, starts_relocated=False, expect={},
+  notes=RPATH_NOTE + " The $$ gets one dollar past make correctly and then the "
+        "double quotes let the SHELL expand $ORIGIN, an ordinary environment "
+        "variable nobody has set, to nothing. Same wreckage as the $(pwd) "
+        "variant from the opposite direction: there make ate it, here the "
+        "shell did.")
+
+P("portable-rpath-origin-single-dollar", "rpath_variants",
+  "bin/portable-rpath-origin-single-dollar", "make", toolchain=["make", "cc"],
+  makefile_variant="origin-single-dollar",
+  prop="-Wl,-rpath,'$ORIGIN/../lib' in a Makefile (one dollar, not two)",
+  runpath="RIGIN/../lib", rpath_tag="DT_RUNPATH",
+  extra_products=["lib/libutil.so"],
+  starts_in_build_tree=False, starts_relocated=False, expect={},
+  notes=RPATH_NOTE + " make reads $O as a reference to a variable named O, "
+        "which nobody defined, leaving the literal RIGIN/../lib. A RELATIVE "
+        "DT_RUNPATH is legal -- it is resolved against the process working "
+        "directory -- so the linker accepts it silently and the product carries "
+        "a search path that depends on where it is launched from.")
+
+
+# ---- the language standards ----------------------------------------------
+# One source per language, several -std flags. What the specimen reports is what
+# the COMPILER says it was given, never what the recipe claims it asked for.
+
+STD_C_OK = dict(COMMON_OK, LANGUAGE="c", STDC_HOSTED="1",
+                CHECKSUM_STABLE="yes", ISA_KNOWN="yes")
+STD_C_NOTE = ("One source, five -std flags. The file is strict C89 so it "
+              "compiles unchanged under all five with -pedantic-errors, which "
+              "is what makes the comparison a comparison.")
+
+P("portable-std-c89", "std_c", "bin/portable-std-c89", "make",
+  toolchain=["make", "cc"], makefile_variant="c89",
+  prop="C89 requested with -std=c89 -pedantic-errors",
+  expect=dict(STD_C_OK, STDC_VERSION="undefined", STRICT_ANSI="yes"),
+  notes=STD_C_NOTE + " __STDC_VERSION__ does not exist in C89 at all, so the "
+        "specimen reports it as undefined rather than inventing a 0.")
+
+P("portable-std-c99", "std_c", "bin/portable-std-c99", "make",
+  toolchain=["make", "cc"], makefile_variant="c99",
+  prop="C99 requested with -std=c99 -pedantic-errors",
+  expect=dict(STD_C_OK, STDC_VERSION="199901", STRICT_ANSI="yes"),
+  notes=STD_C_NOTE)
+
+P("portable-std-c11", "std_c", "bin/portable-std-c11", "make",
+  toolchain=["make", "cc"], makefile_variant="c11",
+  prop="C11 requested with -std=c11 -pedantic-errors",
+  expect=dict(STD_C_OK, STDC_VERSION="201112", STRICT_ANSI="yes"),
+  notes=STD_C_NOTE)
+
+P("portable-std-c17", "std_c", "bin/portable-std-c17", "make",
+  toolchain=["make", "cc"], makefile_variant="c17",
+  prop="C17 requested with -std=c17 -pedantic-errors",
+  expect=dict(STD_C_OK, STDC_VERSION="201710", STRICT_ANSI="yes"),
+  notes=STD_C_NOTE)
+
+P("portable-std-gnu89", "std_c", "bin/portable-std-gnu89", "make",
+  toolchain=["make", "cc"], makefile_variant="gnu89",
+  prop="C89 plus GNU extensions, requested with -std=gnu89",
+  expect=dict(STD_C_OK, STDC_VERSION="undefined", STRICT_ANSI="no"),
+  notes=STD_C_NOTE + " The pair with portable-std-c89 is the point: the "
+        "language version is identical and __STRICT_ANSI__ is not, so the two "
+        "products differ in what the compiler would have ACCEPTED rather than "
+        "in what this source used.")
+
+STD_CXX_OK = dict(COMMON_OK, LANGUAGE="c++", VECTOR_SUM="2080",
+                  STRING_CONCAT="portable-source", EXCEPTION_CAUGHT="yes")
+STD_CXX_NOTE = ("One source, four -std flags. Written to C++11 so nothing in it "
+                "was added or removed by a later standard; VECTOR_SUM is "
+                "hand-computed (1..64 sums to 2080) rather than checked against "
+                "a second copy of the same loop.")
+
+P("portable-std-cxx11", "std_cxx", "bin/portable-std-cxx11", "make",
+  toolchain=["make", "c++"], makefile_variant="cxx11",
+  prop="C++11 requested with -std=c++11",
+  expect=dict(STD_CXX_OK, CPLUSPLUS="201103"), notes=STD_CXX_NOTE)
+
+P("portable-std-cxx14", "std_cxx", "bin/portable-std-cxx14", "make",
+  toolchain=["make", "c++"], makefile_variant="cxx14",
+  prop="C++14 requested with -std=c++14",
+  expect=dict(STD_CXX_OK, CPLUSPLUS="201402"), notes=STD_CXX_NOTE)
+
+P("portable-std-cxx17", "std_cxx", "bin/portable-std-cxx17", "make",
+  toolchain=["make", "c++"], makefile_variant="cxx17",
+  prop="C++17 requested with -std=c++17",
+  expect=dict(STD_CXX_OK, CPLUSPLUS="201703"), notes=STD_CXX_NOTE)
+
+P("portable-std-cxx20", "std_cxx", "bin/portable-std-cxx20", "make",
+  toolchain=["make", "c++"], makefile_variant="cxx20",
+  prop="C++20 requested with -std=c++20",
+  expect=dict(STD_CXX_OK, CPLUSPLUS="202002"), notes=STD_CXX_NOTE)
+
+# ---- linkage: six link lines, six different FILES -------------------------
+# Every declaration below is about the built file rather than the program, and
+# is read out of it with readelf. The program's own opinion of its linkage would
+# be a compile-time guess.
+
+LINK_OK = dict(COMMON_OK, CHECKSUM_STABLE="yes", ISA_KNOWN="yes")
+
+P("portable-link-pie", "linkage", "bin/portable-link-pie", "make",
+  toolchain=["make", "cc"], makefile_variant="pie",
+  prop="the toolchain default: a position-independent executable",
+  e_type="DYN", pie=True, interpreter="present",
+  needed_contains=["libc.so.6"], has_symtab=True,
+  expect=LINK_OK,
+  notes="e_type DYN, which is the SAME e_type a shared library has. Telling a "
+        "PIE from a library needs the program headers, not the ELF type.")
+
+P("portable-link-no-pie", "linkage", "bin/portable-link-no-pie", "make",
+  toolchain=["make", "cc"], makefile_variant="no-pie",
+  prop="-no-pie: a fixed-address executable, still dynamically linked",
+  e_type="EXEC", pie=False, interpreter="present",
+  needed_contains=["libc.so.6"], has_symtab=True,
+  expect=LINK_OK,
+  notes="The pre-PIE shape, and still what a great deal of locally built "
+        "software produces.")
+
+P("portable-link-static", "linkage", "bin/portable-link-static", "make",
+  toolchain=["make", "cc"], makefile_variant="static",
+  prop="-static: no program interpreter and an empty DT_NEEDED",
+  e_type="EXEC", pie=False, interpreter="absent",
+  needed_empty=True, has_symtab=True,
+  expect=LINK_OK,
+  notes="Nothing for the loader to fail to find, so nothing that relocation "
+        "can break. The opposite end of the same axis as the rpath family: "
+        "where that family asks how a product finds its libraries, this one "
+        "has none to find.")
+
+P("portable-link-static-pie", "linkage", "bin/portable-link-static-pie", "make",
+  toolchain=["make", "cc"], makefile_variant="static-pie",
+  prop="-static-pie: e_type DYN with no interpreter and an empty DT_NEEDED",
+  e_type="DYN", pie=True, interpreter="absent",
+  needed_empty=True, has_symtab=True,
+  expect=LINK_OK,
+  notes="Sounds contradictory and is not. The specimen exists because code "
+        "that infers 'dynamically linked' from e_type DYN, or 'has an "
+        "interpreter' from PIE, is wrong exactly here and nowhere else in the "
+        "corpus.")
+
+P("portable-link-stripped", "linkage", "bin/portable-link-stripped", "make",
+  toolchain=["make", "cc"], makefile_variant="stripped",
+  prop="-s: the same program with no symbol table in the file",
+  e_type="DYN", pie=True, interpreter="present",
+  needed_contains=["libc.so.6"], has_symtab=False,
+  expect=LINK_OK,
+  notes="Nothing about the run changes. What changes is whether .symtab is "
+        "there, which is the one difference between this specimen and "
+        "portable-link-pie.")
+
+P("portable-link-debug", "linkage", "bin/portable-link-debug", "make",
+  toolchain=["make", "cc"], makefile_variant="debug",
+  prop="-g: debug information in the product",
+  e_type="DYN", pie=True, interpreter="present",
+  needed_contains=["libc.so.6"], has_symtab=True,
+  expect=LINK_OK,
+  notes="The ordinary state of a locally built binary, and several times the "
+        "size of the stripped one from identical source.")
+
+# ---- runtime behaviour: one product, many manifests -----------------------
+# These specimens vary `entrypoint.arguments` and nothing else. It is the only
+# part of the manifest no other recipe in the corpus exercises, and it buys the
+# runtime behaviours a launcher has to survive without a source tree each.
+
+RUN_NOTE = ("Same payload, same build, same product bytes as every other "
+            "portable-run-* specimen. Only entrypoint.arguments differs.")
+RUN_OK = dict(COMMON_OK, MODE_KNOWN="yes")
+
+
+def RUN(rid, args, prop, notes="", **kw):
+    expect = dict(RUN_OK, ARGC=str(1 + len(args)))
+    if args:
+        expect["MODE"] = args[0]
+    else:
+        expect["MODE"] = "report"
+    for i, a in enumerate(args, 1):
+        expect["ARGV_%d" % i] = a
+    expect.update(kw.pop("extra_expect", {}))
+    # RESULT stays PASS even for the specimens that exit 7 or die on SIGSEGV:
+    # the program did exactly what it was told, and the unusual exit status is a
+    # separate declaration. Conflating the two is how a launcher ends up
+    # reporting a deliberate exit code as a broken payload.
+    return P(rid, "run_modes", "bin/portable-run", "make",
+             toolchain=["make", "cc"], arguments=args, prop=prop,
+             expect=expect, expect_relocated=dict(expect),
+             notes=RUN_NOTE + (" " + notes if notes else ""), **kw)
+
+
+RUN("portable-run-no-args", [],
+    "a product launched with no arguments at all",
+    "argc is 1 and argv[0] is the only thing there, which is the baseline every "
+    "other member of this family is measured against.")
+
+RUN("portable-run-args-three", ["args", "alpha", "beta"],
+    "three fixed arguments delivered from the manifest to argv")
+
+RUN("portable-run-arg-with-space", ["args", "one two three"],
+    "an argument containing spaces, delivered as ONE argv element",
+    "The manifest carries an argv list rather than a command string, so there "
+    "is no quoting language between the manifest and exec and this is one "
+    "argument rather than three. A fixture that went through a shell would "
+    "report ARGC=5 here.")
+
+RUN("portable-run-arg-empty", ["args", ""],
+    "an empty-string argument",
+    "The schema notes explicitly that entrypoint.arguments accepts an empty "
+    "string where build.command does not. This is the specimen that shows an "
+    "empty argument survives all the way to argv rather than being dropped.")
+
+RUN("portable-run-arg-unicode", ["args", "αβγ ünïcode"],
+    "an argument containing non-ASCII characters",
+    "The manifest is JSON, so this travels as \\u escapes and has to arrive at "
+    "argv as UTF-8 bytes.")
+
+RUN("portable-run-many-args", ["args"] + ["a%d" % i for i in range(40)],
+    "forty-one fixed arguments")
+
+RUN("portable-run-exit-7", ["exit", "7"],
+    "a product that exits with an unusual non-zero status",
+    "Exit 7 is a RESULT the program chose, not a failure: the oracle still "
+    "says PASS. Anything that equates a non-zero exit with a broken specimen "
+    "gets this one wrong.",
+    exit=7, extra_expect={"EXIT_REQUESTED": "7"})
+
+RUN("portable-run-exit-255", ["exit", "255"],
+    "a product that exits with the largest status a wait() can carry",
+    exit=255, extra_expect={"EXIT_REQUESTED": "255"})
+
+RUN("portable-run-crash-segv", ["crash"],
+    "a product that starts, prints its oracle and then dies on SIGSEGV",
+    "There is no exit code at all, which is why the declaration carries a "
+    "signal instead of one. The program flushes stdout before dereferencing "
+    "null on purpose: without that the pipe is still block-buffered and the "
+    "specimen would be indistinguishable from one that never reached main.",
+    exit=None, signal=11, extra_expect={"FATAL_KIND": "segv"})
+
+RUN("portable-run-abort", ["abort"],
+    "a product that starts and then raises SIGABRT",
+    "The other fatal signal a program gives itself, and a different number.",
+    exit=None, signal=6, extra_expect={"FATAL_KIND": "abort"})
+
+RUN("portable-run-stderr", ["stderr"],
+    "a product that writes to stderr as well as stdout",
+    "Two streams, and the oracle is only on one of them.",
+    run_stderr_contains=["PORTABLE_RUN_STDERR_MARKER"],
+    extra_expect={"STDERR_WRITTEN": "yes"})
+
+RUN("portable-run-env-present", ["env", "FIXTURE_ID"],
+    "a product that reads an environment variable that IS set",
+    "FIXTURE_ID is set by the harness for every run in this corpus, so this "
+    "specimen is the positive control for the pair.",
+    extra_expect={"ENV_NAME": "FIXTURE_ID", "ENV_PRESENT": "yes"})
+
+RUN("portable-run-env-absent", ["env", "LEXE_VARIABLE_THAT_IS_NOT_SET"],
+    "a product that reads an environment variable that is NOT set",
+    "The build and run environments here are deliberately tiny, so this is a "
+    "real absence rather than a name nobody happened to use.",
+    extra_expect={"ENV_NAME": "LEXE_VARIABLE_THAT_IS_NOT_SET",
+                  "ENV_PRESENT": "no"})
+
+RUN("portable-run-write-file", ["write", "written-by-the-product.txt"],
+    "a product that writes a file into its working directory and reads it back",
+    "The path is relative, so the file lands in whatever working directory the "
+    "launcher chose -- which is a different directory for the build-tree run "
+    "and the relocated run, and both are declared to succeed.",
+    extra_expect={"WRITE_PATH": "written-by-the-product.txt",
+                  "WRITE_ROUNDTRIP": "yes"})
+
+RUN("portable-run-spin-short", ["spin", "1000"],
+    "a product that finishes immediately",
+    extra_expect={"SPIN_ROUNDS": "1000", "SPIN_NONZERO": "yes"})
+
+RUN("portable-run-spin-long", ["spin", "1200000000"],
+    "a product that runs for seconds rather than milliseconds",
+    "The work is integer arithmetic, so SPIN_VALUE is identical on every "
+    "machine and only the WALL TIME differs. No duration is declared: a "
+    "declared duration would be a performance assertion, and this corpus does "
+    "not make those -- the time each run took is in runs.*.duration_ms as an "
+    "observation, beside the load average the whole generation ran under.",
+    extra_expect={"SPIN_ROUNDS": "1200000000", "SPIN_NONZERO": "yes"})
+
+RUN("portable-run-stdin-eof", ["stdin"],
+    "a product that reads stdin and finds it already at end of file",
+    "Every run in this corpus is given an empty stdin rather than an inherited "
+    "terminal, so a product that blocks on input would hang instead of "
+    "reporting. This specimen proves it does not.",
+    extra_expect={"STDIN_SAW_BYTES": "no", "STDIN_AT_EOF": "yes"})
+
+# ---- a product that needs a FILE at run time ------------------------------
+# The rpath question asked about data instead of libraries, with the same three
+# answers and one important difference: there is no loader, so a wrong answer
+# produces no diagnostic at all unless the program checks.
+
+DATA_OK = dict(COMMON_OK, PATH_RESOLVED="yes", DATA_FOUND="yes",
+               DATA_TOKEN="portable-data-file-token-1", DATA_TOKEN_OK="yes")
+
+P("portable-data-proc-self-exe", "data_file", "bin/portable-data-proc-self-exe",
+  "make", toolchain=["make", "cc"], makefile_variant="proc-self-exe",
+  prop="a product that finds its data file relative to /proc/self/exe",
+  extra_products=["share/message.txt"],
+  installed_present=["share/message.txt"],
+  expect=dict(DATA_OK, LOOKUP="proc-self-exe"),
+  expect_relocated=dict(DATA_OK, LOOKUP="proc-self-exe"),
+  notes="The relocatable answer, and the only one of the three that still "
+        "works once the build tree is gone. The data file is installed into "
+        "payload/share rather than read out of payload/src, because src is "
+        "exactly what an install leaves behind.")
+
+P("portable-data-baked-abs-path", "data_file", "bin/portable-data-baked-abs-path",
+  "make", toolchain=["make", "cc"], makefile_variant="baked-abs-path",
+  prop="a product with the build directory compiled into it as a string constant",
+  extra_products=["share/message.txt"],
+  installed_present=["share/message.txt"],
+  expect=dict(DATA_OK, LOOKUP="baked-abs-path",
+              BAKED_DATA_DIR="{SRCDIR}/../share"),
+  relocated_exit=3,
+  expect_relocated={"PAYLOAD_KIND": "portable-source", "RESULT": "FAIL",
+                    "LOOKUP": "baked-abs-path",
+                    "BAKED_DATA_DIR": "{SRCDIR}/../share",
+                    "PATH_RESOLVED": "yes", "DATA_FOUND": "no",
+                    "DATA_TOKEN": "<none>", "DATA_TOKEN_OK": "no"},
+  notes="-DDATA_DIR='\"$(CURDIR)/../share\"'. The same mistake as an absolute "
+        "rpath, one layer up and quieter: no loader is involved, so there is no "
+        "loader message, no exit 127 and no ldd line -- just a file that is not "
+        "there, which only this program's own check reports. The declared "
+        "BAKED_DATA_DIR is the build directory itself, which is why it is "
+        "written with {SRCDIR}: the value is not knowable until the build has "
+        "a directory, and it is a DECLARED value rather than an observation "
+        "because a build path becoming a constant in the product is the whole "
+        "property.")
+
+P("portable-data-cwd-relative", "data_file", "bin/portable-data-cwd-relative",
+  "make", toolchain=["make", "cc"], makefile_variant="cwd-relative",
+  prop="a product that looks for its data relative to the working directory",
+  extra_products=["share/message.txt"],
+  installed_present=["share/message.txt"],
+  exit=3, relocated_exit=3,
+  expect={"PAYLOAD_KIND": "portable-source", "RESULT": "FAIL",
+          "LOOKUP": "cwd-relative", "PATH_RESOLVED": "yes",
+          "DATA_FOUND": "no", "DATA_TOKEN": "<none>", "DATA_TOKEN_OK": "no"},
+  expect_relocated={"PAYLOAD_KIND": "portable-source", "RESULT": "FAIL",
+                    "LOOKUP": "cwd-relative", "PATH_RESOLVED": "yes",
+                    "DATA_FOUND": "no", "DATA_TOKEN": "<none>",
+                    "DATA_TOKEN_OK": "no"},
+  notes="Declared to fail in BOTH runs, including the one in the tree that "
+        "built it. That is not a broken recipe: a launcher chooses the working "
+        "directory and it is never the payload root, so this shape is broken "
+        "everywhere and looks fine to anyone who tests it by cd-ing into the "
+        "payload first.")
+
+# ---- what a build can DO --------------------------------------------------
+
+P("portable-outcome-warns", "outcomes", "bin/portable-outcome-warns", "make",
+  toolchain=["make", "cc"], makefile_variant="warns",
+  prop="a build that emits warnings, exits 0, and produces a working product",
+  build_stderr_contains=["warning:"],
+  expect=dict(COMMON_OK, WARNED_BUT_BUILT="yes", SIGN_COMPARE_EQUAL="yes",
+              HELPER="1"),
+  notes="The most common state of real source. Anything that treats a "
+        "non-empty build stderr as failure rejects most of the software in the "
+        "world, so the declaration asserts BOTH that the build succeeded and "
+        "that it complained.")
+
+P("portable-outcome-link-fails", "outcomes", "bin/portable-outcome-link-fails",
+  "make", toolchain=["make", "cc"], makefile_variant="link-fails",
+  prop="a build that compiles cleanly and fails at the LINK step",
+  build_ok=False, product_exists=False, product_kind=None,
+  starts_in_build_tree=False, starts_relocated=False,
+  leftovers=["src/undef_ref.o"],
+  build_stderr_contains=["undefined reference"],
+  notes="A different shape from a compile failure: every translation unit was "
+        "accepted, the object file exists, and the diagnostic names a SYMBOL "
+        "rather than a file and a line. A consumer scraping for 'error:' finds "
+        "nothing -- GNU ld says 'undefined reference to'.")
+
+P("portable-outcome-missing-sys-header", "outcomes",
+  "bin/portable-outcome-missing-sys-header", "make",
+  toolchain=["make", "cc"], makefile_variant="missing-sys-header",
+  prop="a build needing a system header that is not installed on this host",
+  build_ok=False, product_exists=False, product_kind=None,
+  starts_in_build_tree=False, starts_relocated=False,
+  build_stderr_contains=["gtk/gtk.h"],
+  notes="Every declared TOOL is present and the build still cannot proceed. "
+        "This is what a package with a -dev dependency looks like on a machine "
+        "that has not got it, and it is a different failure from "
+        "portable-toolchain-absent, which can be detected before the user is "
+        "asked to approve anything.")
+
+P("portable-outcome-no-rule", "outcomes", "bin/portable-outcome-no-rule", "make",
+  toolchain=["make", "cc"], makefile_variant="no-rule",
+  prop="a build that fails before invoking the compiler at all",
+  build_ok=False, product_exists=False, product_kind=None,
+  starts_in_build_tree=False, starts_relocated=False,
+  build_stderr_contains=["No rule to make target"],
+  notes="make is asked for a prerequisite that is neither a file nor a rule. "
+        "Nothing is compiled, no object exists, and the diagnostic comes from "
+        "make rather than from cc -- so a consumer that looks for compiler "
+        "output to explain a failure finds none at all.")
+
+P("portable-outcome-no-product", "outcomes", "bin/portable-outcome-no-product",
+  "make", toolchain=["make", "cc"], makefile_variant="no-product",
+  prop="a build that exits 0 and puts the product at a different path",
+  product_exists=False, product_kind=None,
+  starts_in_build_tree=False, starts_relocated=False,
+  extra_products=["bin/portable-outcome-somewhere-else"],
+  notes="The same property as portable-product-path-mismatch without needing a "
+        "cross-compiler to produce it: exit 0, no diagnostic, and a perfectly "
+        "good binary sitting next to the declared path.")
+
+P("portable-outcome-swallowed-error", "outcomes",
+  "bin/portable-outcome-swallowed-error", "make",
+  toolchain=["make", "cc"], makefile_variant="swallowed-error",
+  prop="a build that exits 0 because the recipe told make to ignore a failure",
+  product_exists=False, product_kind=None,
+  starts_in_build_tree=False, starts_relocated=False,
+  build_stdout_contains=["build finished"],
+  build_stderr_contains=["(ignored)"],
+  notes="A leading `-` on the recipe line. make reports 'Error 1 (ignored)' and "
+        "carries on, so the build exits 0 with a real compiler error in its "
+        "stderr and nothing at the entrypoint. Anything that trusts the exit "
+        "status alone records this as a successful build.")
+
+P("portable-outcome-empty-product", "outcomes",
+  "bin/portable-outcome-empty-product", "make",
+  toolchain=["make", "cc"], makefile_variant="empty-product",
+  prop="a build that creates the declared entrypoint as a zero-byte file",
+  product_kind="other", product_max_bytes=0, product_mode="0o755",
+  starts_in_build_tree=False, starts_relocated=False,
+  notes="The path exists, the mode is right, and there is nothing to execute: "
+        "file(1) says 'empty' and execve fails with ENOEXEC. A check that stats "
+        "the entrypoint and stops there passes this specimen.")
+
+P("portable-outcome-not-executable", "outcomes",
+  "bin/portable-outcome-not-executable", "make",
+  toolchain=["make", "cc"], makefile_variant="not-executable",
+  prop="a correct ELF executable left mode 0644",
+  product_mode="0o644", e_type="DYN",
+  starts_in_build_tree=False, starts_relocated=False,
+  notes="Every ELF fact about the file is right and it cannot be launched. The "
+        "failure is a PermissionError from execve rather than a loader message "
+        "or a non-zero exit, so it happens before the program exists. Measured "
+        "on ext4 under the build root: mode is meaningless on DrvFS, which is "
+        "why nothing in this corpus builds under /mnt/c.")
+
+P("portable-outcome-object", "outcomes", "bin/portable-outcome-object.o", "make",
+  toolchain=["make", "cc"], makefile_variant="object",
+  prop="a build that stops at -c, leaving a relocatable object at the entrypoint",
+  product_kind="elf-object", e_type="REL", product_mode="0o755",
+  starts_in_build_tree=False, starts_relocated=False,
+  notes="A valid ELF of the right machine with no entry point and no program "
+        "headers: one step earlier than the shared-object specimen on the same "
+        "axis of 'the build succeeded' versus 'the product can be launched'.")
+
+P("portable-outcome-archive", "outcomes",
+  "bin/libportable-outcome-archive.a", "make",
+  toolchain=["make", "cc", "ar"], makefile_variant="archive",
+  prop="a static archive at the entrypoint, about which file(1) and readelf disagree",
+  product_kind="elf-other", e_type="REL", product_mode="0o755",
+  starts_in_build_tree=False, starts_relocated=False,
+  notes="The most interesting classifier case in the corpus. file(1) says "
+        "'current ar archive'; readelf -h SUCCEEDS and reports REL, having "
+        "read the first member rather than the file. The generator's classifier "
+        "consults both and lands on 'elf-other' -- a category it reaches for no "
+        "other specimen -- which is the honest answer for a file that is an "
+        "archive of ELFs and not an ELF.")
+
+P("portable-outcome-text-product", "outcomes",
+  "bin/portable-outcome-text-product", "make",
+  toolchain=["make", "cc"], makefile_variant="text-product",
+  prop="a text file with the executable bit set and no shebang",
+  product_kind="script", product_mode="0o755",
+  starts_in_build_tree=False, starts_relocated=False,
+  notes="A shell would run this by falling back to itself; execve will not, and "
+        "fails with ENOEXEC. 'Executable bit set' and 'executable' are "
+        "different claims, and this is the specimen where they come apart.")
+
+P("portable-outcome-script-wrapper", "outcomes",
+  "bin/portable-outcome-script.sh", "make",
+  toolchain=["make", "cc"], makefile_variant="script-wrapper",
+  prop="an entrypoint that is a shell script wrapping a compiled binary",
+  product_kind="script", product_mode="0o755",
+  extra_products=["bin/portable-outcome-wrapped"],
+  expect=dict(COMMON_OK, WRAPPER="sh", ISA_KNOWN="yes"),
+  expect_relocated=dict(COMMON_OK, WRAPPER="sh", ISA_KNOWN="yes"),
+  notes="Extremely common -- it is how a program that needs an environment "
+        "variable, a working directory or a library path gets one -- and it "
+        "means the declared entrypoint is not an ELF at all. The wrapper finds "
+        "its binary from $0, so it survives relocation; a wrapper with an "
+        "absolute path in it would be the rpath mistake in shell.")
+
+# ---- several products from one package ------------------------------------
+
+P("portable-multi-exec-first", "multi_exec", "bin/portable-multi-alpha", "make",
+  toolchain=["make", "cc"],
+  prop="three executables from one build, the first declared as the entrypoint",
+  extra_products=["bin/portable-multi-beta", "bin/portable-multi-gamma"],
+  expect=dict(COMMON_OK, PROGRAM="alpha", PROGRAMS_IN_PACKAGE="3"),
+  notes="A package is not required to produce exactly one program, and a "
+        "manifest names exactly one entrypoint -- so two of the three products "
+        "are files an install has to carry that nothing will ever launch "
+        "through the manifest.")
+
+P("portable-multi-exec-last", "multi_exec", "bin/portable-multi-gamma", "make",
+  toolchain=["make", "cc"],
+  prop="the same three executables with the LAST one declared as the entrypoint",
+  extra_products=["bin/portable-multi-alpha", "bin/portable-multi-beta"],
+  expect=dict(COMMON_OK, PROGRAM="gamma", PROGRAMS_IN_PACKAGE="3"),
+  notes="Byte-identical payload to portable-multi-exec-first; only lexe.json "
+        "differs. Anything that assumes the entrypoint is whatever the build "
+        "produced first, or alphabetically, gets this one wrong.")
+
+# ---- libraries that are not shared ----------------------------------------
+
+P("portable-static-lib", "static_lib", "bin/portable-static-lib", "make",
+  toolchain=["make", "cc", "ar"],
+  prop="a static library and its consumer, produced by one build",
+  extra_products=["lib/libutil.a"],
+  needed_contains=["libc.so.6"], runpath=None, rpath_tag=None,
+  expect=dict(COMMON_OK, LINK_KIND="static-archive", UTIL_VALUE="4242",
+              UTIL_BUILD_ID="libutil-static-1", ARCHIVE_LINKED="yes"),
+  expect_relocated=dict(COMMON_OK, LINK_KIND="static-archive",
+                        UTIL_VALUE="4242", UTIL_BUILD_ID="libutil-static-1",
+                        ARCHIVE_LINKED="yes"),
+  notes="The counterpart to portable-shared-lib. The archive is still installed "
+        "as a product, and none of it is needed at run time: there is no "
+        "DT_NEEDED entry for it and no search path to get wrong, so relocation "
+        "cannot break this shape. `ar` is a declared tool of its own, because a "
+        "host with cc and make and no binutils cannot run this recipe.")
+
+P("portable-mixed-c-cxx", "mixed_c_cxx", "bin/portable-mixed-c-cxx", "make",
+  toolchain=["make", "cc", "c++"],
+  prop="one product from a C translation unit and a C++ translation unit",
+  needed_contains=["libstdc++.so.6", "libc.so.6"],
+  expect=dict(COMMON_OK, TRANSLATION_UNITS="2", MAIN_LANGUAGE="c++",
+              CPART_LANGUAGE="c", CPART_VALUE="1701", CXX_STRING="mixed-ok",
+              BOTH_UNITS_LINKED="yes"),
+  notes="Two compilers in one build, and the LINK has to be driven by c++: a "
+        "link driven by cc produces undefined references to the C++ runtime. "
+        "The extern \"C\" guard in the shared header is the other half -- "
+        "without it the C++ unit asks the linker for a mangled name nobody "
+        "defined.")
+
+P("portable-cxx-links-c-archive", "cxx_c_archive", "bin/portable-cxx-c-archive",
+  "make", toolchain=["make", "cc", "c++", "ar"],
+  prop="a C++ product linking a C static library the same build produced",
+  extra_products=["lib/libclib.a"],
+  needed_contains=["libstdc++.so.6"],
+  expect=dict(COMMON_OK, MAIN_LANGUAGE="c++",
+              DEPENDENCY_KIND="c-static-archive", CLIB_ANSWER="2718",
+              CLIB_ID="clib-archive-1", VECTOR_TOTAL="10872",
+              ARCHIVE_LINKED="yes"),
+  notes="Four declared tools and an ordering: cc compiles, ar archives, c++ "
+        "links. VECTOR_TOTAL is hand-computed as 4 * 2718 = 10872.")
+
+# ---- build drivers and build shapes ---------------------------------------
+
+P("portable-make-recursive", "make_recursive", "bin/portable-make-recursive",
+  "make", toolchain=["make", "cc"],
+  prop="a recursive make: two sub-makes in subdirectories, then a link",
+  expect=dict(COMMON_OK, BUILD_SHAPE="recursive-make", SUBDIRS="2",
+              CORE_ID="core-1", UTIL_ID="util-1", UTIL_ANSWER="31337",
+              BOTH_SUBDIRS_LINKED="yes"),
+  notes="Three makefiles, two of which know nothing about the one above them. "
+        "$(MAKE) rather than `make` in the recipes, because $(MAKE) carries the "
+        "jobserver and the command-line variables into the sub-make and a bare "
+        "`make` loses both -- which shows up only under -j.")
+
+PARALLEL_OK = dict(COMMON_OK, TRANSLATION_UNITS="5", PARTS_COMBINED="4",
+                   COMBINED_NONZERO="yes")
+
+P("portable-make-serial", "parallel", "bin/portable-parallel", "make",
+  toolchain=["make", "cc"],
+  prop="the control for the parallel pair: the same build with no -j at all",
+  build_stdout_contains=["PORTABLE_PARALLEL_SEEN=no"],
+  expect=PARALLEL_OK,
+  notes="Byte-identical payload to the two parallel specimens and byte-identical "
+        "in everything but MAKEFLAGS. It exists because the product is correct "
+        "whether or not -j arrived, so without a specimen that declares -j did "
+        "NOT arrive there is nothing the other two are being compared against.")
+
+P("portable-make-parallel-env", "parallel", "bin/portable-parallel", "make",
+  toolchain=["make", "cc"], build_env_extra={"MAKEFLAGS": "-j4"},
+  prop="a make build run with four parallel jobs, requested through MAKEFLAGS",
+  build_stdout_contains=["PORTABLE_PARALLEL_SEEN=yes"],
+  expect=PARALLEL_OK,
+  notes="The canonical `make -C src` invocation with MAKEFLAGS=-j4 in the "
+        "environment, which is how a parallel build is requested without "
+        "changing the command line. The four objects have no dependency on each "
+        "other and the combining order in the program is fixed, so a rule that "
+        "relied on make's serial ordering would produce a link error or a stale "
+        "object here rather than a different answer. "
+        "PORTABLE_PARALLEL_SEEN is declared because a correct product does not "
+        "show that -j arrived: the first version of this recipe asserted only "
+        "the product, and would have passed unchanged with the environment "
+        "addition deleted. The Makefile now reports what make itself was given. "
+        "That probe was wrong once and the correction is a finding rather than "
+        "tidying: written as a parse-time `ifneq (,$(findstring j,$(MAKEFLAGS)))` "
+        "it reported `no` for a build make had been given -j4, because GNU make "
+        "appends -j and --jobserver-auth to MAKEFLAGS AFTER reading the "
+        "makefiles -- at parse time the variable held only `w`, the "
+        "--print-directory that -C implies. Expanded inside a recipe line the "
+        "same variable reads `w -j4 --jobserver-auth=3,4`. Any makefile that "
+        "changes its own behaviour from a parse-time look at MAKEFLAGS is "
+        "deciding on stale information.")
+
+P("portable-command-make-parallel", "parallel", "bin/portable-parallel", "command",
+  command=["make", "-j4"], toolchain=["make", "cc"],
+  prop="the same parallel build requested by a declared argv rather than the environment",
+  build_stdout_contains=["PORTABLE_PARALLEL_SEEN=yes"],
+  expect=PARALLEL_OK,
+  notes="Byte-identical payload to portable-make-parallel-env. The difference "
+        "is entirely in lexe.json: build.system 'command' with the -j on the "
+        "argv, which puts the parallelism in the SIGNED manifest rather than in "
+        "the installing machine's environment.")
+
+P("portable-bare-cc", "bare_cc", "bin/portable-bare-cc", "command",
+  command=["cc", "-O2", "-Wall", "-Wextra", "-o", "../bin/portable-bare-cc",
+           "main.c"],
+  toolchain=["cc"],
+  prop="a build that is one compiler invocation and no build system at all",
+  expect=dict(COMMON_OK, BUILD_SYSTEM="command", BUILD_DRIVER="none"),
+  notes="The smallest possible portable build: no make, no cmake, no shell, no "
+        "script in the payload, and the compiler's argv in the signed manifest "
+        "rather than in a file the manifest points at. It also shows what that "
+        "costs -- there is nowhere to put an `mkdir -p`, so the package has to "
+        "SHIP payload/bin, which it does as a .keep file because git cannot "
+        "carry an empty directory.")
+
+P("portable-env-flags-default", "env_flags", "bin/portable-env-flags", "make",
+  toolchain=["make", "cc"],
+  prop="a build that reads an environment variable that is not set, and takes its default",
+  expect=dict(COMMON_OK, PROFILE="release", OPTIMIZED="yes", NDEBUG="yes"),
+  notes="`PORTABLE_PROFILE ?= release` with nothing in the environment. The "
+        "positive half of the pair: the recipe is complete on its own, which is "
+        "the property the small build environment exists to check.")
+
+P("portable-env-flags-debug", "env_flags", "bin/portable-env-flags", "make",
+  toolchain=["make", "cc"], build_env_extra={"PORTABLE_PROFILE": "debug"},
+  prop="the same build with the environment variable set, choosing different flags",
+  expect=dict(COMMON_OK, PROFILE="debug", OPTIMIZED="no", NDEBUG="no"),
+  notes="Byte-identical payload to portable-env-flags-default; the environment "
+        "differs and so does the product. PROFILE is a string the recipe chose "
+        "and OPTIMIZED comes from __OPTIMIZE__, which only the compiler can "
+        "set -- a recipe that said 'debug' and still compiled at -O2 would show "
+        "up as a disagreement between the two, and one value alone could not "
+        "show it.")
+
+P("portable-configure-step", "configure_step", "bin/portable-configure-step",
+  "make", toolchain=["make", "sh", "cc"],
+  prop="a build that generates a header by probing the host before compiling",
+  expect=dict(COMMON_OK, BUILD_SHAPE="configure-then-compile",
+              CONFIG_STAMP="configured-v1", CONFIG_HAVE_STDINT="1",
+              CONFIG_HAVE_UNISTD="1", CONFIG_HAVE_NONSENSE="0",
+              CONFIGURE_RAN="yes"),
+  notes="The autotools shape without the autotools. main.c includes a header "
+        "that DOES NOT EXIST in the shipped package, so anything that assumes "
+        "the source tree it received is the source tree the compiler sees is "
+        "wrong here. CONFIG_HAVE_NONSENSE is the control: it probes for a "
+        "header that cannot exist, and a configure step that answered yes to "
+        "everything would look identical without it.")
+
+P("portable-nested-layout", "nested", "bin/portable-nested-layout", "make",
+  toolchain=["make", "cc"],
+  prop="a source tree three directories deep under sourceDir",
+  expect=dict(COMMON_OK, SOURCE_DEPTH="3",
+              LEAF_PATH="src/module/deep/leaf.c", NESTED_UNIT_LINKED="yes"),
+  notes="The interesting thing is the SHAPE, not the program: an archive or an "
+        "installer that flattened the tree would break this without producing a "
+        "diagnostic anybody could act on. LEAF_PATH is a literal rather than "
+        "__FILE__, because __FILE__ is whatever the compiler was handed and is "
+        "therefore an observation -- it is printed as one, beside it.")
+
+# ---- cmake, beyond the flat single-file case ------------------------------
+# These four declare `make` in their toolchain as well as `cmake`, which
+# portable-cmake does not. cmake's default generator on this host IS Unix
+# Makefiles, so `cmake --build` shells out to make and a host without it cannot
+# run any of them. The older recipe under-declaring that is left alone rather
+# than quietly corrected: a manifest may under-declare its toolchain and still
+# build, and having both shapes in the corpus records that.
+
+P("portable-cmake-subdir-install", "cmake_subdir", "bin/portable-cmake-subdir",
+  "cmake", toolchain=["cmake", "make", "cc"], cmake_install=True,
+  prop="cmake with a subdirectory library and an installed target",
+  expect=dict(COMMON_OK, BUILD_SYSTEM="cmake", CMAKE_SHAPE="subdir-install",
+              UTIL_VALUE="909", UTIL_ID="cmake-subdir-util-1"),
+  expect_relocated=dict(COMMON_OK, BUILD_SYSTEM="cmake",
+                        CMAKE_SHAPE="subdir-install", UTIL_VALUE="909",
+                        UTIL_ID="cmake-subdir-util-1"),
+  notes="Two list files, a target that depends on a target rather than on a "
+        "file, and a product that reaches payload/bin through `cmake --install "
+        "--prefix <payload>` rather than through an output-directory property. "
+        "The two idioms put the file in the same place and fail differently: "
+        "an output directory puts it there as a side effect of linking, "
+        "install() puts it there only if the install step runs at all -- and "
+        "the runtime invoking cmake is what decides whether it does.")
+
+P("portable-cmake-cxx", "cmake_cxx", "bin/portable-cmake-cxx", "cmake",
+  toolchain=["cmake", "make", "c++"],
+  prop="cmake driving the C++ compiler, with the standard set by a target property",
+  needed_contains=["libstdc++.so.6"],
+  expect=dict(COMMON_OK, BUILD_SYSTEM="cmake", LANGUAGE="c++",
+              CPLUSPLUS="201703", VECTOR_SUM="2080", STRING_VALUE="cmake-cxx"),
+  notes="project(... CXX) is what makes cmake probe for a C++ compiler at "
+        "configure time rather than a C one. The standard arrives as a cmake "
+        "property rather than a -std flag the recipe wrote, so CPLUSPLUS "
+        "measures whether that property reached the compiler at all.")
+
+P("portable-cmake-shared-origin", "cmake_shared", "bin/portable-cmake-shared",
+  "cmake", toolchain=["cmake", "make", "cc"],
+  prop="cmake producing a shared library and an $ORIGIN-relative consumer",
+  runpath="$ORIGIN/../lib", rpath_tag="DT_RUNPATH",
+  extra_products=["lib/libshared.so"],
+  expect=dict(COMMON_OK, BUILD_SYSTEM="cmake", SHARED_VALUE="5150",
+              SHARED_ID="cmake-shared-1", SHARED_LIB_RESOLVED="yes"),
+  expect_relocated=dict(COMMON_OK, BUILD_SYSTEM="cmake", SHARED_VALUE="5150",
+                        SHARED_ID="cmake-shared-1", SHARED_LIB_RESOLVED="yes"),
+  notes="The same DT_RUNPATH string as portable-rpath-origin, reached a "
+        "completely different way: cmake properties rather than a -Wl,-rpath "
+        "the recipe wrote. It matters because cmake's DEFAULT is the "
+        "non-relocatable shape -- it links the build tree with an absolute "
+        "rpath into its own build directory and rewrites it at install time, "
+        "and the rewrite never happens for a product that is copied rather than "
+        "installed. BUILD_WITH_INSTALL_RPATH is what puts the final, "
+        "$ORIGIN-relative value in at link time.")
+
+P("portable-cmake-fails-configure", "cmake_fails", "bin/portable-cmake-fails",
+  "cmake", toolchain=["cmake", "make", "cc"],
+  prop="a build that fails at CONFIGURE, a stage the make recipes do not have",
+  build_ok=False, product_exists=False, product_kind=None,
+  starts_in_build_tree=False, starts_relocated=False,
+  leftovers=["cmake-build/CMakeCache.txt"],
+  build_stderr_contains=["LexeNonexistentPackage"],
+  notes="find_package(... REQUIRED) for a package nobody can install: a missing "
+        "dependency discovered at configure time on a host with a perfectly "
+        "good compiler. Nothing is compiled and no object exists, and yet a "
+        "partial build tree DOES -- cmake writes its cache before it reaches "
+        "the failing line -- so a consumer treating 'the build directory has "
+        "contents' as evidence of progress is wrong here.")
+
+P("portable-cmake-option-off", "cmake_option", "bin/portable-cmake-option",
+  "cmake", toolchain=["cmake", "make", "cc"],
+  prop="a cmake option left at its default, producing the smaller product",
+  expect=dict(COMMON_OK, BUILD_SYSTEM="cmake", CMAKE_SHAPE="option",
+              FEATURE="off"),
+  notes="The pair with portable-cmake-option-on is the cmake equivalent of the "
+        "env_flags pair: the same source, a different cache variable, and a "
+        "different binary.")
+
+P("portable-cmake-option-on", "cmake_option", "bin/portable-cmake-option",
+  "cmake", toolchain=["cmake", "make", "cc"],
+  cmake_defines=["-DPORTABLE_FEATURE=ON"],
+  prop="the same cmake recipe configured with -DPORTABLE_FEATURE=ON",
+  expect=dict(COMMON_OK, BUILD_SYSTEM="cmake", CMAKE_SHAPE="option",
+              FEATURE="on"),
+  notes="Byte-identical payload to portable-cmake-option-off. The -D is on the "
+        "CONFIGURE command line, not the compile line, which is why a cmake "
+        "build directory cannot be reused across configurations without being "
+        "told -- and why this generator gives every recipe its own.")
+
+# ---- hygiene: what an install must and must not carry ---------------------
+
+P("portable-install-hygiene", "hygiene", "bin/portable-hygiene", "make",
+  toolchain=["make", "cc"],
+  prop="a package whose source directory holds files that must not be installed",
+  installed_present=["doc/README.txt", "bin/portable-hygiene"],
+  installed_absent=["src/BUILD-ONLY-NOTES.txt", "src/main.c", "src/Makefile",
+                    "src/build-stamp.txt", "src/main.o"],
+  expect=dict(COMMON_OK, PURPOSE="install-hygiene"),
+  expect_relocated=dict(COMMON_OK, PURPOSE="install-hygiene"),
+  notes="Three kinds of file that must not reach an installed tree -- shipped "
+        "build-only notes, the sources themselves, and intermediates the build "
+        "dropped into the source directory while running -- and one file "
+        "OUTSIDE the source directory that must. Without the positive half a "
+        "check that nothing was installed would pass trivially.")
+
+# ---- paths with spaces and non-ASCII characters ---------------------------
+
+P("portable-unicode-paths-command", "unicode_cmd", "bin/pörtable unicode",
+  "command", source_dir="src ünïcode", command=["sh", "build.sh"],
+  toolchain=["sh", "cc"],
+  prop="spaces and non-ASCII characters in the source dir, the filenames and the product",
+  expect=dict(COMMON_OK, PATHS_CONTAIN_SPACES="yes",
+              PATHS_CONTAIN_NON_ASCII="yes", UTIL_ANSWER="8888",
+              UTIL_ID="unicode-util-1", BOTH_UNITS_LINKED="yes"),
+  expect_relocated=dict(COMMON_OK, PATHS_CONTAIN_SPACES="yes",
+                        PATHS_CONTAIN_NON_ASCII="yes", UTIL_ANSWER="8888",
+                        UTIL_ID="unicode-util-1", BOTH_UNITS_LINKED="yes"),
+  notes="Not exotic: it is what happens the first time a package is written by "
+        "somebody whose language is not English, or unpacked under a directory "
+        "called My Documents. The schema's relative-payload-path rules permit "
+        "all of it -- they forbid NUL, backslash, a leading slash, a drive "
+        "designator and a .. segment, and say nothing about spaces or "
+        "non-ASCII -- so a manifest like this is well formed and everything "
+        "that builds a command line by pasting strings together breaks on it. "
+        "The build is a script because every path in it has to be quoted; see "
+        "portable-unicode-paths-make for why it could not be a Makefile.")
+
+P("portable-unicode-paths-make", "unicode_make",
+  "bin/portable path with space", "make", source_dir="src with space",
+  toolchain=["make", "cc"],
+  prop="a make build in a directory with a space, producing a product with a space",
+  expect=dict(COMMON_OK, SOURCE_DIR_HAS_SPACE="yes",
+              PRODUCT_NAME_HAS_SPACE="yes"),
+  expect_relocated=dict(COMMON_OK, SOURCE_DIR_HAS_SPACE="yes",
+                        PRODUCT_NAME_HAS_SPACE="yes"),
+  notes="This works, and only because of how the Makefile is written -- which "
+        "is the finding. GNU make separates targets and prerequisites with "
+        "whitespace and has no quoting that survives it, so a spaced path "
+        "cannot be a target or a prerequisite at all. The way out is to stop "
+        "naming it: `all` is PHONY with no file prerequisites and the spaced "
+        "path appears only inside a recipe line, where the SHELL parses it and "
+        "ordinary double quotes work. The cost is that the product is rebuilt "
+        "unconditionally, because make no longer knows what the rule produces. "
+        "`make -C 'src with space'` itself is fine: that path is an argument to "
+        "make, never a token in a makefile.")
+
+# ---- a second foreign product ---------------------------------------------
+
+P("portable-product-pe-dll", "product_pe", "bin/portable-product-pe-dll.dll",
+  "make", toolchain=["make", "x86_64-w64-mingw32-gcc"],
+  architectures=["x86_64"], makefile_variant="dll",
+  prop="a build that succeeds and produces a Windows DLL, which is not an entrypoint",
+  product_kind="pe",
+  starts_in_build_tree=False, starts_relocated=False,
+  host_dependency="mingw-w64 installed on this host. The DECLARATION that the "
+                  "product does not start is about the file rather than the "
+                  "host: binfmt_misc hands PE files to Windows here (see "
+                  "portable-product-pe), and Windows will not execute a DLL as "
+                  "a process either.",
+  notes="Same source as portable-product-pe, linked -shared. file(1) calls it a "
+        "'PE32+ executable (DLL)' -- a sentence containing the word executable "
+        "about something that cannot be executed, which is the same trap as the "
+        "ELF shared-object specimen in the other format. The pair covers 'the "
+        "build succeeded and the product is foreign' against 'the build "
+        "succeeded and the product is not a program'.")
+
 
 # --------------------------------------------------------------------------
 # Assembling a package from a recipe
@@ -488,7 +1396,7 @@ P("portable-rpath-origin", "rpath_variants",
 
 def manifest_for(spec):
     """The lexe.json a portable package carries. Generated from the table rather
-    than hand-written eighteen times: the table is the source of truth for what
+    than hand-written ninety-four times: the table is the source of truth for what
     each recipe declares, and a manifest that drifted from it would be a fixture
     that lies."""
     build = {
@@ -536,7 +1444,8 @@ def assemble(spec, recipes_dir, dest):
         variant = os.path.join(recipes_dir, spec["recipe_dir"], "makefiles",
                                "Makefile." + spec["makefile_variant"])
         shutil.copy2(variant,
-                     os.path.join(dest, "payload", spec["source_dir"], "Makefile"))
+                     os.path.join(dest, "payload", spec["source_dir"],
+                                  spec["variant_dest"]))
     manifest = manifest_for(spec)
     with open(os.path.join(dest, "lexe.json"), "w") as f:
         json.dump(manifest, f, indent=2)
@@ -561,10 +1470,16 @@ def validate_manifest(manifest, schema):
 # The direct build
 # --------------------------------------------------------------------------
 
-def build_env(root):
+def build_env(root, spec=None):
     """A deliberately small environment. CC and CFLAGS are NOT set, so the `?=`
     defaults in each recipe are what run; a build that only works because this
-    generator exported something is a build whose recipe is incomplete."""
+    generator exported something is a build whose recipe is incomplete.
+
+    `spec["build_env_extra"]` is the one exception, and it is an exception with a
+    declaration attached: the env_flags pair and the parallel-make recipe exist
+    precisely to record what a build does when a variable it reads is set and
+    when it is not. The merged environment is stored in `build.env` either way,
+    so no reader has to infer it."""
     env = {
         "PATH": "/usr/bin:/bin",
         "LANG": "C.UTF-8",
@@ -576,6 +1491,8 @@ def build_env(root):
     }
     for d in ("home", "tmp"):
         os.makedirs(os.path.join(root, d), exist_ok=True)
+    if spec:
+        env.update(spec.get("build_env_extra") or {})
     return env
 
 
@@ -589,11 +1506,22 @@ def build_commands(spec, payload_root):
     if spec["build_system"] == "make":
         return [{"argv": ["make", "-C", src], "cwd": payload_root}]
     if spec["build_system"] == "cmake":
-        return [
+        steps = [
             {"argv": ["cmake", "-S", src, "-B", "cmake-build",
-                      "-DCMAKE_BUILD_TYPE=Release"], "cwd": payload_root},
+                      "-DCMAKE_BUILD_TYPE=Release"] + list(spec["cmake_defines"]),
+             "cwd": payload_root},
             {"argv": ["cmake", "--build", "cmake-build"], "cwd": payload_root},
         ]
+        if spec["cmake_install"]:
+            # `cmake --install` with the payload root as the prefix: the
+            # install(TARGETS ... DESTINATION bin) in the list file is then what
+            # decides where the entrypoint lands, rather than an output-directory
+            # property. Both idioms are in the corpus because both are common and
+            # they fail differently.
+            steps.append({"argv": ["cmake", "--install", "cmake-build",
+                                   "--prefix", payload_root],
+                          "cwd": payload_root})
+        return steps
     if spec["build_system"] == "command":
         return [{"argv": list(spec["build_command"]),
                  "cwd": os.path.join(payload_root, src)}]
@@ -602,7 +1530,7 @@ def build_commands(spec, payload_root):
 
 def run_build(spec, build_root):
     payload_root = os.path.join(build_root, "payload")
-    env = build_env(build_root)
+    env = build_env(build_root, spec)
     steps = []
     ok = True
     t0 = time.time()
@@ -729,6 +1657,24 @@ def promote(payload_root, source_dir, dest):
 # Verdict
 # --------------------------------------------------------------------------
 
+def subst(value, rec):
+    """{SRCDIR} and {INSTALLDIR} in a declaration are the two absolute paths that
+    cannot be known until the build has a directory. Everything else in a
+    declaration is a literal."""
+    if not isinstance(value, str):
+        return value
+    return (value.replace("{SRCDIR}", rec.get("source_dir_abs", ""))
+                 .replace("{INSTALLDIR}", rec.get("installed_root_abs", "")))
+
+
+def check_oracle(label, want, run, rec, problems):
+    for key, w in want.items():
+        w = subst(w, rec)
+        got = run["oracle"].get(key, "<absent>")
+        if got != w:
+            problems.append("%s%s: declared %r, observed %r" % (label, key, w, got))
+
+
 def verdict_for(spec, rec):
     d = spec["declared"]
     problems = []
@@ -747,6 +1693,15 @@ def verdict_for(spec, rec):
                         % (d["build_succeeds"], rec["build"]["ok"],
                            last.get("exit_code")))
 
+    build_out = "\n".join(s.get("stdout") or "" for s in rec["build"]["steps"])
+    build_err = "\n".join(s.get("stderr") or "" for s in rec["build"]["steps"])
+    for want in d["build_stdout_contains"]:
+        if want not in build_out:
+            problems.append("build stdout does not contain %r" % want)
+    for want in d["build_stderr_contains"]:
+        if want not in build_err:
+            problems.append("build stderr does not contain %r" % want)
+
     product = rec["product"]
     if product["exists"] != d["product_exists"]:
         problems.append("product %s: declared exists=%s, observed %s"
@@ -757,9 +1712,7 @@ def verdict_for(spec, rec):
             problems.append("product kind: declared %r, observed %r (file says %r)"
                             % (d["product_kind"], product["kind"],
                                product["elf"].get("file_says")))
-        want_runpath = d["runpath"]
-        if want_runpath is not None:
-            want_runpath = want_runpath.replace("{SRCDIR}", rec["source_dir_abs"])
+        want_runpath = subst(d["runpath"], rec)
         got_runpath = product["elf"].get("runpath") or product["elf"].get("rpath")
         if want_runpath != got_runpath:
             problems.append("runpath: declared %r, observed %r"
@@ -770,6 +1723,38 @@ def verdict_for(spec, rec):
         if d["product_min_bytes"] and product["size_bytes"] < d["product_min_bytes"]:
             problems.append("product is %d bytes, declared at least %d"
                             % (product["size_bytes"], d["product_min_bytes"]))
+        if d["product_max_bytes"] and product["size_bytes"] > d["product_max_bytes"]:
+            problems.append("product is %d bytes, declared at most %d"
+                            % (product["size_bytes"], d["product_max_bytes"]))
+
+        elf = product["elf"]
+        if d["e_type"] and not (elf.get("e_type") or "").startswith(d["e_type"]):
+            problems.append("ELF e_type: declared %s, observed %r"
+                            % (d["e_type"], elf.get("e_type")))
+        if d["pie"] is not None and bool(elf.get("pie")) != d["pie"]:
+            problems.append("pie: declared %s, observed %s"
+                            % (d["pie"], bool(elf.get("pie"))))
+        if d["interpreter"] is not None:
+            got = "present" if elf.get("interpreter") else "absent"
+            if got != d["interpreter"]:
+                problems.append("program interpreter: declared %s, observed %s (%r)"
+                                % (d["interpreter"], got, elf.get("interpreter")))
+        for lib in d["needed_contains"]:
+            if lib not in (elf.get("needed") or []):
+                problems.append("DT_NEEDED does not contain %r (observed %r)"
+                                % (lib, elf.get("needed")))
+        if d["needed_empty"] is not None:
+            got = not (elf.get("needed") or [])
+            if got != d["needed_empty"]:
+                problems.append("DT_NEEDED empty: declared %s, observed %s (%r)"
+                                % (d["needed_empty"], got, elf.get("needed")))
+        if d["has_symtab"] is not None and elf.get("is_elf") \
+           and bool(elf.get("has_symtab")) != d["has_symtab"]:
+            problems.append("has .symtab: declared %s, observed %s"
+                            % (d["has_symtab"], bool(elf.get("has_symtab"))))
+        if d["product_mode"] and product["mode"] != d["product_mode"]:
+            problems.append("product mode: declared %s, observed %s"
+                            % (d["product_mode"], product["mode"]))
 
     for rel in d["extra_products"]:
         if rel not in rec["build_products"]:
@@ -793,10 +1778,33 @@ def verdict_for(spec, rec):
         if run.get("exit_code") != d["exit_code"]:
             problems.append("exit code in build tree: declared %r, observed %r"
                             % (d["exit_code"], run.get("exit_code")))
-        for key, want in d["expect"].items():
-            got = run["oracle"].get(key, "<absent>")
-            if got != want:
-                problems.append("%s: declared %r, observed %r" % (key, want, got))
+        if run.get("signal") != d["signal"]:
+            problems.append("terminating signal in build tree: declared %r, observed %r"
+                            % (d["signal"], run.get("signal")))
+        for want in d["run_stderr_contains"]:
+            if want not in (run.get("stderr_head") or ""):
+                problems.append("run stderr does not contain %r" % want)
+        check_oracle("", d["expect"], run, rec, problems)
+
+    reloc = rec["runs"].get("after_build_tree_removed")
+    if reloc and reloc.get("started"):
+        if reloc.get("exit_code") != d["relocated_exit_code"]:
+            problems.append("exit code relocated: declared %r, observed %r"
+                            % (d["relocated_exit_code"], reloc.get("exit_code")))
+        if reloc.get("signal") != d["relocated_signal"]:
+            problems.append("terminating signal relocated: declared %r, observed %r"
+                            % (d["relocated_signal"], reloc.get("signal")))
+        check_oracle("relocated ", d["expect_relocated"], reloc, rec, problems)
+
+    installed = (rec.get("installed") or {}).get("files") or {}
+    for rel in d["installed_present"]:
+        if rel not in installed:
+            problems.append("declared installed file %s is absent from the "
+                            "promoted tree" % rel)
+    for rel in d["installed_absent"]:
+        if rel in installed:
+            problems.append("%s must NOT be installed and is in the promoted tree"
+                            % rel)
 
     if rec["manifest_schema"]["checked"] and not rec["manifest_schema"]["valid"]:
         problems.append("manifest fails schema: %s"
@@ -831,6 +1839,7 @@ def process(spec, out, recipes_dir, schema):
     shutil.copytree(pkg_dir, build_root)
     payload_root = os.path.join(build_root, "payload")
     rec["source_dir_abs"] = os.path.join(payload_root, spec["source_dir"])
+    rec["installed_root_abs"] = installed_root
 
     before = set(tree_files(payload_root))
     rec["build"] = run_build(spec, build_root)
@@ -911,6 +1920,12 @@ def main():
         schema_sha = sha256_file(args.schema)
 
     chosen = [s for s in RECIPES if not args.only or args.only in s["id"]]
+    # Taken HERE rather than in host_facts(), which runs after the pool has
+    # finished. The first version read both ends from host_facts() and the two
+    # numbers came out byte-identical, which is what gave it away: a field named
+    # loadavg_at_start that is measured at the end is worse than no field, since
+    # it looks like evidence that the run was not under load.
+    load_at_start = list(os.getloadavg())
     t0 = time.time()
     results = []
     with futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -937,7 +1952,7 @@ def main():
 
     # The rpath table: what each idiom actually produced, side by side. It is the
     # reason this family exists, so it is a first-class field rather than
-    # something a reader has to assemble from eighteen records.
+    # something a reader has to assemble from ninety-four records.
     rpath_table = []
     for r in results:
         if not r.get("product", {}).get("exists"):
@@ -983,8 +1998,15 @@ def main():
             "manifest_schema_sha256": schema_sha,
             "wall_seconds": elapsed,
             "jobs": args.jobs,
+            "loadavg_at_end": list(os.getloadavg()),
         },
-        "host": host_facts(),
+        # loadavg_at_start is measured before the first build starts and
+        # loadavg_at_end after the last one finishes, because runs.*.duration_ms
+        # is in this file and a duration taken under load is not a measurement
+        # of anything. No declaration in this corpus asserts a duration; these
+        # two numbers are what let a reader decide whether the observed ones are
+        # worth reading at all.
+        "host": dict(host_facts(), loadavg_at_start=load_at_start),
         "host_tools": {name: {"path": shutil.which(name, path="/usr/bin:/bin"),
                               "version": (tool_version(name)
                                           if shutil.which(name, path="/usr/bin:/bin")

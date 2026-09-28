@@ -1,0 +1,20 @@
+# Linkage variant: debug
+#
+# With debug information, which is the ordinary state of a locally built
+# binary and makes the product several times the size of the stripped one.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+LINKMODE = -g
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-link-debug
+
+all: $(TARGET)
+
+$(TARGET): app.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LINKMODE) -o $@ app.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

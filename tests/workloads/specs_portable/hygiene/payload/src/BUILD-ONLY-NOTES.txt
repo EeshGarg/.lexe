@@ -1,0 +1,4 @@
+This file is inside the source directory and must never reach an installed
+tree. Real packages carry plenty of these: build scripts, test fixtures,
+developer notes, a vendored dependency's whole history. They are legitimate
+contents of a package and illegitimate contents of an installation.

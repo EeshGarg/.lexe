@@ -1,0 +1,21 @@
+# C++ standard variant: c++17
+#
+# CXX is left overridable, as an ordinary Makefile leaves it. `c++` rather than
+# `g++` in the default, because `c++` is the name the platform guarantees and
+# `g++` is a particular implementation of it.
+CXX     ?= c++
+STD      = -std=c++17
+CXXFLAGS ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-std-cxx17
+
+all: $(TARGET)
+
+$(TARGET): main.cpp
+	mkdir -p $(BINDIR)
+	$(CXX) $(STD) $(CXXFLAGS) -o $@ main.cpp
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

@@ -1,0 +1,21 @@
+# outcomes variant: no-rule
+#
+# Fails before invoking the compiler at all. make is asked for a prerequisite
+# that is neither a file nor a rule, so nothing is compiled, no object exists,
+# and the diagnostic comes from make rather than from cc. A consumer that
+# looks for compiler output to explain a failure finds none.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-no-rule
+
+all: $(TARGET)
+
+$(TARGET): main.c generated_by_nothing.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ main.c generated_by_nothing.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

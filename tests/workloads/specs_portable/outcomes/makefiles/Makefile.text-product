@@ -1,0 +1,22 @@
+# outcomes variant: text-product
+#
+# The declared entrypoint is a text file with the executable bit set and no
+# shebang. A shell would run it by falling back to itself; execve will not,
+# and fails with ENOEXEC. The specimen exists because "executable bit set" and
+# "executable" are different claims.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-text-product
+
+all: $(TARGET)
+
+$(TARGET):
+	mkdir -p $(BINDIR)
+	printf 'FIXTURE_ID=never-runs\nRESULT=FAIL\n' > $@
+	chmod 0755 $@
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

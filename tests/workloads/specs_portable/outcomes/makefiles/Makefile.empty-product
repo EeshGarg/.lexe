@@ -1,0 +1,22 @@
+# outcomes variant: empty-product
+#
+# Succeeds and creates the declared entrypoint as a zero-byte file with the
+# executable bit set. The path exists, the mode is right, and there is nothing
+# to execute: file(1) says "empty" and execve fails with ENOEXEC. A check that
+# stats the entrypoint and stops there passes this.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-empty-product
+
+all: $(TARGET)
+
+$(TARGET):
+	mkdir -p $(BINDIR)
+	: > $@
+	chmod 0755 $@
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

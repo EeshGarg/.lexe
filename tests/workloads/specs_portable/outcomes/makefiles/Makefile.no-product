@@ -1,0 +1,22 @@
+# outcomes variant: no-product
+#
+# Succeeds, and puts the product somewhere other than where the manifest says
+# the entrypoint is. Exit 0, no diagnostic, a perfectly good binary next to the
+# declared path. This is what a renamed target or an edited manifest looks
+# like, and it is indistinguishable from success until somebody looks for the
+# file.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+PRODUCED = $(BINDIR)/portable-outcome-somewhere-else
+
+all: $(PRODUCED)
+
+$(PRODUCED): main.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ main.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

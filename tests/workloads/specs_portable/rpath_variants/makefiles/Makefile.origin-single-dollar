@@ -1,0 +1,33 @@
+# rpath variant: origin-single-dollar
+#
+# $ORIGIN with one dollar instead of two. make reads `$O` as a reference to a
+# variable named O, which nobody defined, and the remaining literal text is
+# `RIGIN/../lib`. The linker accepts it, because a relative DT_RUNPATH is legal
+# -- it is resolved against the process's working directory -- so there is no
+# diagnostic at build time and a relative search path in the product.
+#
+# Everything below is identical across the variants except RPATH_ARG and LDEXTRA.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+BINDIR   = ../bin
+LIBDIR   = ../lib
+LIB      = $(LIBDIR)/libutil.so
+APP      = $(BINDIR)/portable-rpath-origin-single-dollar
+RPATH_ARG = '$ORIGIN/../lib'
+LDEXTRA   =
+RPATH_OPT = -Wl,-rpath,$(RPATH_ARG)
+
+all: $(APP)
+
+$(LIB): libutil.c libutil.h
+	mkdir -p $(LIBDIR)
+	$(CC) $(CFLAGS) -shared -o $@ libutil.c
+
+$(APP): app.c libutil.h $(LIB)
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ app.c -L$(LIBDIR) -lutil $(LDEXTRA) $(RPATH_OPT)
+
+clean:
+	rm -rf $(BINDIR) $(LIBDIR)
+
+.PHONY: all clean

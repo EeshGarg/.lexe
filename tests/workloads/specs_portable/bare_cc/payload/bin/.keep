@@ -1,0 +1,6 @@
+# This file exists so that payload/bin is a directory in the SHIPPED package.
+#
+# The build of this recipe is a single compiler invocation declared as an argv
+# -- there is no shell, no Makefile and therefore nowhere to put an `mkdir -p`.
+# cc will not create the output directory itself, so the package has to ship it.
+# An empty directory cannot be carried by git, hence a file.

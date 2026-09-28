@@ -1,0 +1,21 @@
+# outcomes variant: object
+#
+# Stops at -c, so the declared entrypoint is a relocatable object file. A valid
+# ELF of the right machine with no entry point: the gap between "it is an ELF"
+# and "it can be launched", one step earlier than the shared-object case.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-object.o
+
+all: $(TARGET)
+
+$(TARGET): main.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -c -o $@ main.c
+	chmod 0755 $@
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

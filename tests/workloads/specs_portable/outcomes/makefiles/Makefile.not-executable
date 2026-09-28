@@ -1,0 +1,22 @@
+# outcomes variant: not-executable
+#
+# Builds a correct ELF executable and then leaves it mode 0644. Every ELF fact
+# about the file is right; it cannot be launched. The failure is a
+# PermissionError from execve, not a loader message, so it appears before the
+# program exists rather than as a non-zero exit.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-outcome-not-executable
+
+all: $(TARGET)
+
+$(TARGET): main.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ main.c
+	chmod 0644 $@
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean

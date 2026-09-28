@@ -1,0 +1,20 @@
+# Linkage variant: static
+#
+# No dynamic linking at all: no program interpreter, an empty DT_NEEDED,
+# and therefore nothing for the loader to fail to find wherever it is installed.
+CC      ?= cc
+CFLAGS  ?= -O2 -Wall -Wextra
+LINKMODE = -static
+BINDIR   = ../bin
+TARGET   = $(BINDIR)/portable-link-static
+
+all: $(TARGET)
+
+$(TARGET): app.c
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) $(LINKMODE) -o $@ app.c
+
+clean:
+	rm -rf $(BINDIR)
+
+.PHONY: all clean
