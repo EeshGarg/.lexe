@@ -152,42 +152,48 @@ conc_assert_no_timeouts() {
 }
 
 # A participant that did not win must have lost for a REASON THAT IS ALLOWED, and
-# must say which. There are exactly three acceptable outcomes for a contended
-# mutation, and the third one was a surprise worth recording:
+# must say which. There are exactly two acceptable outcomes for a contended
+# mutation:
 #
 #   0  it did the work
-#   6  BusyError — it found the lock held and refused, without writing anything
-#   1  it WAITED for the lock, got it, and found the work already done
-#      ("... is already installed and current; use `lexe repair` ...")
+#   6  it found the lock held and refused, OR it acquired the lock second and
+#      found the desired state already holding — both BusyError since
+#      docs/ERRORS.md §6 was resolved
 #
-# The third is not a lock failure at all. `install` serialises on AppMutation, so
-# the loser does not fail to acquire — it acquires second and then discovers the
-# desired state already holds. Refusing rather than silently exiting 0 is
-# deliberate: reinstalling the FILES is a different operation, and the message
-# points at the one that does it.
+# The second half of 6 is not a lock failure at all. `install` serialises on
+# AppMutation, so the loser does not fail to acquire — it acquires second and
+# then discovers the desired state already holds. Refusing rather than silently
+# exiting 0 is deliberate: reinstalling the FILES is a different operation, and
+# the message points at the one that does it.
 #
-# It does mean exit 1 currently covers both "someone else already did this" and
-# "something broke", which a script racing two installs cannot tell apart. That is
-# an error-identity gap rather than a concurrency defect, and it is why the
-# structured error taxonomy exists — see docs/ERRORS.md.
+# That case used to exit 1, the catch-all, which a script racing two installs
+# could not tell apart from "something broke". docs/ERRORS.md §6 records the
+# change to 6 as **resolved**, and this function was the only thing that could
+# have held it — except that it did not. It kept an `1)` arm that accepted exit 1
+# whenever the message matched "already installed|already current|already at",
+# so reverting the fix left this lane GREEN. That was verified rather than
+# argued: driving this function with fabricated participant records, the
+# reverted shape passed and only a silent exit 1 failed. A resolved finding with
+# no regression test behind it is an unresolved finding with better paperwork.
 #
-# Any OTHER exit code means the loser did not lose, it broke.
+# So exit 1 is now a FAILURE. The grep survives only to NAME it — it decides how
+# the failure is described, never whether one is reported, which is the sense in
+# which §6's claim that the prose-matching is "no longer load-bearing" is now
+# true. Any other exit code means the loser did not lose, it broke.
 conc_assert_losers_lost_legitimately() {
-    local label="$1" n="$2" bad="" already=0
+    local label="$1" n="$2" bad="" busy=0
     for ((i = 0; i < n; ++i)); do
         local rc; rc="$(conc_rc "$label" "$i")"
         case "$rc" in
         0) continue ;;
-        6) continue ;;
+        6) busy=$((busy + 1)) ;;
         1)
-            # Only acceptable when it says so. An exit 1 that does NOT identify
-            # itself as "already done" is an ordinary failure hiding in the set.
             if grep -qiE "already installed|already current|already at" \
                     "$CONC_DIR/$label.$i.out" 2>/dev/null; then
-                already=$((already + 1))
-                continue
+                bad+="[$i found the work already done and exited 1 rather than 6 — the pre-§6 behaviour] "
+            else
+                bad+="[$i exited 1 without saying why] "
             fi
-            bad+="[$i exited 1 without saying why] "
             ;;
         *) bad+="[$i exited $rc] " ;;
         esac
@@ -197,8 +203,8 @@ conc_assert_losers_lost_legitimately() {
             "$(conc_out "$label" 0 | tail -3)"
         return 1
     fi
-    pass "$label: every participant won, refused as busy (6), or found the work \
-already done ($already did)"
+    pass "$label: every participant won or refused with 6 ($busy did), and none \
+fell back to the untyped 1"
     return 0
 }
 
