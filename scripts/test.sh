@@ -65,7 +65,7 @@ head2() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 # "blocked" instead of "skip" when the obstacle is the environment rather than
 # applicability), and a `<lane>_run`.
 
-ALL_LANES=(evidence unit acceptance integration gui lifecycle concurrency session conformance security windows proton workloads sanitizers)
+ALL_LANES=(evidence unit acceptance integration gui lifecycle concurrency session conformance security windows proton workloads explore sanitizers)
 
 # --------------------------------------------------------------- compute tiers
 #
@@ -125,7 +125,8 @@ lane_desc() {
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;
-    workloads)  echo "184 programs .LEXE did not write: every specimen packaged, installed, run, and compared against its direct-execution baseline" ;;
+    workloads)  echo "programs .LEXE did not write: every specimen packaged, installed, run and compared against its direct-execution baseline, then FORMAT-0.1 §9 checked behaviourally" ;;
+    explore)    echo "the combinations nobody hand-wrote: pairwise cross-product sampling, an independent lifecycle model over thousands of sequences, forced concurrent schedules" ;;
     sanitizers) echo "a separate ASan + UBSan build of the unit suite" ;;
     esac
 }
@@ -201,6 +202,10 @@ workloads_check() {
         echo "blocked: the ELF workload corpus is not generated (python3 tests/workloads/generate.py); an unexecuted specimen is not coverage"
         return 1
     }
+}
+
+explore_check() {
+    workloads_check || return 1
 }
 
 conformance_check() {
@@ -280,7 +285,23 @@ evidence_run() {
 }
 
 workloads_run() {
-    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/workloads/against_lexe.sh"
+    # TWO scripts, and the second one is here because it was in no runner at all.
+    # `against_lexe_lifecycle.sh` -- the FORMAT-0.1 §9 behavioural checks, the
+    # launch-time dependency contract in both directions, and the assertion that
+    # the pre-ship gate actually gates -- was reachable only by typing its path.
+    # It was therefore not part of `--all`, and a green `--all` did not mean what
+    # it appeared to mean. An unwired lane is a lane that does not run.
+    local status=0
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/workloads/against_lexe.sh" || status=$?
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/workloads/against_lexe_lifecycle.sh"         || status=$?
+    return $status
+}
+
+# The exploration lane. It reads LEXE_TIER itself (fast does the sampler only;
+# heavy and soak widen the sequence counts, turn on 3-way sampling and add CPU
+# pressure), so the tier contract above is honoured rather than ignored.
+explore_run() {
+    LEXE_BUILD_DIR="$BUILD_DIR" bash "$REPO/tests/workloads/against_lexe_matrix.sh"
 }
 
 conformance_run() {
