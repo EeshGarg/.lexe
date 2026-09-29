@@ -39,8 +39,13 @@ set +e
 env -u WAYLAND_DISPLAY -u DISPLAY timeout 20 "$LEXE" run "$ACC_APP_ID" >"$ACC_ROOT/work/runfail.out" 2>&1
 runtime_status=$?
 set -e
-acc_true "$([[ $runtime_status -ne 0 ]] && echo 0 || echo 1)" \
-    "a failing launch propagates a non-zero exit status"
+# Not `-ne 0`: `timeout` reports 124 when it KILLED the launch, and a launch
+# that hung for the whole budget is not a launch that propagated a failure.
+acc_refused "$runtime_status" \
+    "a failing launch propagates a non-zero exit status" \
+    "$(sed 's/^/    /' "$ACC_ROOT/work/runfail.out" 2>/dev/null | tail -5)"
+acc_equals "$runtime_status" "2" \
+    "and the status it propagates is the payload's own exit code, not a signal"
 
 acc_true "$([[ -d "$errdir" ]] && echo 0 || echo 1)" \
     "the structured error store exists at <state>/errors/<id>"
@@ -107,8 +112,12 @@ set +e
 timeout 20 "$LEXE" run "$ACC_APP_ID" -- --selftest >"$ACC_ROOT/work/tampered.out" 2>&1
 tamper_status=$?
 set -e
-acc_true "$([[ $tamper_status -ne 0 ]] && echo 0 || echo 1)" \
-    "the runtime REFUSES to launch a tampered entrypoint"
+# A refusal is a decision the runtime made. A timeout kill (124) is the absence
+# of a decision, and the two must never satisfy the same assertion: the whole
+# claim here is that the integrity gate FIRED, and a gate that hung did not.
+acc_refused "$tamper_status" \
+    "the runtime REFUSES to launch a tampered entrypoint" \
+    "$(sed 's/^/    /' "$ACC_ROOT/work/tampered.out" 2>/dev/null | tail -5)"
 acc_equals "$(acc_launch_count)" "$before" \
     "the tampered payload was never executed (its launch log did not grow)"
 acc_contains "$(cat "$ACC_ROOT/work/tampered.out")" "integrity" \

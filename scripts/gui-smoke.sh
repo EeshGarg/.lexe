@@ -150,7 +150,18 @@ smoke() {
         fi
         wait "$app"
     ' sh "$@" >"$log" 2>&1 || code=$?
-    if [ "$code" != 124 ] && [ "$code" != 0 ]; then
+    # 124 is NOT excused. The inner script closes a healthy GUI itself and exits
+    # 0, so nothing legitimate depends on the outer `timeout` firing any more --
+    # which means 124 can only mean the whole harness wedged: a GUI that hung
+    # before mapping, an Xvfb that never answered, a kill that never took. This
+    # check used to skip past it, so a hung application satisfied the crash
+    # check, and only the separate "mapped a window" grep stood between a
+    # deadlock and a green lane.
+    if [ "$code" = 124 ]; then
+        echo "---- $label output ----"; sed 's/^/    /' "$log" >&2
+        die "$label was KILLED at the ${TIMEOUT}s timeout — it neither rendered nor crashed, so nothing was observed"
+    fi
+    if [ "$code" != 0 ]; then
         echo "---- $label output ----"; sed 's/^/    /' "$log" >&2
         die "$label exited $code (a crash, not a clean render)"
     fi
