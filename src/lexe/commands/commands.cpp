@@ -626,9 +626,21 @@ int cmd_install(const std::vector<std::string>& args) {
         std::cout << "\n";
         if (!confirm("Install " + manifest.name + " " + manifest.version +
                      "?")) {
-            // Declining the prompt is a valid user choice, not an error.
+            // Declining is a valid user choice and still must not exit 0.
+            //
+            // docs/ERRORS.md section 6 rejected exit 0 for an
+            // already-current install on the grounds that "exit 0 would
+            // make `install` claim it had installed something it had not".
+            // Declining is the same claim: `lexe install app.lexe &&
+            // systemctl restart svc` proceeded to restart a service whose
+            // new version the user had just refused.
+            //
+            // 5 is "permission or consent required", which is exactly what
+            // happened -- consent was required and withheld. It is not an
+            // error in the sense of something going wrong, and the
+            // taxonomy already separates that from exit 1.
             std::cerr << "installation cancelled\n";
-            return 0;
+            return 5;
         }
     }
 
@@ -3062,6 +3074,20 @@ int cmd_errors(const std::vector<std::string>& args) {
     }
 
     if (history.empty()) {
+        // An UNKNOWN application id is exit 4, like every other command
+        // that takes one. "No error records" and "no such application"
+        // are different facts and only one of them is good news: a
+        // monitoring script asking after a typo was told, cheerfully,
+        // that there was nothing wrong.
+        //
+        // An installed application with a clean history keeps exit 0,
+        // which is the answer that sentence is actually for.
+        if (!Registry(paths).is_installed(id)) {
+            throw NotFoundError(
+                "application not installed: " + id,
+                "There are no error records because there is no such "
+                "application. `lexe apps` lists what is installed.");
+        }
         std::cout << "No error records for " << id << ".\n";
         return 0;
     }
@@ -3425,19 +3451,47 @@ int cmd_service(const std::vector<std::string>& args) {
     // disable. Deliberately does NOT require the application to still be
     // installed: retracting a unit left behind by a half-removed application is
     // exactly when this is most needed.
+    // Ask what was TRUE before acting, so the report can describe what
+    // actually happened rather than what was requested.
+    //
+    // This printed "its unit has been stopped, disabled and removed" for an
+    // application that never had a unit -- and, worse, for one that is not
+    // installed at all -- and exited 0 both times. An independent taxonomy
+    // sweep found it and named it correctly: docs/ERRORS.md section 7 is
+    // about machinery reporting success over work it did not do, and every
+    // instance so far had been in the test harness. This one is in the
+    // shipped CLI, which is worse, because a user has no second observer.
+    //
+    // disable() stays idempotent -- the end state is what was asked for, and
+    // retracting a unit left by a half-removed application is exactly when
+    // this is most needed. Only the sentence changes, and only to be true.
+    const session::SessionState before = manager->state(id);
+    const bool had_unit = before.unit_present || before.unit_recorded;
     manager->disable(id);
     if (json) {
         std::cout << ordered_json{{"id", id},
                                   {"enabled", false},
+                                  {"hadUnit", had_unit},
                                   {"unitName", session::unit_name(id)}}
                          .dump(2)
                   << "\n";
         return 0;
     }
-    std::cout << id
-              << " is no longer session-managed: its unit has been stopped, "
-                 "disabled and removed.\n";
-    std::cout << "  Run it with `lexe run " << id << "` when you want it.\n";
+    if (had_unit) {
+        std::cout << id
+                  << " is no longer session-managed: its unit has been "
+                     "stopped, disabled and removed.\n";
+        std::cout << "  Run it with `lexe run " << id
+                  << "` when you want it.\n";
+    } else {
+        std::cout << id << " had no session unit, so nothing to disable.\n";
+        if (before.lexe_supervised_running) {
+            std::cout << "  Note: a .LEXE-supervised copy IS running. That "
+                         "is a detached `lexe run`, not a unit,\n"
+                         "  and disabling a unit that does not exist has "
+                         "not stopped it.\n";
+        }
+    }
     return 0;
 }
 

@@ -816,17 +816,30 @@ TEST_CASE("install without --yes shows the SPEC primary screen and honors "
 
     REQUIRE(run_cli({"remove", kId, "--yes"}).exit_code == 0);
 
-    // Answer "n": cancelled, nothing installed. Declining is a valid choice,
-    // not a runtime error (exit 1 means "runtime error" in this CLI's
-    // taxonomy), so a clean decline exits 0.
+    // Answer "n": cancelled, nothing installed -- and exit 5, "permission or
+    // consent required", NOT 0.
+    //
+    // The original reasoning was that declining is a valid choice rather than a
+    // runtime error, which is true and led to the wrong code. Exit 0 from
+    // `install` asserts that the application is installed, so
+    // `lexe install app.lexe && systemctl restart svc` restarted a service whose
+    // new version the user had just refused. docs/ERRORS.md §6 rejected exit 0
+    // for an already-current install on exactly that ground; declining is the
+    // same claim.
+    //
+    // 5 says what happened without calling it a failure: consent was required
+    // and withheld. That is a documented category, and it keeps "the user said
+    // no" distinguishable from "the install was attempted and broke" (1).
     const auto no = run_cli_stdin({"install", pkg.string()}, "n\n", work.dir);
-    CHECK(no.exit_code == 0);
+    CHECK(no.exit_code == 5);
+    CHECK(no.exit_code != 0); // stated apart: the point is that && does not run on
     CHECK_FALSE(Registry(Paths::detect()).is_installed(kId));
 
-    // EOF on stdin (no answer at all) also cancels, and is likewise not an
-    // error.
+    // EOF on stdin (no answer at all) cancels the same way and reports the same
+    // thing. A CI job whose stdin is closed must not be told an install
+    // succeeded.
     const auto eof = run_cli_stdin({"install", pkg.string()}, "", work.dir);
-    CHECK(eof.exit_code == 0);
+    CHECK(eof.exit_code == 5);
     CHECK_FALSE(Registry(Paths::detect()).is_installed(kId));
 }
 
