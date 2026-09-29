@@ -388,3 +388,89 @@ classify every divergence as a `.LEXE` defect, intended runtime semantics with
 the specification cited, a packaging mistake, or a property of the application —
 and report intended semantics as intended, not as a finding. The temptation at
 this stage is to count divergences; the value is in attributing them.
+
+## 10. The resource policy
+
+Resource efficiency is a first-class engineering requirement here, not a
+courtesy. No build, test, lane, fuzz campaign, corpus run, sanitizer pass,
+soak, or agent-driven workload may **intentionally** drive the development
+machine past these limits:
+
+| Resource | Limit |
+|---|---|
+| CPU | **≤ 50%** sustained host utilization |
+| RAM | **≤ 4 GiB** total for test/build infrastructure, excluding the editor and the agent harness themselves |
+| Storage | no sustained SSD saturation (≤ ~50% active time) |
+
+The budget is **aggregate, not per-process and not per-agent**. Six agents do
+not get six budgets; they get this one, between them. That is the rule the
+previous wave broke — each agent was given its own build tree to avoid
+concurrent `ninja` corruption, which was right, and they then all built at
+once, which was not. It left eleven trees and ~12 GiB behind.
+
+`HEAVY` and `SOAK` no longer mean "use the whole machine". They mean *run more
+work for longer inside this envelope*.
+
+### 10.1 Concurrency is derived from measurement, not from `nproc`
+
+The starting formula is `workers ≤ ceil(logical_CPUs / 2)`. **On this machine
+that formula is wrong, and measurement is what says so.**
+
+A clean build of the full tree, metered with `scripts/resource-meter.sh`
+(490 samples at 0.5 s):
+
+| jobs | peak tree RSS | % of 4 GiB budget | peak host CPU |
+|---|---|---|---|
+| `-j6` | **2938 MiB** | **71%** | **23.4%** of 24 logical CPUs |
+
+Two things follow, and the second is the point:
+
+**Memory is the binding constraint, not CPU.** At `-j6` the CPU target has more
+than half its headroom left while RAM is already at 71% of budget. Compilation
+of this project costs roughly 490 MiB per worker.
+
+**The CPU-derived formula would violate the RAM budget.** `ceil(24/2) = 12`
+workers extrapolates to ~5.9 GiB — about 44% over. So the documented default is
+**6**, set by the memory budget, and the CPU ceiling is not the operative limit
+here at all. This is exactly why the policy says observed utilization takes
+precedence over the formula: a machine with many cores and ordinary RAM is
+memory-bound long before it is core-bound, and a worker count chosen from
+`nproc` would have looked principled while being 44% over.
+
+Sanitizer builds are heavier still (ASan shadow memory) and get their own,
+lower limit rather than inheriting this one.
+
+### 10.2 Measuring, and why `/usr/bin/time -v` is not enough
+
+`scripts/resource-meter.sh` runs a command and reports **peak total RSS and CPU
+across its whole process tree**. `time -v` reports the largest *single* child,
+and what this policy bounds is the *sum* of a dozen concurrent compilers.
+
+The meter was validated against three known loads before being trusted —
+allocate 600 MiB (reported 609 MiB), saturate 12 of 24 cores (reported exactly
+50.0%), saturate 6 (reported 25.0%). Two observers that fail for different
+reasons, plus a discrimination test, per §1.6.
+
+It refuses to report a peak it did not observe. During development it twice
+sampled nothing — once because `setsid` forked and the sampler watched a process
+that had already exited — and each time printed *"nothing was sampled — this is
+not evidence of a cheap run"* rather than `0 MiB`. A resource meter that reports
+zero when it is broken says "well within budget" in the same words it would use
+for a genuinely cheap run, and this project has been caught by that shape of
+silence often enough to design against it.
+
+Known limitation, stated rather than papered over: the meter walks the process
+tree, so a process that re-parents to `init` stops being counted. Build and test
+drivers wait on their children and are unaffected; a deliberately detaching
+daemon would under-report and needs a second observer.
+
+### 10.3 What counts as a failure
+
+A result obtained by breaking these limits is an **infrastructure failure** and
+is reported as one — it is not a passing test that happened to be expensive.
+
+But the limits never buy a weakened assertion. If a test genuinely cannot run
+inside the envelope, it is **BLOCKED with the measured reason**, which is a
+result, not a silent skip. Lowering what a check demands in order to fit a
+resource budget converts a resource problem into an evidence problem, and this
+project has spent eleven separate occasions learning what that costs.
