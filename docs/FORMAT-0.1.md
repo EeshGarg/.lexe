@@ -1238,7 +1238,7 @@ What a runtime MUST still do:
 
 ### 9.5.2 The execution context a launched application receives
 
-Three properties of a launch were specified nowhere in this document, were
+Four properties of a launch were specified nowhere in this document, were
 discovered only by running foreign programs, and each fails the §0.2 test: a
 package can observe them, so a package can work on one conforming
 implementation and fail on another. They are specified here for that reason.
@@ -1270,6 +1270,35 @@ from every byte, and opening a file by its own non-ASCII name failed — for a
 package that was intact and correctly signed, on a compatibility layer that was
 behaving correctly. An environment stripped for safety had silently become an
 environment that corrupts text.
+
+**The standard streams.** A runtime MUST NOT substitute a stream of a different
+kind for the one its caller provided. If the caller's `stdout` is a regular
+file, the application's `stdout` MUST be a regular file; if the caller closed
+it, the application MUST find it closed. A runtime MAY interpose — to relay, to
+retain output for diagnostics — only where the interposition is not observable,
+which in practice means the caller's stream was already a pipe.
+
+This is the same §0.2 test as the two properties above, and it was found the
+same way. Measured on a real implementation, running one binary directly and
+then through the runtime with identical redirection:
+
+| caller's `stdout` | direct | through the runtime |
+|---|---|---|
+| regular file | regular, seekable | **pipe, not seekable** |
+| closed (`>&-`) | closed; `write` gives `EBADF` | **pipe; `write` reports success** |
+
+The second row is the one that matters. Closing file descriptor 1 is how a
+program is told to produce nothing. It produced output anyway, and a program
+that checks for `EBADF` to notice was told its write had landed when nothing
+could receive it. The first row is quieter and still a conformance problem: a
+pager, a progress renderer, or anything that seeks its own output behaves
+differently inside the runtime than outside it, for a package that is intact
+and correctly signed.
+
+A runtime that wants to keep a copy of a failing application's output must do so
+without changing what the application sees, and must accept that it cannot
+always keep one. Diagnostics are the runtime's convenience; the stream shape is
+the application's environment, and a package can tell them apart.
 
 **Known limitation, to be resolved in a later version.** The *names* by which an
 application discovers its own writable data location are not fixed by 0.1. The

@@ -223,17 +223,18 @@ push (`.github/workflows/ci.yml`).
 | Every example a test depends on is IN the repository | `tests/acceptance/00_repository.sh` |
 | Durable desktop integration across a reboot | `tests/acceptance/02_persistence.sh`, plus the manual `tests/acceptance/REBOOT.md` |
 | No compatibility process in the native steady state | `tests/acceptance/04_native_steady_state.sh` |
+| The application's stdio has the same SHAPE as under direct execution | `tests/acceptance/11_stdio_fidelity.sh` (compared against running the same binary bare) |
 | The GUIs render warning-clean, headlessly | `scripts/gui-smoke.sh` |
 | Warning-clean, markup-safe GUIs | `scripts/gui-smoke.sh` (CI `linux` job) |
 | Cross-distribution portability proof | `scripts/portability-demo.sh` (CI `portability` job) |
 
-**Regression totals (this line):** Linux (GCC) **759 test cases / 9760
+**Regression totals (this line):** Linux (GCC) **761 test cases / 9780
 assertions**, green, and green again under ASan + UBSan. Linux runs more cases
 than Windows because the POSIX-only behaviour is compiled in only there: the
 bubblewrap isolation and cross-process race suites, plus the individual cases
 guarded for fork/exec, symlinks, file locking and FIFOs.
 
-Beyond the unit binary, on this machine: **11 acceptance suites**, 3 lifecycle
+Beyond the unit binary, on this machine: **12 acceptance suites**, 3 lifecycle
 scripts (including the interrupted-operation torture set), the security lane, and
 2 integration scripts — all green. `./scripts/test.sh --all` runs every one of
 them and distinguishes PASS from SKIP from BLOCKED, so a capability this machine
