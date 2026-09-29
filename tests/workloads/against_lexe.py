@@ -203,6 +203,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -267,6 +268,135 @@ def load_expectations(path):
     return per, doc.get("families", {})
 
 
+# --------------------------------------------------------------------------- #
+#                      the roster, and the drift guard                        #
+# --------------------------------------------------------------------------- #
+#
+# WHAT WENT WRONG WITHOUT ONE.
+#
+# The expectations file is a list of the specimens that are ALLOWED to diverge.
+# It says nothing at all about the specimens that are not, which is most of them
+# -- so it cannot notice a specimen appearing, and it cannot notice one
+# vanishing. Both happened: the lane's header said "112 Linux ELF specimens and
+# 72 Windows PE specimens" and its banner said "184 foreign programs", while the
+# corpora on disk held 201 and 148. Every specimen in that difference arrived
+# with no recorded expectation of any kind, and the only thing that eventually
+# noticed was a specimen failing -- the slowest and least specific alarm
+# available. A count typed into prose is a claim that stops being checked the
+# moment it is written.
+#
+# The roster fixes the shape rather than the symptom. It records, for EVERY
+# specimen in the corpus, which of three things is expected of it:
+#
+#   baseline-identical      it must behave under .LEXE exactly as it does
+#                           outside it. No entry in the expectations file, and
+#                           any divergence at all is a finding. This is the
+#                           default and it needs no per-specimen prose: the
+#                           justification is the lane's whole premise.
+#   classified-divergence   it is expected to diverge, in specific named ways,
+#                           for a reason recorded in the expectations file --
+#                           which refuses to load an entry without a reason and
+#                           a citation.
+#   no-defensible-expectation
+#                           this harness cannot say what it should do, and says
+#                           so out loud rather than guessing. Carries a `why`.
+#                           Never silently forgiven: it BLOCKS.
+#
+# Every count this lane prints is then derived from the corpus and the roster,
+# and the two are reconciled BEFORE anything runs, so drift is named in seconds
+# rather than discovered an hour later as a wall of failures.
+
+ROSTER_CLASSES = ("baseline-identical", "classified-divergence",
+                  "no-defensible-expectation")
+
+ROSTER_CLASS_DOC = {
+    "baseline-identical":
+        "Must behave under .LEXE exactly as it does outside it: same exit "
+        "status, same oracle keys with the same values, same files left "
+        "behind. No entry in the expectations file, and ANY divergence is a "
+        "finding about the runtime.",
+    "classified-divergence":
+        "Expected to diverge, in the specific ways named in "
+        "against_lexe_expected_<corpus>.json, each with a reason and a "
+        "citation. A divergence this specimen shows that is NOT named there "
+        "is still a finding.",
+    "no-defensible-expectation":
+        "Nobody can yet say what this specimen should do under .LEXE -- "
+        "usually because the harness cannot reproduce the conditions its "
+        "baseline was taken under, or because the corpus records no usable "
+        "baseline for it at all. Carries a `why`. It is never compared: either "
+        "the engine's own selection drops it (verdict is not baseline-ok) or "
+        "this pass BLOCKS it. Never counted as passing and never as failing, "
+        "because an unexecuted specimen is evidence in neither direction.",
+}
+
+ROSTER_PREAMBLE = [
+    "One line per specimen in the corpus, saying what is expected of it. This",
+    "file exists because the expectations file could not: it lists only the",
+    "specimens ALLOWED to diverge, so it can notice neither a specimen that",
+    "appears nor one that vanishes. Both happened: the lane's own header said",
+    "'112 Linux ELF specimens and 72 Windows PE specimens' while the corpora on",
+    "disk held 201 and 148, and every specimen in the difference arrived with no",
+    "recorded expectation of any kind.",
+    "",
+    "Reconciled against the corpus BEFORE anything runs. A specimen in the",
+    "corpus and not here, or here and not in the corpus, stops the pass and is",
+    "named. Every count this lane prints is derived from this file and the",
+    "index, never typed.",
+]
+
+
+def load_roster(path):
+    if not os.path.exists(path):
+        return None
+    doc = json.load(open(path))
+    out = {}
+    for fid, entry in doc.get("specimens", {}).items():
+        if isinstance(entry, str):
+            entry = {"class": entry}
+        cls = entry.get("class")
+        if cls not in ROSTER_CLASSES:
+            die(f"roster: {fid} has class {cls!r}, which is not one of "
+                f"{', '.join(ROSTER_CLASSES)}")
+        if cls == "no-defensible-expectation" and not entry.get("why"):
+            die(f"roster: {fid} is marked no-defensible-expectation with no "
+                f"`why`. 'We do not know' is a legitimate answer only when it "
+                f"says what is not known.")
+        out[fid] = entry
+    return out
+
+
+def reconcile_roster(index, roster, expect, path):
+    """-> (problems, counts). Empty problems means corpus and roster agree."""
+    corpus = {s["id"] for s in index["specimens"]}
+    listed = set(roster)
+    problems = []
+    for fid in sorted(corpus - listed):
+        problems.append(f"{fid}: in the corpus with NO recorded expectation "
+                        f"(add it to {os.path.basename(path)})")
+    for fid in sorted(listed - corpus):
+        problems.append(f"{fid}: on the roster but GONE from the corpus "
+                        f"(the specimen was removed or renamed)")
+    for fid in sorted(listed & corpus):
+        cls = roster[fid]["class"]
+        has = fid in expect
+        if cls == "classified-divergence" and not has:
+            problems.append(f"{fid}: roster says its divergence is classified, "
+                            f"but the expectations file has no entry for it")
+        if cls == "baseline-identical" and has:
+            problems.append(f"{fid}: roster says it must match its baseline "
+                            f"exactly, but the expectations file forgives "
+                            f"divergences for it -- one of the two is wrong")
+    for fid in sorted(set(expect) - corpus):
+        problems.append(f"{fid}: the expectations file forgives divergences for "
+                        f"a specimen that is not in the corpus")
+    counts = {"in_corpus": len(corpus), "on_roster": len(listed)}
+    for cls in ROSTER_CLASSES:
+        counts[cls] = sum(1 for f in listed & corpus
+                          if roster[f]["class"] == cls)
+    return problems, counts
+
+
 def apply_expectations(fid, family, divs, per, fam):
     table = dict(fam.get(family, {}))
     for tok, e in per.get(fid, {}).items():
@@ -289,6 +419,14 @@ def apply_expectations(fid, family, divs, per, fam):
 def die(msg):
     sys.stderr.write(f"against_lexe: {msg}\n")
     sys.exit(2)
+
+
+def _read_file(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read()
+    except OSError:
+        return b""
 
 
 def sha256_file(p):
@@ -328,6 +466,56 @@ def app_id_for(fid):
     """A valid 0.1 App ID (FORMAT-0.1 5.2) derived from the fixture id."""
     seg = re.sub(r"[^A-Za-z0-9-]", "-", fid)
     return f"wl.{seg}"
+
+
+# --------------------------------------------------------------------------- #
+#                      "does this specimen need a screen?"                    #
+# --------------------------------------------------------------------------- #
+#
+# The two generators mark it DIFFERENTLY, and this harness used to read only one
+# of them. generate_pe.py emits `"gui": true`; generate.py emits
+# `"display": "private"` (and `"display": "none"` for the specimen whose whole
+# property is that it has no display). Reading `gui` alone made every Linux GUI
+# specimen look like a console program: it was not blocked when there was no
+# screen, it had DISPLAY stripped from its environment, and it was launched with
+# `launch.mode = console`. All five then reported `DISPLAY_SET=no`,
+# `FAILED_AS_DECLARED=no`, `NEEDS=an X display` -- five confident-looking
+# "runtime defects" that were entirely this file's.
+#
+# So the question is asked in ONE place, both spellings are understood, and a
+# specimen that says neither while sitting in the `gui` family is an error rather
+# than a silent console launch -- because that silence is exactly what cost five
+# false failures.
+
+class CorpusShape(Exception):
+    """The corpus says something this harness does not know how to honour."""
+
+
+def needs_display(spec):
+    """True when this specimen's property requires a real X display."""
+    if spec.get("gui"):
+        return True
+    disp = spec.get("display")
+    if disp in ("private", "shared", True):
+        return True
+    if disp in (None, False, "none", "no"):
+        # A key that is PRESENT and false is an answer, not a silence, and two
+        # specimens in this corpus rely on it: linux-gui-no-display
+        # (display="none") and pe-gui-headless-worker ("gui": false, "a
+        # GUI-subsystem PE that never creates a window"). Only a gui-family
+        # specimen that marks NEITHER key is the silent-misclassification shape
+        # this guard exists to catch -- which is what the Linux GUI specimens
+        # looked like to the old `spec.get("gui")` test, and why five of them
+        # were launched headless and in console mode against baselines recorded
+        # on a private X server.
+        if (spec.get("family") == "gui"
+                and "display" not in spec and "gui" not in spec):
+            raise CorpusShape(
+                f"{spec['id']} is in the `gui` family but marks neither `gui` "
+                f"nor `display`; this harness will not guess whether it needs a "
+                f"screen")
+        return False
+    raise CorpusShape(f"{spec['id']}: unknown display marking {disp!r}")
 
 
 def parse_oracle(text):
@@ -500,6 +688,34 @@ class Packager:
                         raise Blocked(f"C++ runtime DLL {nm} not found at {src}")
             # isolate_exe: the exe ALONE, which is the property.
             return f"bin/{name}", None
+        if stage in ("search_both", "search_alt_only"):
+            # Two DLLs with the SAME NAME in two directories, which is the only
+            # way the specimen can say WHICH one the loader found. The specimen
+            # computes `altdir` from its own MODULE directory (w_dll_search.c),
+            # not from the working directory, so packaging the exe at bin/ with
+            # bin/altdir/ beside it reproduces the baseline layout exactly --
+            # and it stays reproduced wherever the runtime puts the cwd.
+            #
+            # The primary copy goes beside the executable ONLY for search_both,
+            # which is the specimen that asserts the application directory wins.
+            # Staging it for the alt-only specimens would let the loader find a
+            # DLL by accident, and all three would pass having proved nothing.
+            shutil.copy2(binpath, os.path.join(bindir, name))
+            alt = os.path.join(self.corpus_root, "dll", "search-alt", "wsearch.dll")
+            prim = os.path.join(self.corpus_root, "dll", "search-primary",
+                                "wsearch.dll")
+            if not os.path.exists(alt):
+                raise Blocked(f"the alternate-search DLL is not in the corpus "
+                              f"at {alt}")
+            altdir = os.path.join(bindir, "altdir")
+            os.makedirs(altdir, exist_ok=True)
+            shutil.copy2(alt, os.path.join(altdir, "wsearch.dll"))
+            if stage == "search_both":
+                if not os.path.exists(prim):
+                    raise Blocked(f"the application-directory DLL is not in the "
+                                  f"corpus at {prim}")
+                shutil.copy2(prim, os.path.join(bindir, "wsearch.dll"))
+            return f"bin/{name}", None
         raise Blocked(f"unhandled PE stage {stage!r}")
 
     # ---- manifest ---------------------------------------------------------- #
@@ -574,13 +790,23 @@ class Runner:
         payload = os.path.join(work, "payload")
         os.makedirs(payload, exist_ok=True)
         appid = app_id_for(fid)
-        self.gui = bool(spec.get("gui"))
+        self.gui = needs_display(spec)
+
+        # A specimen nobody can say anything defensible about is BLOCKED, and
+        # says why. Running it and comparing would produce a verdict whose only
+        # support is that the runtime happened to do that -- which is the one
+        # thing this lane must never manufacture.
+        entry = (getattr(self.a, "roster_map", None) or {}).get(fid) or {}
+        if entry.get("class") == "no-defensible-expectation":
+            rec.update(status=BLOCKED,
+                       reason="no defensible expectation: " + entry["why"])
+            return rec
 
         # A specimen whose property is that a window REACHES A SCREEN cannot be
         # judged without a screen, and its baseline was recorded on the project's
         # own namespaced X server. Running it headless and comparing would report
         # "no window" as a runtime defect. BLOCKED, with the way to run it.
-        if spec.get("gui") and not os.environ.get("DISPLAY"):
+        if self.gui and not os.environ.get("DISPLAY"):
             rec.update(status=BLOCKED,
                        reason="needs a display; its baseline was recorded on a "
                               "private X server. Run this specimen under "
@@ -603,7 +829,7 @@ class Runner:
         argv = [a.format(**subst) if "{" in a else a for a in spec["argv"]]
         rec["argv"] = argv
 
-        mode = self.a.launch_mode or ("gui" if spec.get("gui") else "console")
+        mode = self.a.launch_mode or ("gui" if self.gui else "console")
         chains = [self.a.chain] if self.a.chain else ["wine", "proton"]
         man = self.pack.manifest(spec, entry, argv, self.pub, mode,
                                  self.a.grant_network, chains)
@@ -668,8 +894,9 @@ class Runner:
 
         self.compare(spec, rec)
 
-        # Leave nothing running and nothing installed: 184 installs in one tree
-        # would make every later specimen's isolation claim untestable.
+        # Leave nothing running and nothing installed: a whole corpus of installs
+        # accumulating in one tree would make every later specimen's isolation
+        # claim untestable.
         self.lexe(["remove", appid, "--purge-data", "--yes"])
         shutil.rmtree(work, ignore_errors=True)
         return rec
@@ -722,14 +949,8 @@ class Runner:
         errdir = os.path.join(self.home, "state", "errors", appid)
         before = set(os.listdir(errdir)) if os.path.isdir(errdir) else set()
         t0 = time.time()
-        timed_out = False
-        try:
-            p = subprocess.run([self.a.lexe] + argv, env=self.env(),
-                               input=stdin, capture_output=True, timeout=timeout)
-            code, out, err = p.returncode, p.stdout, p.stderr
-        except subprocess.TimeoutExpired as e:
-            timed_out = True
-            code, out, err = None, e.stdout or b"", e.stderr or b""
+        code, out, err, timed_out, shape = self.launch_shaped(
+            spec, [self.a.lexe] + argv, stdin, timeout)
         dur = round((time.time() - t0) * 1000, 1)
 
         captured = {}
@@ -742,6 +963,7 @@ class Runner:
         return {
             "exit": code, "timed_out": timed_out, "duration_ms": dur,
             "stdout": out, "stderr": err, "captured": captured,
+            "stdio_shape": shape,
             # Recorded so a slow FIRST launch can never again be mistaken for a
             # hang. A timeout with prefix_warm false and a duration near the
             # allowance is chain setup being slow; a timeout with prefix_warm
@@ -749,6 +971,179 @@ class Runner:
             "prefix_warm": prefix_warm, "timeout_s": timeout,
             "chain_setup_allowance_s": allowance,
         }
+
+    # ------------------------------------------------------- the stdio shape #
+    #
+    # WHY THIS EXISTS, and why its absence was not a small thing.
+    #
+    # The ELF corpus launches sixteen of its specimens through stdio shapes that
+    # are not a pipe: stdout to a regular FILE, stdin from /dev/null, stdin from
+    # a file, fd 1 CLOSED outright, a shell command substitution, a `tee`, a
+    # consumer that reads a prefix and closes. `index.json` documents all eight
+    # in `stdio_shapes`, and each specimen records which one its baseline was
+    # taken through. This harness ignored that field entirely and ran every
+    # specimen with `capture_output=True` -- three pipes, always.
+    #
+    # So eight specimens were compared against a baseline taken through a
+    # DIFFERENT connection, and duly reported that `STDOUT_KIND` was `fifo` where
+    # the baseline said `regular`, that stdin was not seekable, that a program
+    # which should have died of SIGPIPE exited 0. Every one of those is a true
+    # statement about a comparison that was never like-for-like, and not one of
+    # them is a statement about `.LEXE`. A divergence you manufactured yourself
+    # is the most expensive kind, because it looks exactly like a finding.
+    #
+    # The shape is applied to the `lexe run` invocation, which is the honest
+    # place for it: the baseline shape was applied to the specimen's own process,
+    # so applying it to the caller asks precisely whether the runtime hands the
+    # program the connection its caller gave it. Whatever survives that is a
+    # fact about the runtime and is reported as one.
+    #
+    # The implementations mirror `launch_shape()` in generate.py, which is what
+    # recorded the baselines; where they differ the baseline is not reproduced
+    # and the comparison is worthless, so they are deliberately kept in step.
+
+    SHAPES_KNOWN = ("pipe", "file", "tee", "cmdsub", "earlyclose",
+                    "devnull-stdin", "file-stdin", "closed-stdout")
+
+    def shape_dir(self, spec):
+        d = os.path.join(self.a.out, "work", spec["id"], "shape")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def launch_shaped(self, spec, argv, stdin, timeout):
+        """-> (exit, stdout, stderr, timed_out, shape-record).
+
+        `exit` is the SPECIMEN's status as the shape can determine it, in the
+        same convention the baseline recorded.
+        """
+        return self.run_through_shape(
+            spec.get("stdio") or "pipe", argv, stdin, timeout,
+            self.shape_dir(spec), self.env(), None,
+            int(spec.get("stdio_limit") or 0),
+            "the `lexe run` invocation")
+
+    # A static method so the BASELINE AUDIT can use the very same code: the
+    # audit re-runs specimens with .LEXE out of the picture entirely, and if it
+    # connected them differently from this pass, the two would disagree for
+    # reasons that belong to neither the corpus nor the runtime. They did, and
+    # the audit reported seven baselines as unreproducible for exactly that
+    # reason.
+    @staticmethod
+    def run_through_shape(mode, argv, stdin, timeout, sd, env, cwd, limit,
+                          applied_to):
+        if mode not in Runner.SHAPES_KNOWN:
+            raise Blocked(f"unknown stdio shape {mode!r}; this harness will not "
+                          f"compare a run it cannot connect the same way")
+        rec = {"mode": mode, "applied_to": applied_to}
+
+        def plain(**kw):
+            kw.setdefault("cwd", cwd)
+            try:
+                p = subprocess.run(argv, env=env, timeout=timeout, **kw)
+                return p.returncode, p.stdout or b"", p.stderr or b"", False
+            except subprocess.TimeoutExpired as e:
+                return None, e.stdout or b"", e.stderr or b"", True
+
+        if mode == "pipe":
+            c, o, e, t = plain(input=stdin, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+            return c, o, e, t, rec
+
+        if mode == "file":
+            outp, errp = os.path.join(sd, "stdout.bin"), os.path.join(sd, "stderr.bin")
+            with open(outp, "wb") as fo, open(errp, "wb") as fe:
+                c, _, _, t = plain(input=stdin, stdout=fo, stderr=fe)
+            o, e = _read_file(outp), _read_file(errp)
+            rec.update(stdout_file=outp, stderr_file=errp)
+            return c, o, e, t, rec
+
+        if mode == "devnull-stdin":
+            c, o, e, t = plain(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+            rec["stdin_path"] = os.devnull
+            return c, o, e, t, rec
+
+        if mode == "file-stdin":
+            inp = os.path.join(sd, "stdin.dat")
+            with open(inp, "wb") as f:
+                f.write(stdin)
+            with open(inp, "rb") as f:
+                c, o, e, t = plain(stdin=f, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+            rec.update(stdin_path=inp, stdin_file_bytes=len(stdin))
+            return c, o, e, t, rec
+
+        if mode == "closed-stdout":
+            # `exec` so the shell BECOMES the runtime and the wait status is the
+            # runtime's own, with no wrapper process left to confuse it with --
+            # the same construction the baseline used.
+            wrapped = ["/bin/bash", "-c", 'exec "$@" >&-', "bash"] + argv
+            try:
+                p = subprocess.run(wrapped, env=env, input=stdin, cwd=cwd,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   timeout=timeout)
+                c, o, e, t = p.returncode, p.stdout, p.stderr, False
+            except subprocess.TimeoutExpired as ex:
+                c, o, e, t = None, ex.stdout or b"", ex.stderr or b"", True
+            rec["wrapper"] = 'bash -c exec "$@" >&-'
+            return c, o, e, t, rec
+
+        if mode in ("tee", "cmdsub"):
+            q = " ".join(shlex.quote(x) for x in argv)
+            stp = os.path.join(sd, "status")
+            if mode == "tee":
+                teep = os.path.join(sd, "tee.bin")
+                script = ("set -o pipefail; %s | tee -- %s; "
+                          'printf %%s "${PIPESTATUS[0]}" > %s'
+                          % (q, shlex.quote(teep), shlex.quote(stp)))
+            else:
+                script = ('out=$(%s); printf %%s "$?" > %s; printf %%s "$out"'
+                          % (q, shlex.quote(stp)))
+            try:
+                p = subprocess.run(["/bin/bash", "-c", script], env=env, cwd=cwd,
+                                   input=stdin, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, timeout=timeout)
+                o, e, t = p.stdout, p.stderr, False
+            except subprocess.TimeoutExpired as ex:
+                o, e, t = ex.stdout or b"", ex.stderr or b"", True
+            raw = _read_file(stp).decode("ascii", "replace").strip()
+            rec.update(wrapper_command=script, status_raw=raw,
+                       status_source=("bash ${PIPESTATUS[0]}" if mode == "tee"
+                                      else "bash $?"))
+            if mode == "tee":
+                tee_bytes = _read_file(teep)
+                rec.update(tee_file=teep, tee_file_bytes=len(tee_bytes),
+                           tee_copy_matches_captured=(tee_bytes == o))
+            return (int(raw) if raw.isdigit() else None), o, e, t, rec
+
+        # earlyclose: read a bounded prefix of stdout, then close. stderr goes to
+        # a FILE, because a second undrained pipe deadlocks a specimen whose
+        # oracle is longer than one pipe buffer -- learned in the generator.
+        errp = os.path.join(sd, "stderr.bin")
+        rfd, wfd = os.pipe()
+        got = b""
+        c, t = None, False
+        with open(errp, "wb") as fe:
+            p = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
+                                 stdout=wfd, stderr=fe)
+            os.close(wfd)
+            try:
+                while len(got) < limit:
+                    chunk = os.read(rfd, min(65536, limit - len(got)))
+                    if not chunk:
+                        break
+                    got += chunk
+            finally:
+                os.close(rfd)          # the consumer goes away, mid-stream
+            try:
+                c = p.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                t = True
+                p.kill()
+                p.wait()
+        rec.update(consumer_read_limit=limit, stderr_file=errp,
+                   consumer_got_bytes=len(got))
+        return c, got, _read_file(errp), t, rec
 
     def collect_oracle_files(self, datadir):
         out = {}
@@ -1021,20 +1416,45 @@ def audit_baselines(a, index, corpus_root, specs):
         env = dict(BASE_ENV)
         for k, v in (base.get("env_extra") or {}).items():
             env[k] = v.replace(old, rundir) if isinstance(v, str) else v
+        # The specimen's OWN declared environment, which `env_extra` does not
+        # carry when it OVERRIDES a BASE_ENV key rather than adding one. PATH is
+        # the case that matters: linux-proc-exec-path-lookup declares
+        # PATH={BINDIR}:/usr/bin:/bin, the corpus bin directory is the only place
+        # its target exists, and auditing without it reported the specimen's
+        # recorded baseline as unreproducible -- a "fixture defect" that was the
+        # audit's own missing environment.
+        mapping = {"LIBDIR": os.path.join(corpus_root, "lib"),
+                   "BINDIR": os.path.join(corpus_root, "bin"),
+                   "HELPER": os.path.join(corpus_root, "bin", "helper_child")}
+        for k, v in (s.get("env") or {}).items():
+            for mk, mv in mapping.items():
+                v = v.replace("{%s}" % mk, mv)
+            env[k] = v
         for d in ("home", "tmp", "xdg/data", "xdg/config", "xdg/cache"):
             os.makedirs(os.path.join(rundir, *d.split("/")), exist_ok=True)
         stdin = STDIN_4K if s["stdin"]["bytes"] == 4096 else b""
         nruns = int(s.get("runs", 1) or 1)
+        # Through the SHAPE its baseline was taken through, by the same code the
+        # comparison pass uses. Auditing every specimen down three pipes said
+        # that seven baselines could not be reproduced; all seven reproduce
+        # exactly once the connection is the one the corpus recorded.
+        shapedir = os.path.join(rundir, ".shape")
+        os.makedirs(shapedir, exist_ok=True)
         try:
             for _ in range(nruns):
-                p = subprocess.run(base["argv"], cwd=rundir, env=env, input=stdin,
-                                   capture_output=True,
-                                   timeout=float(s.get("timeout_s", 60) or 60) + 30)
-            code = p.returncode
-            out, err = p.stdout, p.stderr
+                code, out, err, tmo, _sh = Runner.run_through_shape(
+                    s.get("stdio") or "pipe", base["argv"], stdin,
+                    float(s.get("timeout_s", 60) or 60) + 30,
+                    shapedir, env, rundir, int(s.get("stdio_limit") or 0),
+                    "the specimen itself, with .LEXE out of the picture")
+            if tmo:
+                raise subprocess.TimeoutExpired(base["argv"], 0)
         except subprocess.TimeoutExpired:
             bad.append((s["id"], "timed out on re-run; the baseline recorded "
                                  f"exit {base['exit_code']}"))
+            continue
+        except Blocked as b:
+            skipped.append((s["id"], str(b)))
             continue
         sig = -code if code is not None and code < 0 else None
         want_sig = base.get("signal")
@@ -1215,11 +1635,19 @@ def select(index, args):
     out = []
     only = set(args.only.split(",")) if args.only else None
     for s in index["specimens"]:
+        # Asked of EVERY specimen, including ones this pass will not run, so a
+        # corpus this harness cannot interpret is a loud error rather than a
+        # quiet console launch. CorpusShape propagates to main() and dies.
+        gui = needs_display(s)
         if s["verdict"]["status"] != "baseline-ok":
             continue
         if only and s["id"] not in only:
             continue
         if args.family and s["family"] != args.family:
+            continue
+        if args.gui_only and not gui:
+            continue
+        if args.no_gui and gui:
             continue
         out.append(s)
     return out
@@ -1233,6 +1661,16 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--only")
     ap.add_argument("--family")
+    # The GUI specimens have to be run under a PRIVATE X server (see
+    # scripts/lib/private-display.sh), and nothing else should be: a `pd_run`
+    # namespace unshares the network, which is a different environment from the
+    # one the non-GUI baselines were taken in. So the lane splits the corpus on
+    # this axis and runs each half where its baseline was recorded. Derived from
+    # the index, never a typed-out list of ids.
+    ap.add_argument("--gui-only", action="store_true",
+                    help="only the specimens that need a screen")
+    ap.add_argument("--no-gui", action="store_true",
+                    help="everything except the specimens that need a screen")
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--chain")
     ap.add_argument("--layer", default="wine",
@@ -1253,6 +1691,13 @@ def main():
                     help="also place a specimen's staged files in the app's data "
                          "root, which is where the runtime puts the cwd")
     ap.add_argument("--expectations")
+    ap.add_argument("--roster",
+                    help="the per-specimen expectation classes; reconciled "
+                         "against the corpus before anything runs")
+    ap.add_argument("--write-roster", action="store_true",
+                    help="print a roster reconciled to the corpus on hand, "
+                         "preserving every class already recorded, so a new "
+                         "specimen is classified by hand rather than by default")
     ap.add_argument("--write-expectations", action="store_true")
     ap.add_argument("--audit-baselines", action="store_true",
                     help="re-run the specimens WITHOUT .LEXE and check the "
@@ -1269,6 +1714,9 @@ def main():
     a.expectations = a.expectations or os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         f"against_lexe_expected_{a.corpus}.json")
+    a.roster = a.roster or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        f"against_lexe_roster_{a.corpus}.json")
 
     if not os.path.exists(a.lexe):
         die(f"runtime not found: {a.lexe} (build it with scripts/build.sh)")
@@ -1282,7 +1730,46 @@ def main():
     provenance = check_corpus_provenance(index, a.corpus, a.allow_corpus_drift)
     a.expect, a.expect_fam = load_expectations(a.expectations)
 
-    specs = select(index, a)
+    # ---- the drift guard, before a single specimen runs --------------------- #
+    roster = load_roster(a.roster)
+    if a.write_roster:
+        return write_roster(a, index, roster)
+    if roster is None:
+        die(f"roster not found: {a.roster}\n"
+            f"  Every specimen needs a recorded expectation; without the roster "
+            f"this pass cannot tell a specimen that is missing from one that "
+            f"never existed.\n"
+            f"  Write a starting point with --write-roster and classify each "
+            f"entry by hand.")
+    roster_problems, roster_counts = reconcile_roster(
+        index, roster, a.expect, a.roster)
+    if roster_problems:
+        sys.stderr.write(
+            "\n  CORPUS AND EXPECTATIONS HAVE DRIFTED APART\n"
+            "  Nothing was run: a pass over a corpus whose specimens are not "
+            "all accounted for\n  cannot say what it covered.\n\n")
+        for p in roster_problems:
+            sys.stderr.write(f"    {p}\n")
+        sys.stderr.write(
+            f"\n  corpus {roster_counts['in_corpus']} specimen(s), roster "
+            f"{roster_counts['on_roster']}\n"
+            f"  reconcile {os.path.basename(a.roster)} and re-run; "
+            f"--write-roster prints a starting point\n\n")
+        # 3, not 1: a drift is not "some specimens failed", and the lane says so
+        # in different words. Sharing an exit code with a failing comparison is
+        # how "the corpus grew" would come to read as "the runtime regressed".
+        return 3
+    a.roster_map = roster
+    a.roster_counts = roster_counts
+
+    try:
+        specs = select(index, a)
+    except CorpusShape as e:
+        # Exit 2 with one line, not a traceback: this is the corpus telling the
+        # harness something it does not understand, and a stack trace buries
+        # that under machinery nobody needs to read.
+        die(f"{e}\n  The harness will not guess. Teach needs_display() the new "
+            f"marking, or fix the specimen's declaration in the generator.")
     if a.audit_baselines:
         if a.corpus == "pe":
             return audit_pe_baselines(a, index, corpus_root, specs)
@@ -1351,6 +1838,12 @@ def main():
         "expectations_file": a.expectations,
         "expectations_sha256": (sha256_file(a.expectations)
                                 if os.path.exists(a.expectations) else None),
+        "roster_file": a.roster,
+        "roster_sha256": sha256_file(a.roster),
+        # Derived from the corpus and the roster, never typed. The number in this
+        # lane's banner was typed once and was a hundred and sixty-five specimens
+        # out of date before anyone noticed.
+        "roster_counts": a.roster_counts,
         "harness_sha256": sha256_file(os.path.abspath(__file__)),
         "chain": a.chain, "grant_network": a.grant_network,
         "launch_mode_override": a.launch_mode,
@@ -1374,6 +1867,45 @@ def main():
     if a.write_expectations:
         write_skeleton(a, results)
     return 1 if summary["fail"] else 0
+
+
+def write_roster(a, index, existing):
+    """Print a roster reconciled to the corpus on hand.
+
+    Deliberately NOT a classifier. A specimen already on the roster keeps the
+    class it was given; a specimen that is new is emitted with the class
+    `no-defensible-expectation` and a `why` that says nobody has looked at it
+    yet -- which BLOCKS, loudly, until somebody does. Defaulting a new specimen
+    to `baseline-identical` would be this whole project's favourite mistake:
+    a file that silently grows a green tick for work that was never done.
+    """
+    existing = existing or {}
+    out = {}
+    for s in index["specimens"]:
+        fid = s["id"]
+        if fid in existing:
+            out[fid] = existing[fid]
+        else:
+            out[fid] = {
+                "class": "no-defensible-expectation",
+                "why": "NEW SPECIMEN, not yet classified by hand. Run it, read "
+                       "what it did against its direct-execution baseline, and "
+                       "record either baseline-identical or a "
+                       "classified-divergence entry with a reason and a "
+                       "citation.",
+            }
+    doc = {
+        "_what_this_file_is": ROSTER_PREAMBLE,
+        "_classes": {c: ROSTER_CLASS_DOC[c] for c in ROSTER_CLASSES},
+        "specimens": dict(sorted(out.items())),
+    }
+    json.dump(doc, sys.stdout, indent=1)
+    sys.stdout.write("\n")
+    gone = sorted(set(existing) - {s["id"] for s in index["specimens"]})
+    if gone:
+        sys.stderr.write("  dropped (no longer in the corpus): %s\n"
+                         % ", ".join(gone))
+    return 0
 
 
 def strip_bytes(results):
@@ -1402,7 +1934,13 @@ def report(summary, results, rp):
       f"({str(p['recorded_sha256'])[:12]}), generator on disk "
       f"{'MATCHES' if p['matches'] else 'DIFFERS'}\n")
     w(f"  harness {summary['harness_sha256'][:12]}  expectations "
-      f"{str(summary['expectations_sha256'])[:12]}\n")
+      f"{str(summary['expectations_sha256'])[:12]}  roster "
+      f"{str(summary['roster_sha256'])[:12]}\n")
+    rc = summary["roster_counts"]
+    w(f"  roster reconciled: {rc['on_roster']} of {rc['in_corpus']} specimens "
+      f"accounted for -- {rc['baseline-identical']} must match their baseline "
+      f"exactly, {rc['classified-divergence']} diverge for a recorded reason, "
+      f"{rc['no-defensible-expectation']} have no defensible expectation\n")
     if summary["chain"]:
         w(f"  chain {summary['chain']}  baseline layer {summary['layer']}\n")
     if summary["grant_network"]:

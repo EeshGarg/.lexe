@@ -1,418 +1,522 @@
 {
-  "_what_this_file_is": [
-    "The divergences between direct execution and execution under .LEXE that are",
-    "INTENDED, each with the clause that makes it intended. against_lexe.py",
-    "refuses to load an entry that has no reason and no citation, because a",
-    "forgiven divergence without a written reason is a blind spot wearing a green",
-    "tick.",
-    "",
-    "Every entry here was MEASURED FIRST and attributed afterwards. None was",
-    "predicted. Where an attribution could be proved rather than argued, the proof",
-    "is a second deliberate pass named in the reason -- run it and the specimen",
-    "passes, which is what makes the claim 'this is the cwd / the environment /",
-    "the network permission and nothing else' true rather than plausible.",
-    "",
-    "A `token` is `<kind>:<key>`. When `actual` is present the entry forgives only",
-    "that value: a DIFFERENT value under the same key is still a finding.",
-    "Re-attributed for cab0a5e: sealing / and /etc, and the honest dependency refusal, both changed the value these entries pin. That is the mechanism working -- the change surfaced as a FAILURE and was attributed by hand."
+ "_what_this_file_is": [
+  "The divergences between direct execution and execution under .LEXE that are",
+  "INTENDED, each with the clause that makes it intended. against_lexe.py",
+  "refuses to load an entry that has no reason and no citation, because a",
+  "forgiven divergence without a written reason is a blind spot wearing a green",
+  "tick.",
+  "",
+  "Every entry here was MEASURED FIRST and attributed afterwards. None was",
+  "predicted. Where an attribution could be proved rather than argued, the proof",
+  "is a second deliberate pass named in the reason -- run it and the specimen",
+  "passes, which is what makes the claim 'this is the cwd / the environment /",
+  "the network permission and nothing else' true rather than plausible.",
+  "",
+  "A `token` is `<kind>:<key>`. When `actual` is present the entry forgives only",
+  "that value: a DIFFERENT value under the same key is still a finding.",
+  "Re-attributed for cab0a5e: sealing / and /etc, and the honest dependency refusal, both changed the value these entries pin. That is the mechanism working -- the change surfaced as a FAILURE and was attributed by hand."
+ ],
+ "families": {},
+ "specimens": {
+  "linux-env-declared-present": [
+   {
+    "token": "line:ENV_LEXE_WORKLOAD_TOKEN_PRESENT",
+    "actual": "no",
+    "reason": "The runtime clears the caller's environment and sets only an allowlist, so a variable the caller exported is not visible to the application. Format 0.1 has no manifest field by which a package could request an environment variable, so there is no conforming way for this specimen to receive one.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'; docs/FORMAT-0.1.md 5.7 (the closed list of optional manifest fields contains no environment)"
+   },
+   {
+    "token": "line:ENV_LEXE_WORKLOAD_EMPTY_PRESENT",
+    "actual": "no",
+    "reason": "As above: the environment is cleared, so an exported empty-valued variable is absent rather than empty.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_HEX",
+    "reason": "The specimen prints the hex and length of a variable only when it is present; with the environment cleared these keys are correctly not emitted.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_LEN",
+    "reason": "As above.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_HEX",
+    "reason": "As above.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_LEN",
+    "reason": "As above.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   }
   ],
-  "families": {},
-  "specimens": {
-    "linux-env-declared-present": [
-      {
-        "token": "line:ENV_LEXE_WORKLOAD_TOKEN_PRESENT",
-        "actual": "no",
-        "reason": "The runtime clears the caller's environment and sets only an allowlist, so a variable the caller exported is not visible to the application. Format 0.1 has no manifest field by which a package could request an environment variable, so there is no conforming way for this specimen to receive one.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'; docs/FORMAT-0.1.md 5.7 (the closed list of optional manifest fields contains no environment)"
-      },
-      {
-        "token": "line:ENV_LEXE_WORKLOAD_EMPTY_PRESENT",
-        "actual": "no",
-        "reason": "As above: the environment is cleared, so an exported empty-valued variable is absent rather than empty.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_HEX",
-        "reason": "The specimen prints the hex and length of a variable only when it is present; with the environment cleared these keys are correctly not emitted.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:ENV_LEXE_WORKLOAD_TOKEN_LEN",
-        "reason": "As above.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_HEX",
-        "reason": "As above.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:ENV_LEXE_WORKLOAD_EMPTY_LEN",
-        "reason": "As above.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      }
-    ],
-    "linux-env-unicode-value": [
-      {
-        "token": "line:ENV_LEXE_WORKLOAD_UNICODE_PRESENT",
-        "actual": "no",
-        "reason": "The environment is cleared; a UTF-8 valued variable is as absent as any other.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:ENV_LEXE_WORKLOAD_UNICODE_HEX",
-        "reason": "Emitted only when the variable is present.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:ENV_LEXE_WORKLOAD_UNICODE_LEN",
-        "reason": "Emitted only when the variable is present.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      }
-    ],
-    "linux-fs-path-environment": [
-      {
-        "token": "key-extra:XDG_DATA_HOME",
-        "actual": "unset",
-        "reason": "XDG_* is not in the sandbox environment allowlist, and the specimen reports 'unset' instead of probing. The runtime gives the application a private data root at $HOME and $LEXE_APP_DATA instead; the private data/cache/temp roots ARE writable, which the passing filesystem specimens show.",
-        "citation": "docs/ISOLATION.md, 'Environment policy' and 'Writable roots'"
-      },
-      {
-        "token": "key-extra:XDG_CONFIG_HOME",
-        "actual": "unset",
-        "reason": "As above.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-extra:XDG_CACHE_HOME",
-        "actual": "unset",
-        "reason": "As above.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:XDG_DATA_HOME_WRITABLE",
-        "reason": "Not probed when the variable is unset.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:XDG_CONFIG_HOME_WRITABLE",
-        "reason": "Not probed when the variable is unset.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:XDG_CACHE_HOME_WRITABLE",
-        "reason": "Not probed when the variable is unset.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:OBS_XDG_DATA_HOME",
-        "reason": "An observation of a variable that is deliberately absent.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:OBS_XDG_CONFIG_HOME",
-        "reason": "An observation of a variable that is deliberately absent.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      },
-      {
-        "token": "key-missing:OBS_XDG_CACHE_HOME",
-        "reason": "An observation of a variable that is deliberately absent.",
-        "citation": "docs/ISOLATION.md, 'Environment policy'"
-      }
-    ],
-    "linux-fs-readonly-probe": [
-      {
-        "token": "line:USR_WRITE_ERRNO",
-        "actual": "EROFS",
-        "reason": "The sandbox seals `/` and `/etc` read-only, so the write is DENIED exactly as the baseline had it -- the behaviour matches and only the mechanism differs. Direct execution was denied by file permission (EACCES); the sandbox denies by read-only mount (EROFS). The same denial, reported by a stronger mechanism. This replaces an earlier entry that forgave only /usr and deliberately left /etc and / FAILING, because at that time they were writable -- which is what this file is for: the value is pinned, so when the behaviour changed the entry stopped matching and had to be re-attributed by hand instead of absorbing the change silently.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'; docs/REFERENCE-POLICY.md (the sandbox seals / and /etc read-only as of cab0a5e)"
-      },
-      {
-        "token": "line:ETC_WRITE_ERRNO",
-        "actual": "EROFS",
-        "reason": "The sandbox seals `/` and `/etc` read-only, so the write is DENIED exactly as the baseline had it -- the behaviour matches and only the mechanism differs. Direct execution was denied by file permission (EACCES); the sandbox denies by read-only mount (EROFS). The same denial, reported by a stronger mechanism. This replaces an earlier entry that forgave only /usr and deliberately left /etc and / FAILING, because at that time they were writable -- which is what this file is for: the value is pinned, so when the behaviour changed the entry stopped matching and had to be re-attributed by hand instead of absorbing the change silently.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'; docs/REFERENCE-POLICY.md (the sandbox seals / and /etc read-only as of cab0a5e)"
-      },
-      {
-        "token": "line:ROOT_WRITE_ERRNO",
-        "actual": "EROFS",
-        "reason": "The sandbox seals `/` and `/etc` read-only, so the write is DENIED exactly as the baseline had it -- the behaviour matches and only the mechanism differs. Direct execution was denied by file permission (EACCES); the sandbox denies by read-only mount (EROFS). The same denial, reported by a stronger mechanism. This replaces an earlier entry that forgave only /usr and deliberately left /etc and / FAILING, because at that time they were writable -- which is what this file is for: the value is pinned, so when the behaviour changed the entry stopped matching and had to be re-attributed by hand instead of absorbing the change silently.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'; docs/REFERENCE-POLICY.md (the sandbox seals / and /etc read-only as of cab0a5e)"
-      }
-    ],
-    "linux-fs-cwd-relative-asset": [
-      {
-        "token": "line:ASSET_OPENED",
-        "actual": "no",
-        "reason": "The runtime sets the working directory to the application's private data root, never to the directory the payload lives in and never to the caller's cwd, so a relative path to an asset shipped in the package does not resolve. PROVEN to be the working directory and nothing else: with --stage-into-data, which places the same asset in the data root where the cwd actually is, this specimen PASSES.",
-        "citation": "docs/ISOLATION.md, 'Writable roots' ('The working directory is the private data root -- never the caller's cwd'). NOTE: docs/FORMAT-0.1.md 9 does not specify the working directory at all; that gap is reported separately."
-      },
-      {
-        "token": "line:ASSET_CONTENT",
-        "actual": "(none)",
-        "reason": "Consequence of the above.",
-        "citation": "docs/ISOLATION.md, 'Writable roots'"
-      },
-      {
-        "token": "key-missing:ASSET_CONTENT_OK",
-        "reason": "Consequence of the above.",
-        "citation": "docs/ISOLATION.md, 'Writable roots'"
-      },
-      {
-        "token": "key-extra:ASSET_ERRNO",
-        "actual": "ENOENT",
-        "reason": "Consequence of the above: the open fails rather than returning wrong data.",
-        "citation": "docs/ISOLATION.md, 'Writable roots'"
-      },
-      {
-        "token": "line:RESULT",
-        "actual": "FAIL",
-        "reason": "The specimen's own self-check reports that its environment did not behave as it requires, which is accurate: the cwd is not where its asset is. Forgiven ONLY on this specimen and ONLY for this value, because the cause is a documented runtime decision that the same specimen's --stage-into-data pass isolates.",
-        "citation": "docs/ISOLATION.md, 'Writable roots'"
-      }
-    ],
-    "linux-socket-name-resolution": [
-      {
-        "token": "line:ETC_HOSTS_READABLE",
-        "actual": "no",
-        "reason": "/etc/hosts and /etc/resolv.conf are bound into the sandbox only when the `network` permission is granted, and this pass grants nothing. PROVEN: with --grant-network this specimen PASSES, as do all five sockets specimens.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
-      },
-      {
-        "token": "line:LOCALHOST_RC_IS_ZERO",
-        "actual": "no",
-        "reason": "getaddrinfo cannot resolve `localhost` without the NSS host configuration, which is withheld with the permission.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'"
-      },
-      {
-        "token": "key-missing:LOCALHOST_ADDRS_NONZERO",
-        "reason": "Not emitted when the lookup failed.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'"
-      },
-      {
-        "token": "key-extra:LOCALHOST_GAI",
-        "actual": "EAI_AGAIN",
-        "reason": "The specimen reports the resolver's error code only when the lookup failed. Which failure a resolver reports is environment-dependent -- the corpus itself records that, having been bitten by it.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'; tests/workloads/README-PE.md, fixture mismatch 3 (the same code is environment-dependent)"
-      },
-      {
-        "token": "line:BOGUS_GAI",
-        "actual": "EAI_AGAIN",
-        "reason": "With no resolver configuration the bogus name fails with EAI_AGAIN rather than EAI_NONAME. That it FAILED is the property; which code says so is not, and the corpus says as much.",
-        "citation": "docs/ISOLATION.md, 'Filesystem view'"
-      }
-    ],
-    "linux-link-rpath": [
-      {
-        "token": "exit:<exit>",
-        "actual": "1",
-        "reason": "NOT a runtime defect, and now reported honestly. This specimen's DT_RPATH/DT_RUNPATH is the ABSOLUTE path of its build directory, so the binary runs only from where it was built; the supported pattern is a $ORIGIN-relative rpath. Two independent confirmations that the property, not the runtime, is the obstacle: linux-link-origin-relative PASSES, and a $ORIGIN-built variant of THIS specimen's own source runs identically under .LEXE (measured -- so symbol versioning itself is covered even though this specimen cannot cover it). What changed: the runtime records the dependency contract at install and refuses the launch with a stated reason and a repair hint, instead of exec'ing into a silent exit 127 whose loader message was discarded. Exit 1 is 'an unexpected failure' per REFERENCE-POLICY 3.\nREPORTED SEPARATELY, and deliberately not forgiven anywhere: the same mechanism OVER-triggers on a package whose library the sandbox could satisfy from /usr. against_lexe_lifecycle.sh carries the regression check for that.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "line:<stdout-delivery>",
-        "actual": "0 bytes",
-        "reason": "The launch was refused before the program started, so there was no program output to deliver. This is NOT the relay defect, which is fixed: a program that does run now has both streams delivered on every exit code, verified byte for byte over 8 MiB including NULs.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:FIXTURE_ID",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:ALPHA",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:BETA",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:GAMMA",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:CHAIN_CONSISTENT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:RESULT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:OBS_DSO",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:OBS_DSO_COUNT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      }
-    ],
-    "linux-link-runpath": [
-      {
-        "token": "exit:<exit>",
-        "actual": "1",
-        "reason": "NOT a runtime defect, and now reported honestly. This specimen's DT_RPATH/DT_RUNPATH is the ABSOLUTE path of its build directory, so the binary runs only from where it was built; the supported pattern is a $ORIGIN-relative rpath. Two independent confirmations that the property, not the runtime, is the obstacle: linux-link-origin-relative PASSES, and a $ORIGIN-built variant of THIS specimen's own source runs identically under .LEXE (measured -- so symbol versioning itself is covered even though this specimen cannot cover it). What changed: the runtime records the dependency contract at install and refuses the launch with a stated reason and a repair hint, instead of exec'ing into a silent exit 127 whose loader message was discarded. Exit 1 is 'an unexpected failure' per REFERENCE-POLICY 3.\nREPORTED SEPARATELY, and deliberately not forgiven anywhere: the same mechanism OVER-triggers on a package whose library the sandbox could satisfy from /usr. against_lexe_lifecycle.sh carries the regression check for that.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "line:<stdout-delivery>",
-        "actual": "0 bytes",
-        "reason": "The launch was refused before the program started, so there was no program output to deliver. This is NOT the relay defect, which is fixed: a program that does run now has both streams delivered on every exit code, verified byte for byte over 8 MiB including NULs.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:FIXTURE_ID",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:ALPHA",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:BETA",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:GAMMA",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:CHAIN_CONSISTENT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:RESULT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:OBS_DSO",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:OBS_DSO_COUNT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      }
-    ],
-    "linux-link-symbol-versioning": [
-      {
-        "token": "exit:<exit>",
-        "actual": "1",
-        "reason": "NOT a runtime defect, and now reported honestly. This specimen's DT_RPATH/DT_RUNPATH is the ABSOLUTE path of its build directory, so the binary runs only from where it was built; the supported pattern is a $ORIGIN-relative rpath. Two independent confirmations that the property, not the runtime, is the obstacle: linux-link-origin-relative PASSES, and a $ORIGIN-built variant of THIS specimen's own source runs identically under .LEXE (measured -- so symbol versioning itself is covered even though this specimen cannot cover it). What changed: the runtime records the dependency contract at install and refuses the launch with a stated reason and a repair hint, instead of exec'ing into a silent exit 127 whose loader message was discarded. Exit 1 is 'an unexpected failure' per REFERENCE-POLICY 3.\nREPORTED SEPARATELY, and deliberately not forgiven anywhere: the same mechanism OVER-triggers on a package whose library the sandbox could satisfy from /usr. against_lexe_lifecycle.sh carries the regression check for that.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "line:<stdout-delivery>",
-        "actual": "0 bytes",
-        "reason": "The launch was refused before the program started, so there was no program output to deliver. This is NOT the relay defect, which is fixed: a program that does run now has both streams delivered on every exit code, verified byte for byte over 8 MiB including NULs.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:FIXTURE_ID",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:VER_VALUE",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:RESOLVED_TO_DEFAULT_V2",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      },
-      {
-        "token": "key-missing:RESULT",
-        "reason": "The launch was refused before the program started.",
-        "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
-      }
-    ],
-    "linux-link-three-libs-ldpath": [
-      {
-        "token": "exit:<exit>",
-        "actual": "1",
-        "reason": "This binary has no RPATH at all and found its libraries through LD_LIBRARY_PATH, which the runtime deliberately does not forward -- and FORMAT-0.1 9.5.2 now REQUIRES not forwarding it. The runtime refuses the launch honestly, with a dependency-contract diagnostic, rather than exec'ing a binary that cannot start. A genuine positive.",
-        "citation": "docs/FORMAT-0.1.md 9.5.2 (the environment MUST NOT forward LD_LIBRARY_PATH); docs/REFERENCE-POLICY.md 3"
-      },
-      {
-        "token": "line:<stdout-delivery>",
-        "actual": "0 bytes",
-        "reason": "The launch was refused, so there was no program output.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:FIXTURE_ID",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:ALPHA",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:BETA",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:GAMMA",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:CHAIN_CONSISTENT",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:RESULT",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:OBS_DSO",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      },
-      {
-        "token": "key-missing:OBS_DSO_COUNT",
-        "reason": "The launch was refused.",
-        "citation": "as above"
-      }
-    ],
-    "linux-proc-daemon-double-fork": [
-      {
-        "token": "key-missing:<post-file:daemon.log>",
-        "actual": "absent",
-        "reason": "A console-mode launch is bounded by the sandbox: when the process the runtime waited for exits, the sandbox is torn down and the detached daemon dies before it can finish its work. PROVEN to be the launch mode and nothing else: with --launch-mode service the same specimen leaves daemon.log behind, which is what Format 0.1 5.6 requires of a service ('the application MUST survive the process that started it'). Console-mode behaviour is not specified either way; that gap is reported separately.",
-        "citation": "docs/FORMAT-0.1.md 5.6 (service semantics); docs/ISOLATION.md, 'Privilege / process creation' (--die-with-parent, private PID namespace)"
-      }
-    ],
-    "linux-proc-orphan": [
-      {
-        "token": "key-missing:<post-file:orphan.log>",
-        "actual": "absent",
-        "reason": "Same as linux-proc-daemon-double-fork: the orphaned child does not outlive the console-mode sandbox. With --launch-mode service it does, and orphan.log appears.",
-        "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md, 'Privilege / process creation'"
-      }
-    ]
-  }
+  "linux-env-unicode-value": [
+   {
+    "token": "line:ENV_LEXE_WORKLOAD_UNICODE_PRESENT",
+    "actual": "no",
+    "reason": "The environment is cleared; a UTF-8 valued variable is as absent as any other.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:ENV_LEXE_WORKLOAD_UNICODE_HEX",
+    "reason": "Emitted only when the variable is present.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:ENV_LEXE_WORKLOAD_UNICODE_LEN",
+    "reason": "Emitted only when the variable is present.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   }
+  ],
+  "linux-fs-path-environment": [
+   {
+    "token": "key-extra:XDG_DATA_HOME",
+    "actual": "unset",
+    "reason": "XDG_* is not in the sandbox environment allowlist, and the specimen reports 'unset' instead of probing. The runtime gives the application a private data root at $HOME and $LEXE_APP_DATA instead; the private data/cache/temp roots ARE writable, which the passing filesystem specimens show.",
+    "citation": "docs/ISOLATION.md, 'Environment policy' and 'Writable roots'"
+   },
+   {
+    "token": "key-extra:XDG_CONFIG_HOME",
+    "actual": "unset",
+    "reason": "As above.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-extra:XDG_CACHE_HOME",
+    "actual": "unset",
+    "reason": "As above.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:XDG_DATA_HOME_WRITABLE",
+    "reason": "Not probed when the variable is unset.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:XDG_CONFIG_HOME_WRITABLE",
+    "reason": "Not probed when the variable is unset.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:XDG_CACHE_HOME_WRITABLE",
+    "reason": "Not probed when the variable is unset.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:OBS_XDG_DATA_HOME",
+    "reason": "An observation of a variable that is deliberately absent.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:OBS_XDG_CONFIG_HOME",
+    "reason": "An observation of a variable that is deliberately absent.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   },
+   {
+    "token": "key-missing:OBS_XDG_CACHE_HOME",
+    "reason": "An observation of a variable that is deliberately absent.",
+    "citation": "docs/ISOLATION.md, 'Environment policy'"
+   }
+  ],
+  "linux-fs-readonly-probe": [
+   {
+    "token": "line:USR_WRITE_ERRNO",
+    "actual": "EROFS",
+    "reason": "The sandbox seals `/` and `/etc` read-only, so the write is DENIED exactly as the baseline had it -- the behaviour matches and only the mechanism differs. Direct execution was denied by file permission (EACCES); the sandbox denies by read-only mount (EROFS). The same denial, reported by a stronger mechanism. This replaces an earlier entry that forgave only /usr and deliberately left /etc and / FAILING, because at that time they were writable -- which is what this file is for: the value is pinned, so when the behaviour changed the entry stopped matching and had to be re-attributed by hand instead of absorbing the change silently.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'; docs/REFERENCE-POLICY.md (the sandbox seals / and /etc read-only as of cab0a5e)"
+   },
+   {
+    "token": "line:ETC_WRITE_ERRNO",
+    "actual": "EROFS",
+    "reason": "The sandbox seals `/` and `/etc` read-only, so the write is DENIED exactly as the baseline had it -- the behaviour matches and only the mechanism differs. Direct execution was denied by file permission (EACCES); the sandbox denies by read-only mount (EROFS). The same denial, reported by a stronger mechanism. This replaces an earlier entry that forgave only /usr and deliberately left /etc and / FAILING, because at that time they were writable -- which is what this file is for: the value is pinned, so when the behaviour changed the entry stopped matching and had to be re-attributed by hand instead of absorbing the change silently.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'; docs/REFERENCE-POLICY.md (the sandbox seals / and /etc read-only as of cab0a5e)"
+   },
+   {
+    "token": "line:ROOT_WRITE_ERRNO",
+    "actual": "EROFS",
+    "reason": "The sandbox seals `/` and `/etc` read-only, so the write is DENIED exactly as the baseline had it -- the behaviour matches and only the mechanism differs. Direct execution was denied by file permission (EACCES); the sandbox denies by read-only mount (EROFS). The same denial, reported by a stronger mechanism. This replaces an earlier entry that forgave only /usr and deliberately left /etc and / FAILING, because at that time they were writable -- which is what this file is for: the value is pinned, so when the behaviour changed the entry stopped matching and had to be re-attributed by hand instead of absorbing the change silently.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'; docs/REFERENCE-POLICY.md (the sandbox seals / and /etc read-only as of cab0a5e)"
+   }
+  ],
+  "linux-fs-cwd-relative-asset": [
+   {
+    "token": "line:ASSET_OPENED",
+    "actual": "no",
+    "reason": "The runtime sets the working directory to the application's private data root, never to the directory the payload lives in and never to the caller's cwd, so a relative path to an asset shipped in the package does not resolve. PROVEN to be the working directory and nothing else: with --stage-into-data, which places the same asset in the data root where the cwd actually is, this specimen PASSES.",
+    "citation": "docs/ISOLATION.md, 'Writable roots' ('The working directory is the private data root -- never the caller's cwd'). NOTE: docs/FORMAT-0.1.md 9 does not specify the working directory at all; that gap is reported separately."
+   },
+   {
+    "token": "line:ASSET_CONTENT",
+    "actual": "(none)",
+    "reason": "Consequence of the above.",
+    "citation": "docs/ISOLATION.md, 'Writable roots'"
+   },
+   {
+    "token": "key-missing:ASSET_CONTENT_OK",
+    "reason": "Consequence of the above.",
+    "citation": "docs/ISOLATION.md, 'Writable roots'"
+   },
+   {
+    "token": "key-extra:ASSET_ERRNO",
+    "actual": "ENOENT",
+    "reason": "Consequence of the above: the open fails rather than returning wrong data.",
+    "citation": "docs/ISOLATION.md, 'Writable roots'"
+   },
+   {
+    "token": "line:RESULT",
+    "actual": "FAIL",
+    "reason": "The specimen's own self-check reports that its environment did not behave as it requires, which is accurate: the cwd is not where its asset is. Forgiven ONLY on this specimen and ONLY for this value, because the cause is a documented runtime decision that the same specimen's --stage-into-data pass isolates.",
+    "citation": "docs/ISOLATION.md, 'Writable roots'"
+   }
+  ],
+  "linux-socket-name-resolution": [
+   {
+    "token": "line:ETC_HOSTS_READABLE",
+    "actual": "no",
+    "reason": "/etc/hosts and /etc/resolv.conf are bound into the sandbox only when the `network` permission is granted, and this pass grants nothing. PROVEN: with --grant-network this specimen PASSES, as do all five sockets specimens.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
+   },
+   {
+    "token": "line:LOCALHOST_RC_IS_ZERO",
+    "actual": "no",
+    "reason": "getaddrinfo cannot resolve `localhost` without the NSS host configuration, which is withheld with the permission.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'"
+   },
+   {
+    "token": "key-missing:LOCALHOST_ADDRS_NONZERO",
+    "reason": "Not emitted when the lookup failed.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'"
+   },
+   {
+    "token": "key-extra:LOCALHOST_GAI",
+    "actual": "EAI_AGAIN",
+    "reason": "The specimen reports the resolver's error code only when the lookup failed. Which failure a resolver reports is environment-dependent -- the corpus itself records that, having been bitten by it.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'; tests/workloads/README-PE.md, fixture mismatch 3 (the same code is environment-dependent)"
+   },
+   {
+    "token": "line:BOGUS_GAI",
+    "actual": "EAI_AGAIN",
+    "reason": "With no resolver configuration the bogus name fails with EAI_AGAIN rather than EAI_NONAME. That it FAILED is the property; which code says so is not, and the corpus says as much.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view'"
+   }
+  ],
+  "linux-link-rpath": [
+   {
+    "token": "exit:<exit>",
+    "actual": "1",
+    "reason": "NOT a runtime defect, and now reported honestly. This specimen's DT_RPATH/DT_RUNPATH is the ABSOLUTE path of its build directory, so the binary runs only from where it was built; the supported pattern is a $ORIGIN-relative rpath. Two independent confirmations that the property, not the runtime, is the obstacle: linux-link-origin-relative PASSES, and a $ORIGIN-built variant of THIS specimen's own source runs identically under .LEXE (measured -- so symbol versioning itself is covered even though this specimen cannot cover it). What changed: the runtime records the dependency contract at install and refuses the launch with a stated reason and a repair hint, instead of exec'ing into a silent exit 127 whose loader message was discarded. Exit 1 is 'an unexpected failure' per REFERENCE-POLICY 3.\nREPORTED SEPARATELY, and deliberately not forgiven anywhere: the same mechanism OVER-triggers on a package whose library the sandbox could satisfy from /usr. against_lexe_lifecycle.sh carries the regression check for that.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "line:<stdout-delivery>",
+    "actual": "0 bytes",
+    "reason": "The launch was refused before the program started, so there was no program output to deliver. This is NOT the relay defect, which is fixed: a program that does run now has both streams delivered on every exit code, verified byte for byte over 8 MiB including NULs.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:FIXTURE_ID",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:ALPHA",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:BETA",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:GAMMA",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:CHAIN_CONSISTENT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:RESULT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:OBS_DSO",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:OBS_DSO_COUNT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:FIXTURE_BUILD_ID",
+    "reason": "The launch was refused before the program started, so it printed nothing at all -- and FIXTURE_BUILD_ID is the FIRST line orc_begin() prints (tests/workloads/specs/oracle.h). This token is the same fact as the key-missing entries beside it and was missing only because oracle.h gained the compiled-in build id after these entries were written; the specimen changed and the expectations did not follow.",
+    "citation": "tests/workloads/specs/oracle.h (orc_begin prints FIXTURE_BUILD_ID before anything else); same refusal as the sibling key-missing entries for this specimen"
+   }
+  ],
+  "linux-link-runpath": [
+   {
+    "token": "exit:<exit>",
+    "actual": "1",
+    "reason": "NOT a runtime defect, and now reported honestly. This specimen's DT_RPATH/DT_RUNPATH is the ABSOLUTE path of its build directory, so the binary runs only from where it was built; the supported pattern is a $ORIGIN-relative rpath. Two independent confirmations that the property, not the runtime, is the obstacle: linux-link-origin-relative PASSES, and a $ORIGIN-built variant of THIS specimen's own source runs identically under .LEXE (measured -- so symbol versioning itself is covered even though this specimen cannot cover it). What changed: the runtime records the dependency contract at install and refuses the launch with a stated reason and a repair hint, instead of exec'ing into a silent exit 127 whose loader message was discarded. Exit 1 is 'an unexpected failure' per REFERENCE-POLICY 3.\nREPORTED SEPARATELY, and deliberately not forgiven anywhere: the same mechanism OVER-triggers on a package whose library the sandbox could satisfy from /usr. against_lexe_lifecycle.sh carries the regression check for that.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "line:<stdout-delivery>",
+    "actual": "0 bytes",
+    "reason": "The launch was refused before the program started, so there was no program output to deliver. This is NOT the relay defect, which is fixed: a program that does run now has both streams delivered on every exit code, verified byte for byte over 8 MiB including NULs.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:FIXTURE_ID",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:ALPHA",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:BETA",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:GAMMA",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:CHAIN_CONSISTENT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:RESULT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:OBS_DSO",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:OBS_DSO_COUNT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:FIXTURE_BUILD_ID",
+    "reason": "The launch was refused before the program started, so it printed nothing at all -- and FIXTURE_BUILD_ID is the FIRST line orc_begin() prints (tests/workloads/specs/oracle.h). This token is the same fact as the key-missing entries beside it and was missing only because oracle.h gained the compiled-in build id after these entries were written; the specimen changed and the expectations did not follow.",
+    "citation": "tests/workloads/specs/oracle.h (orc_begin prints FIXTURE_BUILD_ID before anything else); same refusal as the sibling key-missing entries for this specimen"
+   }
+  ],
+  "linux-link-symbol-versioning": [
+   {
+    "token": "exit:<exit>",
+    "actual": "1",
+    "reason": "NOT a runtime defect, and now reported honestly. This specimen's DT_RPATH/DT_RUNPATH is the ABSOLUTE path of its build directory, so the binary runs only from where it was built; the supported pattern is a $ORIGIN-relative rpath. Two independent confirmations that the property, not the runtime, is the obstacle: linux-link-origin-relative PASSES, and a $ORIGIN-built variant of THIS specimen's own source runs identically under .LEXE (measured -- so symbol versioning itself is covered even though this specimen cannot cover it). What changed: the runtime records the dependency contract at install and refuses the launch with a stated reason and a repair hint, instead of exec'ing into a silent exit 127 whose loader message was discarded. Exit 1 is 'an unexpected failure' per REFERENCE-POLICY 3.\nREPORTED SEPARATELY, and deliberately not forgiven anywhere: the same mechanism OVER-triggers on a package whose library the sandbox could satisfy from /usr. against_lexe_lifecycle.sh carries the regression check for that.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "line:<stdout-delivery>",
+    "actual": "0 bytes",
+    "reason": "The launch was refused before the program started, so there was no program output to deliver. This is NOT the relay defect, which is fixed: a program that does run now has both streams delivered on every exit code, verified byte for byte over 8 MiB including NULs.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:FIXTURE_ID",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:VER_VALUE",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:RESOLVED_TO_DEFAULT_V2",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:RESULT",
+    "reason": "The launch was refused before the program started.",
+    "citation": "examples/native/bundled-library/Makefile (the documented pattern is -Wl,-rpath,'$ORIGIN/../lib'); docs/REFERENCE-POLICY.md 3 (exit codes)"
+   },
+   {
+    "token": "key-missing:FIXTURE_BUILD_ID",
+    "reason": "The launch was refused before the program started, so it printed nothing at all -- and FIXTURE_BUILD_ID is the FIRST line orc_begin() prints (tests/workloads/specs/oracle.h). This token is the same fact as the key-missing entries beside it and was missing only because oracle.h gained the compiled-in build id after these entries were written; the specimen changed and the expectations did not follow.",
+    "citation": "tests/workloads/specs/oracle.h (orc_begin prints FIXTURE_BUILD_ID before anything else); same refusal as the sibling key-missing entries for this specimen"
+   }
+  ],
+  "linux-link-three-libs-ldpath": [
+   {
+    "token": "exit:<exit>",
+    "actual": "1",
+    "reason": "This binary has no RPATH at all and found its libraries through LD_LIBRARY_PATH, which the runtime deliberately does not forward -- and FORMAT-0.1 9.5.2 now REQUIRES not forwarding it. The runtime refuses the launch honestly, with a dependency-contract diagnostic, rather than exec'ing a binary that cannot start. A genuine positive.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (the environment MUST NOT forward LD_LIBRARY_PATH); docs/REFERENCE-POLICY.md 3"
+   },
+   {
+    "token": "line:<stdout-delivery>",
+    "actual": "0 bytes",
+    "reason": "The launch was refused, so there was no program output.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:FIXTURE_ID",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:ALPHA",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:BETA",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:GAMMA",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:CHAIN_CONSISTENT",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:RESULT",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:OBS_DSO",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:OBS_DSO_COUNT",
+    "reason": "The launch was refused.",
+    "citation": "as above"
+   },
+   {
+    "token": "key-missing:FIXTURE_BUILD_ID",
+    "reason": "The launch was refused before the program started, so it printed nothing at all -- and FIXTURE_BUILD_ID is the FIRST line orc_begin() prints (tests/workloads/specs/oracle.h). This token is the same fact as the key-missing entries beside it and was missing only because oracle.h gained the compiled-in build id after these entries were written; the specimen changed and the expectations did not follow.",
+    "citation": "tests/workloads/specs/oracle.h (orc_begin prints FIXTURE_BUILD_ID before anything else); same refusal as the sibling key-missing entries for this specimen"
+   }
+  ],
+  "linux-proc-daemon-double-fork": [
+   {
+    "token": "key-missing:<post-file:daemon.log>",
+    "actual": "absent",
+    "reason": "A console-mode launch is bounded by the sandbox: when the process the runtime waited for exits, the sandbox is torn down and the detached daemon dies before it can finish its work. PROVEN to be the launch mode and nothing else: with --launch-mode service the same specimen leaves daemon.log behind, which is what Format 0.1 5.6 requires of a service ('the application MUST survive the process that started it'). Console-mode behaviour is not specified either way; that gap is reported separately.",
+    "citation": "docs/FORMAT-0.1.md 5.6 (service semantics); docs/ISOLATION.md, 'Privilege / process creation' (--die-with-parent, private PID namespace)"
+   }
+  ],
+  "linux-proc-orphan": [
+   {
+    "token": "key-missing:<post-file:orphan.log>",
+    "actual": "absent",
+    "reason": "Same as linux-proc-daemon-double-fork: the orphaned child does not outlive the console-mode sandbox. With --launch-mode service it does, and orphan.log appears.",
+    "citation": "docs/FORMAT-0.1.md 5.6; docs/ISOLATION.md, 'Privilege / process creation'"
+   }
+  ],
+  "linux-format-static-resolver": [
+   {
+    "token": "line:ETC_HOSTS_READABLE",
+    "actual": "no",
+    "reason": "/etc/hosts and /etc/resolv.conf are bound into the sandbox only when the `network` permission is granted, and this pass grants nothing. This specimen is `sock_resolve.c` built with -static -- the SAME PROGRAM as linux-socket-name-resolution, whose identical divergence is recorded beside this one. Static linking changes which resolver code runs and nothing about what the sandbox withholds.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
+   },
+   {
+    "token": "line:LOCALHOST_RC_IS_ZERO",
+    "actual": "no",
+    "reason": "getaddrinfo cannot resolve `localhost` without the NSS host configuration, which is withheld with the permission. This specimen is `sock_resolve.c` built with -static -- the SAME PROGRAM as linux-socket-name-resolution, whose identical divergence is recorded beside this one. Static linking changes which resolver code runs and nothing about what the sandbox withholds.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
+   },
+   {
+    "token": "key-missing:LOCALHOST_ADDRS_NONZERO",
+    "reason": "Not emitted when the lookup failed. This specimen is `sock_resolve.c` built with -static -- the SAME PROGRAM as linux-socket-name-resolution, whose identical divergence is recorded beside this one. Static linking changes which resolver code runs and nothing about what the sandbox withholds.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
+   },
+   {
+    "token": "key-extra:LOCALHOST_GAI",
+    "actual": "EAI_AGAIN",
+    "reason": "The specimen reports the resolver's error code only when the lookup failed. Which failure a resolver reports is environment-dependent, and the corpus records that. This specimen is `sock_resolve.c` built with -static -- the SAME PROGRAM as linux-socket-name-resolution, whose identical divergence is recorded beside this one. Static linking changes which resolver code runs and nothing about what the sandbox withholds.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
+   },
+   {
+    "token": "line:BOGUS_GAI",
+    "actual": "EAI_AGAIN",
+    "reason": "With no resolver configuration the bogus name fails with EAI_AGAIN rather than EAI_NONAME. That it FAILED is the property; which code says so is not. This specimen is `sock_resolve.c` built with -static -- the SAME PROGRAM as linux-socket-name-resolution, whose identical divergence is recorded beside this one. Static linking changes which resolver code runs and nothing about what the sandbox withholds.",
+    "citation": "docs/ISOLATION.md, 'Filesystem view' ('resolv.conf/hosts only when networking is permitted'); docs/FORMAT-0.1.md 5.7.1 (`network` is the enforced permission)"
+   }
+  ],
+  "linux-proc-exec-path-lookup": [
+   {
+    "token": "exit:<exit>",
+    "actual": "0",
+    "reason": "This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   },
+   {
+    "token": "key-extra:EXECVP_FOUND_IT",
+    "actual": "no",
+    "reason": "This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   },
+   {
+    "token": "key-extra:EXECVP_ERRNO",
+    "actual": "ENOENT",
+    "reason": "This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   },
+   {
+    "token": "key-extra:RESULT",
+    "actual": "FAIL",
+    "reason": "orc_end() runs only because the exec did not replace the process; the baseline never reaches it. This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   },
+   {
+    "token": "key-missing:CHILD_ROLE",
+    "reason": "Printed by the program execvp would have become, which was never reached. This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   },
+   {
+    "token": "key-missing:CHILD_ARGC",
+    "reason": "Printed by the program execvp would have become, which was never reached. This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   },
+   {
+    "token": "key-missing:CHILD_EXIT_INTENT",
+    "reason": "Printed by the program execvp would have become, which was never reached. This specimen's property depends on a PATH its CALLER supplies: the corpus runs it with PATH=<corpus>/bin:/usr/bin:/bin (index.json records spec.env.PATH = '{BINDIR}:/usr/bin:/bin'), and <corpus>/bin is the only place helper_child exists. FORMAT-0.1 9.5.2 requires a runtime to reset the environment rather than inherit the caller's, so under ANY conforming runtime that PATH entry cannot reach the program and the bare-name lookup must fail. PROVEN by direct execution outside .LEXE: running the same binary with PATH=/usr/bin:/bin and nothing else reproduces this outcome exactly -- exit 0, EXECVP_ERRNO=ENOENT, EXECVP_FOUND_IT=no, RESULT=FAIL, no CHILD_* keys. The specimen reports the failed lookup instead of crashing, which is what its source says it exists to do.",
+    "citation": "docs/FORMAT-0.1.md 9.5.2 (a runtime MUST reset the environment rather than inheriting the caller's); tests/workloads/specs/exec_path.c (a failed lookup is 'a legitimate outcome to be able to report')"
+   }
+  ],
+  "linux-stdio-shape-earlyclose": [
+   {
+    "token": "exit:<exit>",
+    "reason": "NOT a runtime divergence, and specifically NOT evidence about .LEXE: this specimen's own exit status is not deterministic. Measured by running the specimen binary DIRECTLY through the same earlyclose shape its baseline was recorded through, with .LEXE nowhere in the picture: 20 runs at host load ~14 gave 10 x exit 0 and 10 x SIGPIPE; 30 runs at host load ~4 gave 9 x exit 0 and 21 x SIGPIPE. The consumer's close races the specimen's final write, and this specimen's stream is small enough to fit one pipe buffer, so both outcomes are legitimate. The corpus recorded one of the two faces as 'the' baseline. This is a FIXTURE defect, to be fixed in generate.py by declaring both outcomes (linux-stdio-earlyclose-4mib, whose stream cannot fit a pipe buffer, is deterministic and is left alone). Only the exit status is forgiven: this specimen's STDERR_KIND/STDERR_SEEKABLE divergence is deliberately NOT forgiven, because it is a real finding.",
+    "citation": "tests/workloads/generate.py STDIO_SHAPES['earlyclose'] ('a specimen that keeps writing gets SIGPIPE' -- one that has already finished does not); measured directly outside .LEXE, 50 runs across two load regimes"
+   },
+   {
+    "token": "signal:<signal>",
+    "reason": "NOT a runtime divergence, and specifically NOT evidence about .LEXE: this specimen's own exit status is not deterministic. Measured by running the specimen binary DIRECTLY through the same earlyclose shape its baseline was recorded through, with .LEXE nowhere in the picture: 20 runs at host load ~14 gave 10 x exit 0 and 10 x SIGPIPE; 30 runs at host load ~4 gave 9 x exit 0 and 21 x SIGPIPE. The consumer's close races the specimen's final write, and this specimen's stream is small enough to fit one pipe buffer, so both outcomes are legitimate. The corpus recorded one of the two faces as 'the' baseline. This is a FIXTURE defect, to be fixed in generate.py by declaring both outcomes (linux-stdio-earlyclose-4mib, whose stream cannot fit a pipe buffer, is deterministic and is left alone). Only the exit status is forgiven: this specimen's STDERR_KIND/STDERR_SEEKABLE divergence is deliberately NOT forgiven, because it is a real finding.",
+    "citation": "tests/workloads/generate.py STDIO_SHAPES['earlyclose'] ('a specimen that keeps writing gets SIGPIPE' -- one that has already finished does not); measured directly outside .LEXE, 50 runs across two load regimes"
+   }
+  ]
+ }
 }

@@ -1,0 +1,626 @@
+{
+ "_what_this_file_is": [
+  "One line per specimen in the corpus, saying what is expected of it. This",
+  "file exists because the expectations file could not: it lists only the",
+  "specimens ALLOWED to diverge, so it can notice neither a specimen that",
+  "appears nor one that vanishes. Both happened: the lane's own header said",
+  "'112 Linux ELF specimens and 72 Windows PE specimens' while the corpora on",
+  "disk held 201 and 148, and every specimen in the difference arrived with no",
+  "recorded expectation of any kind.",
+  "",
+  "Reconciled against the corpus BEFORE anything runs. A specimen in the",
+  "corpus and not here, or here and not in the corpus, stops the pass and is",
+  "named. Every count this lane prints is derived from this file and the",
+  "index, never typed."
+ ],
+ "_classes": {
+  "baseline-identical": "Must behave under .LEXE exactly as it does outside it: same exit status, same oracle keys with the same values, same files left behind. No entry in the expectations file, and ANY divergence is a finding about the runtime.",
+  "classified-divergence": "Expected to diverge, in the specific ways named in against_lexe_expected_<corpus>.json, each with a reason and a citation. A divergence this specimen shows that is NOT named there is still a finding.",
+  "no-defensible-expectation": "Nobody can yet say what this specimen should do under .LEXE -- usually because the harness cannot reproduce the conditions its baseline was taken under, or because the corpus records no usable baseline for it at all. Carries a `why`. It is never compared: either the engine's own selection drops it (verdict is not baseline-ok) or this pass BLOCKS it. Never counted as passing and never as failing, because an unexecuted specimen is evidence in neither direction."
+ },
+ "specimens": {
+  "linux-arg-basic-flags": {
+   "class": "baseline-identical"
+  },
+  "linux-arg-empty-string": {
+   "class": "baseline-identical"
+  },
+  "linux-arg-huge-100k": {
+   "class": "baseline-identical"
+  },
+  "linux-arg-many-512": {
+   "class": "baseline-identical"
+  },
+  "linux-arg-none": {
+   "class": "baseline-identical"
+  },
+  "linux-arg-unicode": {
+   "class": "baseline-identical"
+  },
+  "linux-arg-with-spaces": {
+   "class": "baseline-identical"
+  },
+  "linux-compound-pipeline": {
+   "class": "baseline-identical"
+  },
+  "linux-compound-pipeline--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-compound-pipeline--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-compound-unix-service": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-core-cpp11": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-core-cpp14": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-core-cpp17": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-core-cpp17--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-core-cpp20": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-shared-runtime": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-shared-runtime--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-so-exception": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-so-exception--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-so-exception-uncaught": {
+   "class": "baseline-identical"
+  },
+  "linux-cxx-static-runtime": {
+   "class": "baseline-identical"
+  },
+  "linux-dlopen-missing": {
+   "class": "baseline-identical"
+  },
+  "linux-dlopen-plugin": {
+   "class": "baseline-identical"
+  },
+  "linux-dlopen-plugin-origin": {
+   "class": "baseline-identical"
+  },
+  "linux-env-absent": {
+   "class": "baseline-identical"
+  },
+  "linux-env-declared-present": {
+   "class": "classified-divergence"
+  },
+  "linux-env-emptied": {
+   "class": "baseline-identical"
+  },
+  "linux-env-locale-absent": {
+   "class": "baseline-identical"
+  },
+  "linux-env-locale-from-environment": {
+   "class": "baseline-identical"
+  },
+  "linux-env-locale-utf8": {
+   "class": "baseline-identical"
+  },
+  "linux-env-unicode-value": {
+   "class": "classified-divergence"
+  },
+  "linux-format-dynamic-nonpie": {
+   "class": "baseline-identical"
+  },
+  "linux-format-dynamic-pie": {
+   "class": "baseline-identical"
+  },
+  "linux-format-dynamic-pie--clang-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-format-dynamic-pie--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-format-dynamic-pie--clang-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-format-dynamic-pie--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-format-dynamic-pie--gcc-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-format-full-relro-now": {
+   "class": "baseline-identical"
+  },
+  "linux-format-large-binary": {
+   "class": "baseline-identical"
+  },
+  "linux-format-large-bss": {
+   "class": "baseline-identical"
+  },
+  "linux-format-lazy-binding": {
+   "class": "baseline-identical"
+  },
+  "linux-format-selfcontained": {
+   "class": "baseline-identical"
+  },
+  "linux-format-static": {
+   "class": "baseline-identical"
+  },
+  "linux-format-static--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-format-static-cxx-exceptions": {
+   "class": "baseline-identical"
+  },
+  "linux-format-static-pie": {
+   "class": "baseline-identical"
+  },
+  "linux-format-static-resolver": {
+   "class": "classified-divergence"
+  },
+  "linux-format-static-threads": {
+   "class": "baseline-identical"
+  },
+  "linux-format-stripped": {
+   "class": "baseline-identical"
+  },
+  "linux-format-unstripped-debug": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-atomic-rename": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-cwd-relative-asset": {
+   "class": "classified-divergence"
+  },
+  "linux-fs-directory-tree": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-fcntl-record-lock": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-flock-contention": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-mmap-file": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-mmap-large-anon": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-name-leading-dash": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-name-newline": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-name-shell-metachars": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-name-spaces": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-name-unicode": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-path-environment": {
+   "class": "classified-divergence"
+  },
+  "linux-fs-persistent-state": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-posix-shm": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-readonly-probe": {
+   "class": "classified-divergence"
+  },
+  "linux-fs-symlink": {
+   "class": "baseline-identical"
+  },
+  "linux-fs-tmpfile-mkstemp": {
+   "class": "baseline-identical"
+  },
+  "linux-gui-crash-with-window": {
+   "class": "baseline-identical"
+  },
+  "linux-gui-long-running": {
+   "class": "baseline-identical"
+  },
+  "linux-gui-no-display": {
+   "class": "baseline-identical"
+  },
+  "linux-gui-orphan-window": {
+   "class": "baseline-identical"
+  },
+  "linux-gui-two-windows": {
+   "class": "baseline-identical"
+  },
+  "linux-gui-window-mapped": {
+   "class": "baseline-identical"
+  },
+  "linux-interface-argv0": {
+   "class": "baseline-identical"
+  },
+  "linux-io-binary-bulk-16mib": {
+   "class": "baseline-identical"
+  },
+  "linux-io-binary-bulk-16mib--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-io-binary-stdout": {
+   "class": "baseline-identical"
+  },
+  "linux-io-both-streams": {
+   "class": "baseline-identical"
+  },
+  "linux-io-bulk-stdout": {
+   "class": "baseline-identical"
+  },
+  "linux-io-bulk-stdout--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-io-bulk-stdout--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-io-dup2-redirect": {
+   "class": "baseline-identical"
+  },
+  "linux-io-fifo": {
+   "class": "baseline-identical"
+  },
+  "linux-io-many-fds": {
+   "class": "baseline-identical"
+  },
+  "linux-io-pipe-roundtrip": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stderr-only": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stdin-consumed": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stdout-only": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-256mib": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-4mib": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-4mib--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-4mib--gcc-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-64mib": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-both-128mib": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-fail-64mib": {
+   "class": "baseline-identical"
+  },
+  "linux-io-stream-slow-paced": {
+   "class": "baseline-identical"
+  },
+  "linux-io-tty-detect": {
+   "class": "baseline-identical"
+  },
+  "linux-link-origin-relative": {
+   "class": "baseline-identical"
+  },
+  "linux-link-rpath": {
+   "class": "classified-divergence"
+  },
+  "linux-link-rpath-origin": {
+   "class": "baseline-identical"
+  },
+  "linux-link-runpath": {
+   "class": "classified-divergence"
+  },
+  "linux-link-symbol-versioning": {
+   "class": "classified-divergence"
+  },
+  "linux-link-symbol-versioning-origin": {
+   "class": "baseline-identical"
+  },
+  "linux-link-three-libs-ldpath": {
+   "class": "classified-divergence"
+  },
+  "linux-outcome-abort": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-assert-failure": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-atexit-order": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-0": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-1": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-126": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-127": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-128": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-130": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-137": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-2": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-200": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-255": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-42": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-exit-77": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigbus": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigfpe": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigfpe--clang-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigfpe--gcc-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigill": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigill--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigsegv": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigsegv--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-sigsegv--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-stack-overflow": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-stack-overflow--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-outcome-stack-overflow--gcc-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-daemon-double-fork": {
+   "class": "classified-divergence"
+  },
+  "linux-proc-exec-helper": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-exec-path-lookup": {
+   "class": "classified-divergence"
+  },
+  "linux-proc-exec-self": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-fork-exec": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-fork-wait": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-grandchild": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-orphan": {
+   "class": "classified-divergence"
+  },
+  "linux-proc-posix-spawn": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-session": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-threads-256": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-threads-4": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-threads-4--clang-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-threads-4--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-threads-4--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-proc-wait-signal-status": {
+   "class": "baseline-identical"
+  },
+  "linux-run-bounded-3s": {
+   "class": "baseline-identical"
+  },
+  "linux-run-bounded-500ms": {
+   "class": "baseline-identical"
+  },
+  "linux-run-cpu-bound": {
+   "class": "baseline-identical"
+  },
+  "linux-run-cpu-bound--clang-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-run-cpu-bound--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-run-cpu-bound--clang-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-run-cpu-bound--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-run-cpu-bound--gcc-O3": {
+   "class": "baseline-identical"
+  },
+  "linux-run-long-10s": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-alarm-bounded": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-catch-report": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-catch-report--clang-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-catch-report--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-catch-report--gcc-O0": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-death-sigquit": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-death-sigterm": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-ignored": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-sigchld-reaper": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-sigpipe-default": {
+   "class": "baseline-identical"
+  },
+  "linux-signal-sigpipe-ignored": {
+   "class": "baseline-identical"
+  },
+  "linux-socket-name-resolution": {
+   "class": "classified-divergence"
+  },
+  "linux-socket-tcp-loopback": {
+   "class": "baseline-identical"
+  },
+  "linux-socket-udp-loopback": {
+   "class": "baseline-identical"
+  },
+  "linux-socket-unix-named": {
+   "class": "baseline-identical"
+  },
+  "linux-socket-unix-pair": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-binary-cmdsub": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-binary-tee": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-both-to-files": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-cmdsub-oracle": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-earlyclose-4mib": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-file-4mib": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-closed-stdout": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-cmdsub": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-devnull-stdin": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-earlyclose": {
+   "class": "classified-divergence"
+  },
+  "linux-stdio-shape-file": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-file-stdin": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-pipe": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-pipe--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-shape-tee": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-slow-to-file": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-stdin-required-devnull": {
+   "class": "baseline-identical"
+  },
+  "linux-stdio-tee-4mib": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-condvar-handoff": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-crash-off-main": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-detached": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-fork-in-threaded": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-main-exits-first": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-tls": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-tls--clang-O2": {
+   "class": "baseline-identical"
+  },
+  "linux-thread-tls--gcc-O3": {
+   "class": "baseline-identical"
+  }
+ }
+}

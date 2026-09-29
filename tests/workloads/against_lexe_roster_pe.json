@@ -1,0 +1,469 @@
+{
+ "_what_this_file_is": [
+  "One line per specimen in the corpus, saying what is expected of it. This",
+  "file exists because the expectations file could not: it lists only the",
+  "specimens ALLOWED to diverge, so it can notice neither a specimen that",
+  "appears nor one that vanishes. Both happened: the lane's own header said",
+  "'112 Linux ELF specimens and 72 Windows PE specimens' while the corpora on",
+  "disk held 201 and 148, and every specimen in the difference arrived with no",
+  "recorded expectation of any kind.",
+  "",
+  "Reconciled against the corpus BEFORE anything runs. A specimen in the",
+  "corpus and not here, or here and not in the corpus, stops the pass and is",
+  "named. Every count this lane prints is derived from this file and the",
+  "index, never typed."
+ ],
+ "_classes": {
+  "baseline-identical": "Must behave under .LEXE exactly as it does outside it: same exit status, same oracle keys with the same values, same files left behind. No entry in the expectations file, and ANY divergence is a finding about the runtime.",
+  "classified-divergence": "Expected to diverge, in the specific ways named in against_lexe_expected_<corpus>.json, each with a reason and a citation. A divergence this specimen shows that is NOT named there is still a finding.",
+  "no-defensible-expectation": "Nobody can yet say what this specimen should do under .LEXE -- usually because the harness cannot reproduce the conditions its baseline was taken under, or because the corpus records no usable baseline for it at all. Carries a `why`. It is never compared: either the engine's own selection drops it (verdict is not baseline-ok) or this pass BLOCKS it. Never counted as passing and never as failing, because an unexecuted specimen is evidence in neither direction."
+ },
+ "specimens": {
+  "pe-arg-narrow-basic": {
+   "class": "baseline-identical"
+  },
+  "pe-arg-narrow-empty-and-spaces": {
+   "class": "baseline-identical"
+  },
+  "pe-arg-wide-spaces-quotes": {
+   "class": "baseline-identical"
+  },
+  "pe-arg-wide-unicode": {
+   "class": "baseline-identical"
+  },
+  "pe-cxx-bundled-runtime-dlls": {
+   "class": "baseline-identical"
+  },
+  "pe-cxx-static-libgcc-shared-libstdcxx": {
+   "class": "baseline-identical"
+  },
+  "pe-cxx-static-libstdcxx-shared-libgcc": {
+   "class": "baseline-identical"
+  },
+  "pe-cxx-static-runtime": {
+   "class": "baseline-identical"
+  },
+  "pe-cxx-static-runtime--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-explicit-missing": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-explicit-present": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-explicit-wrong-arch": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-implicit-bundled": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-implicit-missing": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-search-absolute-path": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-search-adddlldirectory": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-search-appdir-wins": {
+   "class": "baseline-identical"
+  },
+  "pe-dll-search-setdlldirectory": {
+   "class": "baseline-identical"
+  },
+  "pe-env-narrow": {
+   "class": "classified-divergence"
+  },
+  "pe-env-wide-unicode": {
+   "class": "classified-divergence"
+  },
+  "pe-exception-continue-execution": {
+   "class": "baseline-identical"
+  },
+  "pe-exception-unhandled-filter": {
+   "class": "baseline-identical"
+  },
+  "pe-exception-unhandled-filter--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-exception-vectored-ordering": {
+   "class": "baseline-identical"
+  },
+  "pe-format-console-clang": {
+   "class": "baseline-identical"
+  },
+  "pe-format-console-x64": {
+   "class": "baseline-identical"
+  },
+  "pe-format-console-x64--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-format-console-x64--mingw64-O0": {
+   "class": "baseline-identical"
+  },
+  "pe-format-console-x64-O0": {
+   "class": "baseline-identical"
+  },
+  "pe-format-console-x86": {
+   "class": "classified-divergence"
+  },
+  "pe-format-large-binary": {
+   "class": "baseline-identical"
+  },
+  "pe-format-resources": {
+   "class": "baseline-identical"
+  },
+  "pe-format-resources--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-format-stripped": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-case-insensitive": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-copy-and-move": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-cwd-relative-asset": {
+   "class": "classified-divergence"
+  },
+  "pe-fs-deep-and-long-paths": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-directory-operations": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-directory-tree": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-file-attributes": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-file-position": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-file-times": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-memory-mapped-file": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-memory-mapped-file--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-fs-overlapped-io": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-persistent-state": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-portable-file": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-sharing-mode": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-tempfile": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-unicode-path": {
+   "class": "baseline-identical"
+  },
+  "pe-fs-unicode-path--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-gui-console-subsystem-window": {
+   "class": "no-defensible-expectation",
+   "why": "the corpus records this specimen's own verdict as 'baseline-mismatch' (proton-wine: exit code varied across repeats: [-9, 0]). There is no trustworthy direct-execution baseline to compare against, so nothing can be expected of it under .LEXE either. Fix it in the generator, not here."
+  },
+  "pe-gui-gdi-pixels": {
+   "class": "baseline-identical"
+  },
+  "pe-gui-headless-worker": {
+   "class": "baseline-identical"
+  },
+  "pe-gui-peek-message-loop": {
+   "class": "baseline-identical"
+  },
+  "pe-gui-window": {
+   "class": "baseline-identical"
+  },
+  "pe-gui-window-no-display": {
+   "class": "baseline-identical"
+  },
+  "pe-interface-module-path": {
+   "class": "baseline-identical"
+  },
+  "pe-io-binary-nul": {
+   "class": "baseline-identical"
+  },
+  "pe-io-binary-nul--mingw64-O0": {
+   "class": "baseline-identical"
+  },
+  "pe-io-both-streams": {
+   "class": "baseline-identical"
+  },
+  "pe-io-bulk-both-256k": {
+   "class": "baseline-identical"
+  },
+  "pe-io-bulk-stderr-256k": {
+   "class": "baseline-identical"
+  },
+  "pe-io-bulk-stdout-256k": {
+   "class": "baseline-identical"
+  },
+  "pe-io-bulk-stdout-4m": {
+   "class": "baseline-identical"
+  },
+  "pe-io-paced-output": {
+   "class": "baseline-identical"
+  },
+  "pe-io-standard-handles": {
+   "class": "baseline-identical"
+  },
+  "pe-io-stderr-only": {
+   "class": "baseline-identical"
+  },
+  "pe-io-stdin-consumed": {
+   "class": "baseline-identical"
+  },
+  "pe-io-stdin-text-mode-ctrl-z": {
+   "class": "baseline-identical"
+  },
+  "pe-io-stdin-under-proton-run": {
+   "class": "no-defensible-expectation",
+   "why": "the corpus records this specimen's own verdict as 'blocked' (no layer was run: spec.layers=['proton-run'] intersected with the requested layers gave nothing, so this specimen has NO baseline and cannot be evidence. A specimen that was never executed must not be admitted.). There is no trustworthy direct-execution baseline to compare against, so nothing can be expected of it under .LEXE either. Fix it in the generator, not here."
+  },
+  "pe-io-stdout-only": {
+   "class": "baseline-identical"
+  },
+  "pe-ipc-named-pipe": {
+   "class": "baseline-identical"
+  },
+  "pe-ipc-named-pipe--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-layer-identity": {
+   "class": "baseline-identical"
+  },
+  "pe-mem-noaccess-page-faults": {
+   "class": "baseline-identical"
+  },
+  "pe-mem-virtual-states": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-abnormal-abort": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-abnormal-av": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-abnormal-av--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-abnormal-raise": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-abnormal-terminate": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-0": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-1": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-1000": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-127": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-2": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-255": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-256": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-42": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-looks-like-a-crash": {
+   "class": "baseline-identical"
+  },
+  "pe-outcome-exit-looks-like-a-crash--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-proc-apc": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-fibers": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-fibers--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-proc-job-object": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-self-spawn-redirect": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-suspended-thread": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-threads-4": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-threads-4--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-proc-threads-64": {
+   "class": "baseline-identical"
+  },
+  "pe-registry-absent": {
+   "class": "baseline-identical"
+  },
+  "pe-registry-enumerate": {
+   "class": "baseline-identical"
+  },
+  "pe-registry-roundtrip": {
+   "class": "baseline-identical"
+  },
+  "pe-registry-value-types": {
+   "class": "baseline-identical"
+  },
+  "pe-run-bounded-3s": {
+   "class": "baseline-identical"
+  },
+  "pe-run-bounded-500ms": {
+   "class": "baseline-identical"
+  },
+  "pe-run-cpu-bound": {
+   "class": "baseline-identical"
+  },
+  "pe-run-cpu-bound--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-run-cpu-bound--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-run-cpu-bound--mingw64-O0": {
+   "class": "baseline-identical"
+  },
+  "pe-socket-error-paths": {
+   "class": "baseline-identical"
+  },
+  "pe-socket-name-resolution": {
+   "class": "baseline-identical"
+  },
+  "pe-socket-select-nonblocking": {
+   "class": "baseline-identical"
+  },
+  "pe-socket-tcp-loopback": {
+   "class": "baseline-identical"
+  },
+  "pe-socket-tcp6-loopback": {
+   "class": "baseline-identical"
+  },
+  "pe-socket-udp-loopback": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-condition-variable": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-condition-variable--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-event-handoff": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-interlocked": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-interlocked--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-interlocked--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-sync-named-mutex": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-semaphore": {
+   "class": "baseline-identical"
+  },
+  "pe-sync-wait-multiple": {
+   "class": "baseline-identical"
+  },
+  "pe-tls-both-mechanisms": {
+   "class": "baseline-identical"
+  },
+  "pe-tls-both-mechanisms--clang-mingw64-O2": {
+   "class": "baseline-identical"
+  },
+  "pe-tls-both-mechanisms--mingw32-O2": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-bootstrap-only": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-chain-wait": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-crash-at-depth": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-crash-child": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-deep-chain": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-deep-orphan": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-detach-helper": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-fanout": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-grandchild-survives": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-gui-leaf": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-gui-top": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-launcher-exits": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-no-wait-crash": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-orphan-tree": {
+   "class": "classified-divergence"
+  },
+  "pe-tree-redirect-to-file": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-split-stdio": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-supervisor-restart": {
+   "class": "baseline-identical"
+  },
+  "pe-tree-wait-timeout": {
+   "class": "baseline-identical"
+  }
+ }
+}
