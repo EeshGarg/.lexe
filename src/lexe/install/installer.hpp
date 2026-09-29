@@ -250,7 +250,15 @@ public:
 private:
     /// recover()'s body, assuming the per-app mutation lock is already held —
     /// used by install() (which holds the lock) and by recover()/recover_all().
-    void recover_locked(const std::string& id);
+    /// Returns the version it completed FORWARD, or nullopt when it found
+    /// nothing to do or rolled a transaction back.
+    ///
+    /// The caller needs to know because `install` runs recovery first, and
+    /// what it then reports depends on who did the work. An install that
+    /// healed an interrupted one and an install that found the state already
+    /// correct end in the same place by different routes, and only one of them
+    /// changed anything.
+    std::optional<std::string> recover_locked(const std::string& id);
 
     Paths paths_;
     std::shared_ptr<OperationLockManager> locks_;

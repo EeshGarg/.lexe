@@ -496,7 +496,7 @@ InstallResult Installer::install(const fs::path& lexe_file,
     // Finish or roll back any transaction a previous run left interrupted for
     // THIS app before starting a new one (HARDENING.md §A/§C). Done UNDER the
     // mutation lock, so recovery never races another operation.
-    recover_locked(manifest.id);
+    const std::optional<std::string> healed = recover_locked(manifest.id);
 
     const Registry registry(paths_);
     const fs::path app_dir = registry.app_dir(manifest.id); // validates id
@@ -561,6 +561,33 @@ InstallResult Installer::install(const fs::path& lexe_file,
             // No usable current pointer — allow the install to self-heal.
         }
         if (previous_version == manifest.version) {
+            // ... unless THIS call is what made it current.
+            //
+            // `install` opens by running recovery, so an install interrupted at
+            // or after promotion is completed forward before the new request is
+            // considered. When that happens, the application arrives here
+            // already at the requested version -- and reporting a conflict
+            // would be exactly backwards. An evidence audit hit this from the
+            // other side: after a SIGKILLed first install, `lexe list` showed
+            // nothing installed, and `lexe install <same package>` then exited
+            // 6 saying it was "already installed and current". The end state
+            // was right and the healing was good; the account of it was wrong.
+            //
+            // It matters beyond wording because exit 6 is load-bearing
+            // (docs/ERRORS.md §6): it means the requested state ALREADY held
+            // and this call did nothing. A provisioning script that treats 6 as
+            // "no action taken, nothing to log" was being told the opposite of
+            // the truth on the one occasion worth logging.
+            //
+            // Success is the honest answer, and it is a complete one:
+            // `recover_locked` finishes the whole transaction -- manifest,
+            // hashes, entrypoint mode, desktop integration, installation
+            // record, atomic activation and trust persistence -- so there is
+            // nothing an ordinary install would additionally have done.
+            if (healed.has_value() && *healed == manifest.version) {
+                return InstallResult{manifest.id, manifest.version, app_dir};
+            }
+
             // BusyError -> exit 6, "busy, or an OPERATION CONFLICT". Not the
             // untyped catch-all, which is exit 1 and means "failed for a reason
             // with no more specific code".
@@ -834,16 +861,16 @@ void Installer::recover(const std::string& id) {
     recover_locked(id);
 }
 
-void Installer::recover_locked(const std::string& id) {
+std::optional<std::string> Installer::recover_locked(const std::string& id) {
     const Registry registry(paths_);
     TransactionJournal journal;
     try {
         journal = read_journal(paths_, id);
     } catch (const Error&) {
         // An unreadable/corrupt journal: leave the app as-is rather than guess.
-        return;
+        return std::nullopt;
     }
-    if (journal.phase == TxnPhase::None) return;
+    if (journal.phase == TxnPhase::None) return std::nullopt;
 
     InstallTransaction txn(paths_, id, journal.target_version);
 
@@ -854,7 +881,7 @@ void Installer::recover_locked(const std::string& id) {
         journal.phase == TxnPhase::Staged ||
         journal.phase == TxnPhase::Verified) {
         txn.abort();
-        return;
+        return std::nullopt;
     }
 
     // Promoted / RecordUpdated → complete forward. The version + meta are in
@@ -866,7 +893,7 @@ void Installer::recover_locked(const std::string& id) {
         !fs::is_regular_file(meta / "hashes.json", ec)) {
         // Promotion metadata is gone — cannot complete; fall back to rollback.
         txn.abort();
-        return;
+        return std::nullopt;
     }
     const std::vector<std::uint8_t> manifest_bytes =
         util::slurp(meta / "lexe.json");
@@ -927,6 +954,10 @@ void Installer::recover_locked(const std::string& id) {
     }
 
     txn.commit();
+    // Completed FORWARD. The caller -- `install` in particular -- needs this to
+    // describe what happened: the application became installed and current
+    // because of THIS call, not before it.
+    return journal.target_version;
 }
 
 void Installer::recover_all() {
