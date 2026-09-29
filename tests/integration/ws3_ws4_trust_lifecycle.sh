@@ -18,19 +18,40 @@ LEXE="${1:-${LEXE_BUILD_DIR:-./build}/lexe}"
 [[ -x "$LEXE" ]] || { echo "FATAL: lexe not found at $LEXE" >&2; exit 2; }
 LEXE="$(readlink -f "$LEXE")"
 
-WORK="$(mktemp -d /tmp/lexe-trust.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/lexe-trust.XXXXXX")"
 export LEXE_HOME="$WORK/home"; mkdir -p "$LEXE_HOME"
 ID="com.example.trust"; STEP=0; FAILED=0
 trap 'rm -rf "$WORK"' EXIT
+
+# Where each command's stdout and stderr land, and why they are not /tmp/tx.out.
+#
+# Every assertion in this file reads those two files. With fixed names in the
+# shared /tmp they were a rendezvous point between unrelated runs: two lanes in
+# parallel overwrite each other's output mid-assertion, and a run that dies
+# before writing them leaves the PREVIOUS run's output in place, so `grep_out`
+# happily finds the string it wanted in bytes produced by a different tree. That
+# is not hypothetical here -- a stale /tmp file from an earlier WSL session once
+# held a complete, plausible summary of a different tree and was nearly cited as
+# evidence. /tmp is also wiped by a WSL restart, which has happened four times.
+#
+# Inside $WORK they are private to this process and removed with it.
+TX_OUT="$WORK/tx.out"; TX_ERR="$WORK/tx.err"
+: > "$TX_OUT"; : > "$TX_ERR"
 
 step()  { STEP=$((STEP+1)); echo; echo "== step $STEP: $* =="; }
 pass()  { echo "  PASS: $*"; }
 fail()  { echo "  FAIL: $*" >&2; FAILED=$((FAILED+1)); }
 expect_exit() { local want="$1"; shift; echo "  \$ lexe $* (expect $want)";
-  "$LEXE" "$@" >/tmp/tx.out 2>/tmp/tx.err; local got=$?
-  sed 's/^/    | /' /tmp/tx.out; sed 's/^/    ! /' /tmp/tx.err
+  "$LEXE" "$@" >"$TX_OUT" 2>"$TX_ERR"; local got=$?
+  sed 's/^/    | /' "$TX_OUT"; sed 's/^/    ! /' "$TX_ERR"
   [[ "$got" == "$want" ]] && pass "exit $got" || fail "exit $got, wanted $want"; }
-grep_out() { grep -qi "$1" /tmp/tx.out /tmp/tx.err && pass "saw: $1" || fail "missing: $1"; }
+# An empty needle would make `grep -qi` match every line, so every grep_out in
+# the file would pass unconditionally. Cheap to rule out, and the shape has
+# already cost this project a whole lane (tests/lifecycle/lib.sh's lc_kill_at).
+grep_out() {
+  if [[ -z "$1" ]]; then fail "grep_out called with an empty needle — that matches everything"; return 1; fi
+  grep -qi -- "$1" "$TX_OUT" "$TX_ERR" && pass "saw: $1" || fail "missing: $1"
+}
 assert_file()   { [[ -e "$1" ]] && pass "exists: $1" || fail "missing: $1"; }
 assert_absent() { [[ ! -e "$1" ]] && pass "absent: $1" || fail "present: $1"; }
 
@@ -86,7 +107,7 @@ make_pkg 2.0.0 "$KEYS/B.json" "$WORK/b2.lexe"
 assert_file "$WORK/a1.lexe"; assert_file "$WORK/b2.lexe"
 
 step "install preview shows first-seen, not-verified, fingerprint"
-printf 'y\n' | "$LEXE" install "$WORK/a1.lexe" >/tmp/tx.out 2>/tmp/tx.err
+printf 'y\n' | "$LEXE" install "$WORK/a1.lexe" >"$TX_OUT" 2>"$TX_ERR"
 grep_out "first seen"
 grep_out "not independently verified"
 grep_out "Signing key fingerprint"
@@ -96,12 +117,12 @@ assert_file "$LEXE_HOME/trust/$ID.json"
 expect_exit 0 trust show "$ID"; grep_out "known key"
 
 step "trust show --json: known, identity NOT verified"
-"$LEXE" trust show "$ID" --json >/tmp/tx.out 2>/tmp/tx.err
+"$LEXE" trust show "$ID" --json >"$TX_OUT" 2>"$TX_ERR"
 grep_out '"localKeyState": *"known"'
 grep_out '"identityVerified": *false'
 
 step "same-key update reports a KNOWN key and installs"
-printf 'y\n' | "$LEXE" install "$WORK/a2.lexe" >/tmp/tx.out 2>/tmp/tx.err
+printf 'y\n' | "$LEXE" install "$WORK/a2.lexe" >"$TX_OUT" 2>"$TX_ERR"
 grep_out "known publisher key"
 expect_exit 0 run "$ID"
 

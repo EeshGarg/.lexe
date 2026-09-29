@@ -24,9 +24,18 @@ if [[ ! -x "$LEXE" ]]; then
 fi
 LEXE="$(readlink -f "$LEXE")"
 
-WORK="$(mktemp -d /tmp/lexe-lifecycle.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/lexe-lifecycle.XXXXXX")"
 export LEXE_HOME="$WORK/home"
 mkdir -p "$LEXE_HOME"
+
+# expect_exit's capture files. They used to be /tmp/lx.out and /tmp/lx.err --
+# fixed names in a directory shared with every other run on the machine, so two
+# lanes in parallel could overwrite each other's output between the command and
+# the assertion that reads it, and a run that died early left the PREVIOUS run's
+# bytes in place for the next one to read as its own. Private to this process
+# now, and removed with $WORK.
+LX_OUT="$WORK/lx.out"; LX_ERR="$WORK/lx.err"
+: > "$LX_OUT"; : > "$LX_ERR"
 ID="com.example.lifecycle"
 STEP=0
 FAILED=0
@@ -43,8 +52,8 @@ run()    { echo "  \$ lexe $*"; "$LEXE" "$@"; }
 expect_exit() { # <expected> <args...>
   local want="$1"; shift
   echo "  \$ lexe $* (expect exit $want)"
-  "$LEXE" "$@" >/tmp/lx.out 2>/tmp/lx.err; local got=$?
-  sed 's/^/    | /' /tmp/lx.out; sed 's/^/    ! /' /tmp/lx.err
+  "$LEXE" "$@" >"$LX_OUT" 2>"$LX_ERR"; local got=$?
+  sed 's/^/    | /' "$LX_OUT"; sed 's/^/    ! /' "$LX_ERR"
   if [[ "$got" == "$want" ]]; then pass "exit $got"; else fail "exit $got, wanted $want"; fi
 }
 assert_file()    { if [[ -e "$1" ]]; then pass "exists: $1"; else fail "missing: $1"; fi; }

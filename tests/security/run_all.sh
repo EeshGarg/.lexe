@@ -97,7 +97,11 @@ sec_case() {
     fi
 
     # 2. it says why, in terms that are not just "failed".
-    if [[ -n "$expect" ]] && ! grep -qiF "$expect" <<<"$out"; then
+    # `-n "$expect"` is what keeps an empty expectation from becoming a
+    # tautology here: `grep -qiF ""` matches every line, so an omitted or
+    # blank third argument would silently satisfy "the reason names the
+    # problem" for every hostile package in the lane.
+    if [[ -n "$expect" ]] && ! grep -qiF -- "$expect" <<<"$out"; then
         fail "$name: the reason names the problem" \
             "expected the reason to mention: $expect" \
             "actual: $(head -3 <<<"$out")"
@@ -154,22 +158,45 @@ PY
 
 # ------------------------------------------------- 1. container path attacks
 
-sec_rewrite "$GOOD" "$WORK/traversal.lexe" '
+# The escape target is unique to this run, and it used to be a fixed
+# /tmp/escaped.txt. Two problems with a fixed name, both of which turn this
+# assertion into something other than what it claims: a file left by ANY earlier
+# run or any other lane fails it for a reason that has nothing to do with this
+# package, and two lanes running at once share one target. /tmp is also wiped by
+# a WSL restart, which has happened four times here.
+#
+# Proving the starting state matters as much as the unique name: `acc_file_absent`
+# on a path nothing ever aimed at is satisfied by the universe, so the check
+# below first establishes that the target is absent because this run made it so.
+SEC_ESCAPE="${TMPDIR:-/tmp}/lexe-escape-$$-${RANDOM}.txt"
+rm -f "$SEC_ESCAPE"
+acc_file_absent "$SEC_ESCAPE" \
+    "the traversal target starts out absent, so its absence afterwards means something"
+sec_rewrite "$GOOD" "$WORK/traversal.lexe" "
 for info, data in items:
     out.append((info, data))
-evil = zipfile.ZipInfo("payload/../../../../tmp/escaped.txt")
-out.append((evil, b"escaped\n"))
-'
+evil = zipfile.ZipInfo('payload/../../../..$SEC_ESCAPE')
+out.append((evil, b'escaped\\n'))
+"
 sec_case "a ../ entry that climbs out of the payload" "$WORK/traversal.lexe"
-acc_file_absent "/tmp/escaped.txt" \
+acc_file_absent "$SEC_ESCAPE" \
     "and nothing was written to the path it aimed at"
+rm -f "$SEC_ESCAPE"
 
-sec_rewrite "$GOOD" "$WORK/absolute.lexe" '
+SEC_ABSOLUTE="${TMPDIR:-/tmp}/lexe-absolute-$$-${RANDOM}.txt"
+rm -f "$SEC_ABSOLUTE"
+sec_rewrite "$GOOD" "$WORK/absolute.lexe" "
 for info, data in items:
     out.append((info, data))
-out.append((zipfile.ZipInfo("/etc/lexe-owned.txt"), b"absolute\n"))
-'
+out.append((zipfile.ZipInfo('$SEC_ABSOLUTE'), b'absolute\\n'))
+"
 sec_case "an absolute entry path" "$WORK/absolute.lexe"
+# The traversal case checked its target and the absolute case did not, although
+# an absolute entry is the more direct escape of the two. It aimed at
+# /etc/lexe-owned.txt, which is unwritable without root, so an unprivileged run
+# could not have told a working guard from a missing one.
+acc_file_absent "$SEC_ABSOLUTE" \
+    "and the absolute path it named was not created either"
 
 sec_rewrite "$GOOD" "$WORK/backslash.lexe" '
 for info, data in items:
