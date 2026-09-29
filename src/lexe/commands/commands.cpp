@@ -306,6 +306,38 @@ std::optional<std::string> retained_data_owner(const Registry& registry,
     return prior;
 }
 
+/// Did this machine ever hold an installation of `id`?
+///
+/// Nothing records "was installed, now is not" directly, so this reads the two
+/// residues an install leaves OUTSIDE the application directory and that
+/// `remove` deliberately does not delete:
+///
+///   * the local trust record (`trust/<id>.json`) with a bound publisher key.
+///     `TrustStore::record_accept` is called from exactly two places, both of
+///     them AFTER a committed install, so a record carrying a key means this
+///     App ID was installed here. A keyless record is NOT evidence: `lexe trust
+///     block <id>` creates one for an App ID that was never installed.
+///   * retained application data. `remove` without `--purge-data` leaves it on
+///     purpose, and it only exists because an installed application wrote it.
+///     Kept as a second witness because `lexe trust forget --force` can delete
+///     the first.
+///
+/// A CORRUPT trust record answers false. It is evidence that something wrote a
+/// record for this id, but not evidence of what — and inferring an install from
+/// a document we could not read would be exactly the kind of claim this runtime
+/// does not make. The caller then falls back to "not found", which is the
+/// answer it gave before this function existed.
+bool was_installed_here(const Paths& paths, const Registry& registry,
+                        const std::string& id) {
+    if (registry.has_retained_data(id)) return true;
+    try {
+        const std::optional<TrustRecord> rec = TrustStore(paths).read(id);
+        return rec.has_value() && !rec->public_key.empty();
+    } catch (const CorruptTrustError&) {
+        return false;
+    }
+}
+
 /// Whether `lexe install` would refuse an already-verified package for a purely
 /// LOCAL reason, plus the shared wording for saying so.
 ///
@@ -874,6 +906,39 @@ int cmd_remove(const std::vector<std::string>& args) {
     const Paths paths = Paths::detect();
     const Registry registry(paths);
     if (!registry.is_installed(id)) {
+        // Two different facts shared one code AND one sentence. `remove <typo>`
+        // and `remove <application this machine removed an hour ago>` both
+        // exited 4 saying "application not installed: <id>", so a caller could
+        // tell them apart on neither channel it can read. An independent pass
+        // measured 4 in 40 of 40 forced `uninstall||uninstall` races, where the
+        // loser is always in the second position.
+        //
+        // The second one is not an error about the argument: the App ID is
+        // real, this machine knows it, and the state the command asks for
+        // already holds. That is the operation conflict docs/ERRORS.md §6
+        // describes -- the same category and the same argument used for
+        // installing an already-current version (bdf3156) and for rolling back
+        // with nowhere to go (28e174d).
+        //
+        // Not exit 0, for §6's reason: exit 0 from `remove` asserts that this
+        // invocation removed the application, and `lexe remove app && rm -rf
+        // /srv/app-data` should not be told a removal happened here that did
+        // not. Not 4 either, which is what a mistyped id still gets, asserted
+        // beside this in the tests.
+        if (was_installed_here(paths, registry, id)) {
+            throw BusyError(
+                "nothing to remove: " + id +
+                    " is not installed (this machine removed it earlier)",
+                "Nothing changed because the requested state already holds. "
+                "This App ID was installed here and is not installed now" +
+                    std::string(registry.has_retained_data(id)
+                                    ? "; its application data is still "
+                                      "retained, and `lexe remove " +
+                                          id + " --purge-data` deletes that"
+                                    : "") +
+                    ". An App ID this machine has never installed would have "
+                    "exited 4.");
+        }
         throw NotFoundError("application not installed: " + id);
     }
     if (parsed.flags.count("--yes") == 0) {

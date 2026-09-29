@@ -1049,12 +1049,36 @@ TEST_CASE("remove honors the prompt, --yes, and --purge-data") {
     CHECK_FALSE(fs::exists(registry.app_dir(kId)));
     CHECK(fs::is_regular_file(data_file));
 
+    // Removing it AGAIN is an operation conflict (6), not a lookup failure (4).
+    //
+    // Both cases used to be 4 with the identical sentence "application not
+    // installed: <id>", so a caller could separate "fix your App ID" from "this
+    // machine already removed that application" on neither channel it can read
+    // -- and the second is the position the loser of every `remove||remove`
+    // race is in. Same category and same argument as install-already-current
+    // (docs/ERRORS.md §6) and rollback-with-nowhere-to-go.
+    //
+    // Here the witness is the RETAINED DATA left by the app-only removal above.
+    const auto again = run_cli({"remove", kId, "--yes"});
+    CHECK(again.exit_code == 6);
+    CHECK(again.exit_code != 4); // stated apart: the DISTINCTION is the point
+    CHECK(fs::is_regular_file(data_file)); // and it removed nothing
+
     // --purge-data removes the data directory too (FORMAT-0.1 §9).
     REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
     const auto purged = run_cli({"remove", kId, "--purge-data", "--yes"});
     CHECK(purged.exit_code == 0);
     CHECK_FALSE(fs::exists(paths.data_dir() / kId));
 
+    // Still 6 with the data gone: the surviving witness is now the local trust
+    // record, which `remove` deliberately does not delete. A test that only
+    // covered the retained-data case would hold the other witness constant and
+    // so could not tell whether it worked at all.
+    CHECK(run_cli({"remove", kId, "--yes"}).exit_code == 6);
+
+    // An App ID this machine never installed is still 4, in this same case,
+    // because `CHECK(rc == 6)` on its own is satisfied by a `remove` that
+    // always answers 6.
     CHECK(run_cli({"remove", "com.example.absent", "--yes"}).exit_code == 4);
 }
 
