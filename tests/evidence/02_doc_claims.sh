@@ -55,6 +55,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT" || exit 2
 
 fail=0
+stale_binary=0
 blocked=0
 
 say()  { printf '  %s\n' "$*"; }
@@ -209,6 +210,37 @@ say '3. published regression totals match the suite'
 dirty="$(git status --porcelain 2>/dev/null | head -1)"
 BIN="${LEXE_TEST_BIN:-${LEXE_BUILD_DIR:-./build}/lexe_tests}"
 
+# Name the artifact, and say how old it is relative to the source.
+#
+# This check compares a NUMBER IN A DOCUMENT against a NUMBER FROM A BINARY,
+# and it never said which binary. Run standalone against a stale tree it
+# reported a mismatch that looked like a documentation defect and was an
+# out-of-date build -- which happened, and cost real time. The whole point of
+# this lane is evidence provenance, so a check inside it that cannot name its
+# own evidence is the failure it exists to catch.
+#
+# The mtime comparison is a heuristic and is labelled as one: it cannot prove a
+# binary was built from the current source, only notice when it demonstrably
+# was not. A newer binary is not proof of a matching build -- it is merely the
+# absence of this particular reason to distrust it.
+provenance() {
+    local newest_src
+    newest_src="$(find src tests CMakeLists.txt -type f -newer "$BIN" 2>/dev/null | head -1)"
+    printf '  evidence under test:\n'
+    printf '    binary   %s\n' "$BIN"
+    printf '    built    %s\n' "$(date -r "$BIN" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'unknown')"
+    printf '    commit   %s%s\n' \
+        "$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" \
+        "$([[ -n "$(git status --porcelain 2>/dev/null)" ]] && echo ' (working tree DIRTY)' || echo ' (clean)')"
+    if [[ -n "$newest_src" ]]; then
+        printf '    %sSTALE%s: %s is newer than the binary -- rebuild before trusting a mismatch\n' \
+            "" "" "$newest_src"
+        return 1
+    fi
+    printf '    freshness: no tracked source is newer than the binary\n'
+    return 0
+}
+
 if [[ -n "$dirty" ]]; then
     say 'skipped: the working tree has uncommitted changes.'
     say '        The published totals describe a commit, not a working tree, so'
@@ -218,6 +250,8 @@ elif [[ ! -x "$BIN" ]]; then
     say '        (build first: cmake --build build -j6. Reported as BLOCKED, never as a pass:'
     say '         a total nobody observed is not a total anybody verified.)'
 else
+    # State the evidence before drawing a conclusion from it.
+    provenance || stale_binary=1
     # doctest's tail: "assertions: 9382 | 9382 passed | 0 failed |"
     summary="$("$BIN" --no-colors 2>/dev/null | tail -20)"
     real_cases="$(printf '%s\n' "$summary" | grep -oE 'test cases: *[0-9]+' | grep -oE '[0-9]+' | head -1)"
@@ -232,6 +266,12 @@ else
             ok "regression totals: $doc_cases cases / $doc_asserts assertions, as the suite reports"
         else
             bad "regression totals: $ALPHA publishes $doc_cases/$doc_asserts, the suite reports $real_cases/$real_asserts"
+            # Do not let a stale artifact be read as a documentation defect.
+            if [[ "${stale_binary:-0}" == "1" ]]; then
+                say '        ...but the binary above is OLDER than tracked source, so this'
+                say '        mismatch may be the build, not the document. Rebuild and re-run'
+                say '        before believing it.'
+            fi
         fi
     fi
 fi
