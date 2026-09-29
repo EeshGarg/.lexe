@@ -1112,11 +1112,27 @@ void Installer::rollback(const std::string& id) {
         }
     }
     if (!target.has_value()) {
-        throw NotFoundError(
+        // BusyError -> exit 6, "busy, or an operation conflict". NOT 4.
+        //
+        // 4 is "not found", and `rollback <typo>` already returns it -- so a
+        // script could not tell "fix your App ID" from "this application is
+        // installed and there is simply nothing earlier to go back to". Those
+        // are different facts with different remedies, and the second one is not
+        // an error about the argument at all.
+        //
+        // Same argument docs/ERRORS.md §6 makes for `install` of an
+        // already-current version, and the same conclusion: the requested state
+        // already holds, which is an operation conflict. An independent sweep
+        // measured this at 4 in 40 of 40 forced `rollback||rollback` races,
+        // where the loser is in exactly this position.
+        throw BusyError(
             "no previous version of " + id + " to roll back to (current is " +
                 current + ")",
-            "Rollback returns to the version an update replaced, and only while "
-            "it is still on disk. `lexe gc` removes retained versions.");
+            "Nothing changed because there is nowhere to go: this application "
+            "is installed and has no retained earlier version. Rollback returns "
+            "to the version an update replaced, and only while it is still on "
+            "disk -- `lexe gc` removes retained versions. A mistyped App ID "
+            "would have exited 4.");
     }
 
     registry.set_current_version(id, *target);

@@ -971,8 +971,16 @@ TEST_CASE("update flow: --check, apply, up to date, --all, rollback") {
     CHECK(rolled.exit_code == 0);
     CHECK(contains(rolled.stdout_text, "1.0.0"));
     CHECK(registry.current_version(kId) == "1.0.0");
-    // …and a second rollback has nowhere to go.
-    CHECK(run_cli({"rollback", kId}).exit_code == 4);
+    // …and a second rollback has nowhere to go: exit 6, an OPERATION CONFLICT,
+    // not 4. `rollback <typo>` is 4, so if this were 4 too a script could not
+    // tell "fix your App ID" from "this app is installed and there is nothing
+    // earlier to return to". Same reasoning as install-already-current in
+    // docs/ERRORS.md §6.
+    const auto nowhere = run_cli({"rollback", kId});
+    CHECK(nowhere.exit_code == 6);
+    CHECK(nowhere.exit_code != 4); // the distinction IS the point
+    // And the neighbouring fact stays true: an unknown id is still 4.
+    CHECK(run_cli({"rollback", "com.example.definitely-not-installed"}).exit_code == 4);
 }
 
 TEST_CASE("update: bad invocations, missing source, --all skips") {

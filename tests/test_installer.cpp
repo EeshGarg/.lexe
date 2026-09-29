@@ -374,8 +374,10 @@ TEST_CASE("rollback: newest retained older version, semver-lite order") {
     installer.rollback(kId);
     CHECK(registry.current_version(kId) == "1.2.0");
 
-    // Nothing older than 1.2.0 is retained.
-    CHECK_THROWS_AS(installer.rollback(kId), NotFoundError);
+    // Nothing older than 1.2.0 is retained. BusyError (exit 6, an operation
+    // conflict), not NotFoundError -- the application is found, there is simply
+    // nowhere to go. A mistyped id still raises NotFoundError, asserted below.
+    CHECK_THROWS_AS(installer.rollback(kId), BusyError);
     CHECK(registry.current_version(kId) == "1.2.0");
 
     // Rollback deletes no version directory.
@@ -400,7 +402,10 @@ TEST_CASE("rollback: single version or unknown app is NotFoundError") {
     CHECK_THROWS_AS(installer.rollback("com.example.nope"), NotFoundError);
 
     installer.install(make_versioned_package(work.dir, key, "1.0.0"));
-    CHECK_THROWS_AS(installer.rollback(kId), NotFoundError);
+    // Installed, single version: nowhere to roll back TO is a conflict, not a
+    // lookup failure. The unknown-id case above is still NotFoundError, and the
+    // two being different types is the whole point.
+    CHECK_THROWS_AS(installer.rollback(kId), BusyError);
     CHECK(Registry(paths).current_version(kId) == "1.0.0");
 }
 
