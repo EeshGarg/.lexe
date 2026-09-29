@@ -28,6 +28,13 @@ lc_setup
 
 v1="$(lc_build_version 1.0.0)" || { fail "build v1"; acc_summary; exit $?; }
 v2="$(lc_build_version 2.0.0)" || { fail "build v2"; acc_summary; exit $?; }
+v3="$(lc_build_version 3.0.0)" || { fail "build v3"; acc_summary; exit $?; }
+
+# Where a version lands on disk. The interruption triggers watch these, because
+# `lexe install` prints nothing at all until it has finished — so there is no
+# output to wait for, and waiting for output meant waiting for "Installed ...",
+# which is the operation announcing that there is nothing left to interrupt.
+LC_VERSIONS="$LEXE_HOME/apps/$LC_APP_ID/versions"
 
 # --------------------------------------------- 1. killed during a first install
 #
@@ -35,15 +42,38 @@ v2="$(lc_build_version 2.0.0)" || { fail "build v2"; acc_summary; exit $?; }
 # working" or "absent". A half-extracted version directory that `lexe list`
 # reports is the failure.
 
-lc_kill_at "" KILL -- install "$v1" --yes --trust
+lc_kill_at "path:$LC_VERSIONS/*" KILL -- install "$v1" --yes --trust
+lc_interrupt_report "killed during first install"
 lc_assert_coherent "killed during first install"
 
 if lc_is_installed; then
     note "the install completed before the signal landed; coherence still checked"
 else
-    pass "a killed first install left nothing behind, not a partial one"
-    acc_file_absent "$(lc_installed_entry 1.0.0)" \
-        "no half-extracted payload was left in place"
+    pass "a killed first install left nothing behind that claims to be installed"
+    # NOT `acc_file_absent` on the entrypoint. That assertion had never once been
+    # evaluated -- the kill used to land after the install had announced its own
+    # completion, so `lc_is_installed` was true and this branch was dead code.
+    # The first run in which the interruption actually landed mid-extraction
+    # showed it failing, on a half-written payload under versions/1.0.0/bin.
+    #
+    # And it is asking for something no design can promise: the process was
+    # SIGKILLed, so no handler ran and no bytes could be swept. This block's own
+    # criterion says so two dozen lines up -- "a half-extracted version directory
+    # that `lexe list` reports is the failure". Bytes on disk that nothing claims
+    # are debris; the invariant is about CLAIMS.
+    #
+    # So assert what the invariant forbids, and give it teeth the file check
+    # never had: the debris must not be REACHABLE. A half-extracted payload that
+    # `lexe run` will execute is the failure this case exists to rule out.
+    acc_equals "$(lc_current_version)" "" \
+        "no version is recorded as current after the killed install"
+    killed_run_out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"
+    killed_run_status=$?
+    acc_refused "$killed_run_status" \
+        "the half-extracted payload is NOT launchable -- lexe refuses it" \
+        "$killed_run_out"
+    acc_equals "$(lc_starts_logged)" "0" \
+        "and it was never executed: nothing recorded a start"
 fi
 
 # The operation must be COMPLETABLE after an interruption, rather than leaving
@@ -52,8 +82,12 @@ fi
 # is then refused on purpose ("already installed and current; use `lexe repair`").
 # lc_complete_install takes whichever path applies and insists on the same end
 # state either way.
-acc_true "$(lc_complete_install 1.0.0 "$v1"; echo $?)" \
-    "the install can be completed after being interrupted, and 1.0.0 runs"
+# Run directly, not inside `$(...)`: a command substitution is a subshell, and
+# anything lc_complete_install learns about WHY it failed dies with it.
+lc_complete_install 1.0.0 "$v1"; complete_status=$?
+acc_true "$complete_status" \
+    "the install can be completed after being interrupted, and 1.0.0 runs" \
+    "$LC_COMPLETE_DETAIL"
 lc_assert_coherent "after completing the install"
 
 printf 'user settings\n' > "$LEXE_HOME/data/$LC_APP_ID/profile.conf"
@@ -63,7 +97,8 @@ printf 'user settings\n' > "$LEXE_HOME/data/$LC_APP_ID/profile.conf"
 # Now there IS a previous valid state, so the invariant has teeth: the outcome
 # must be 1.0.0 working or 2.0.0 working, never neither.
 
-lc_kill_at "" KILL -- install "$v2" --yes
+lc_kill_at "path:$LC_VERSIONS/2.0.0" KILL -- install "$v2" --yes
+lc_interrupt_report "killed during update"
 lc_assert_coherent "killed during update"
 ran="$(lc_running_version)"
 acc_true "$([[ "$ran" == "1.0.0" || "$ran" == "2.0.0" ]] && echo 0 || echo 1)" \
@@ -71,14 +106,36 @@ acc_true "$([[ "$ran" == "1.0.0" || "$ran" == "2.0.0" ]] && echo 0 || echo 1)" \
 acc_file_exists "$LEXE_HOME/data/$LC_APP_ID/profile.conf" \
     "and the user's data survived the interruption"
 
-acc_true "$(lc_complete_install 2.0.0 "$v2"; echo $?)" \
-    "the update can be completed after being interrupted, and 2.0.0 runs"
+lc_complete_install 2.0.0 "$v2"; complete_status=$?
+acc_true "$complete_status" \
+    "the update can be completed after being interrupted, and 2.0.0 runs" \
+    "$LC_COMPLETE_DETAIL"
 lc_assert_coherent "after completing the update"
 
 # --------------------------------------------- 3. an application running during an update
 #
 # A detached application holds a lease on its version. Updating underneath it
 # must not remove the files it is executing from.
+#
+# WHAT THIS SECTION USED TO DO, AND WHY IT PROVED NOTHING. It installed $v1 —
+# 1.0.0 — while 2.0.0 was current and running. That is a DOWNGRADE, and the
+# version-ordering guard refuses it before any lease, lock or concurrency code
+# is reached:
+#
+#     lexe: refusing to move org.lexe.lifecycle.subject backwards from 2.0.0
+#           to 1.0.0
+#       hint: ... re-run with `--allow-downgrade`
+#
+# Exit 1, nothing installed, nothing extracted, nothing contended. So the
+# section titled "an application running during an update" tested the downgrade
+# check, and its one real assertion — that the running version's files are still
+# there — was satisfied trivially, because no update had ever started. The
+# concurrency path it was written for had never once been executed.
+#
+# 3.0.0 is a genuine update, so the install proceeds and the assertions below
+# are about the thing they name. The first of them exists to keep this honest:
+# if some future guard turns the install away before concurrency again, it says
+# so rather than passing on the strength of an install that never happened.
 
 "$LEXE" run "$LC_APP_ID" --detach -- --sleep 20 >/dev/null 2>&1
 sleep 2
@@ -87,9 +144,16 @@ if [[ -z "$running_pid" ]]; then
     skip "could not keep the application running long enough to update underneath it"
 else
     pass "the application is running (pid $running_pid) with a lease on 2.0.0"
-    "$LEXE" install "$v1" --yes >/dev/null 2>&1
+    update_out="$("$LEXE" install "$v3" --yes 2>&1)"
     install_status=$?
     note "install while running exited $install_status"
+
+    acc_true "$(grep -qiE 'refus|downgrade|backwards' <<<"$update_out" && echo 1 || echo 0)" \
+        "the update reached the concurrency path instead of being turned away by a version guard" \
+        "$update_out"
+    acc_true "$([[ -d "$(lc_version_dir 3.0.0)" ]] && echo 0 || echo 1)" \
+        "the new version was really extracted while the old one was executing"
+
     # Either outcome is defensible — refuse while busy, or install and leave the
     # running version's files alone. Deleting the files of a running process is
     # not.
@@ -97,6 +161,8 @@ else
     if [[ -n "$still_running" ]]; then
         acc_file_exists "$(lc_installed_entry 2.0.0)" \
             "the running version's files were NOT removed from under it"
+        acc_equals "$still_running" "$running_pid" \
+            "and it is the same process throughout — not one that died and was restarted"
     else
         note "the running process had already exited; that check does not apply"
     fi
@@ -106,14 +172,28 @@ else
 fi
 
 # --------------------------------------------- 4. a corrupted installed payload
+#
+# Which version is current here depends on what sections 1-3 ended up doing, and
+# hard-coding "2.0.0" would mean corrupting a directory that may not be the one
+# the runtime would launch — an assertion that passes for the wrong reason. Ask.
 
-"$LEXE" install "$v2" --yes >/dev/null 2>&1
-entry="$(lc_installed_entry 2.0.0)"
+cur="$(lc_current_version)"
+acc_true "$([[ -n "$cur" ]] && echo 0 || echo 1)" \
+    "an application is installed and current before the corruption cases ($cur)"
+entry="$(lc_installed_entry "$cur")"
 printf 'corrupt' >> "$entry"
+# Capture the status into a named variable rather than reading `$?` from inside
+# a `$(...)`. That form happens to work only while the substitution is the very
+# next thing evaluated; insert one command between them -- a note, a log line --
+# and the assertion starts reporting on something else entirely. And `-ne 0`
+# accepted 124: a launch that hung for two minutes satisfied "is refused".
 out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"
-acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
-    "a corrupted installed payload is refused, not executed"
-acc_contains "$out" "integrity" "the refusal names integrity"
+run_status=$?
+acc_refused "$run_status" "a corrupted installed payload is refused, not executed" "$out"
+# The whole phrase, not the bare word "integrity". "integrity" alone appears in
+# unrelated help text and in the word "integrity check skipped"; the assertion
+# has to fail when the runtime stops refusing, and only the refusal says this.
+acc_contains "$out" "fails its recorded integrity check" "the refusal names integrity"
 # Failing safe means a diagnostic exists and the state is still repairable — not
 # that the application is now unrecoverable.
 acc_true "$("$LEXE" errors "$LC_APP_ID" --latest >/dev/null 2>&1; echo $?)" \
@@ -124,10 +204,10 @@ lc_assert_coherent "after corruption and repair"
 
 # --------------------------------------------- 5. deleted installed files
 
-rm -rf "$(lc_version_dir 2.0.0)/bin"
+rm -rf "$(lc_version_dir "$cur")/bin"
 out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"
-acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
-    "a missing payload is refused with an error, not a crash"
+run_status=$?
+acc_refused "$run_status" "a missing payload is refused with an error, not a crash" "$out"
 acc_true "$("$LEXE" repair "$LC_APP_ID" >/dev/null 2>&1; echo $?)" \
     "repair restores a wholly deleted payload directory"
 lc_assert_coherent "after deleting and repairing the payload"
@@ -141,8 +221,9 @@ if [[ -r "$entry" ]]; then
     skip "cannot make a file unreadable here (running as root?)"
 else
     out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"
-    acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
-        "an unreadable entrypoint fails closed rather than running unchecked"
+    run_status=$?
+    acc_refused "$run_status" \
+        "an unreadable entrypoint fails closed rather than running unchecked" "$out"
     chmod 755 "$entry" 2>/dev/null || true
     "$LEXE" repair "$LC_APP_ID" >/dev/null 2>&1
     lc_assert_coherent "after an unreadable file"
@@ -164,7 +245,11 @@ acc_true "$("$LEXE" doctor >/dev/null 2>&1; echo $?)" "and doctor is healthy aga
 
 # --------------------------------------------- 8. interrupted uninstall
 
-lc_kill_at "" KILL -- remove "$LC_APP_ID" --yes
+# The mirror image of the install trigger: a remove says nothing until it is
+# done either, but the version directories disappearing is an unmistakable sign
+# that it is in the middle of the work.
+lc_kill_at "gone:$LC_VERSIONS/*" KILL -- remove "$LC_APP_ID" --yes
+lc_interrupt_report "killed during uninstall"
 lc_assert_coherent "killed during uninstall"
 "$LEXE" remove "$LC_APP_ID" --yes >/dev/null 2>&1
 acc_true "$(lc_is_installed && echo 1 || echo 0)" \
