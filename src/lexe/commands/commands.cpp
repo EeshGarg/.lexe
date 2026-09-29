@@ -63,6 +63,16 @@
 #include <utility>
 #include <vector>
 
+// For stdin_can_answer(): a prompt must know whether an answer can ever arrive
+// on its input, which is a question about the file descriptor and not about C++.
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace lexe::cli {
@@ -262,8 +272,71 @@ std::string update_policy_text(const Manifest& manifest) {
                                       manifest.updates_channel);
 }
 
+/// Can standard input supply an answer to a prompt, without the risk of waiting
+/// forever for one that is never coming?
+///
+/// Two things qualify, and nothing else does:
+///
+///   * a TERMINAL. There is a person there; that is what the prompt is for.
+///   * a REGULAR FILE. Every byte already exists, so the read is bounded by the
+///     file, and somebody deliberately wrote the answer down (`lexe install
+///     app.lexe < answer.txt`, which is how the test suite drives this).
+///
+/// A pipe, a socket and a character device do not. A pipe in particular is the
+/// hazard this function exists for: `lexe install` with stdin an OPEN pipe that
+/// nothing ever writes to was still sitting in getline at 180 seconds, because
+/// the prompt was purely EOF-driven and never asked whether an answer could
+/// arrive. /dev/null and a closed pipe cancelled instantly, so the failure is
+/// invisible in every obvious test of it. A CI job whose stdin is an inherited
+/// pipe hangs until something kills the build.
+///
+/// The simpler rule -- prompt only at a TTY -- was the other candidate and is
+/// tempting. It is rejected for a specific reason: it would make the consent
+/// path unobservable to any automated check on this project, because the suite
+/// has no pty and drives every prompt through a `<` file redirect. "A capability
+/// is a claim until a test demonstrates it" is the standing rule here, and
+/// trading a hang for an untestable accept path is not an improvement. A
+/// regular file also cannot produce the unbounded wait, which is the whole
+/// defect, so the stricter rule would buy nothing this one does not.
+bool stdin_can_answer() {
+#ifdef _WIN32
+    if (_isatty(_fileno(stdin)) != 0) return true;
+    const HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    return h != INVALID_HANDLE_VALUE && GetFileType(h) == FILE_TYPE_DISK;
+#else
+    if (::isatty(STDIN_FILENO) == 1) return true;
+    struct stat st {};
+    if (::fstat(STDIN_FILENO, &st) != 0) return false;
+    return S_ISREG(st.st_mode) != 0;
+#endif
+}
+
 /// Ask on stdin. Only "y"/"yes" (any case) confirms; EOF declines.
 bool confirm(const std::string& question) {
+    if (!stdin_can_answer()) {
+        // PermissionError -> exit 5, "permission or consent required", which is
+        // literally what happened: consent was required and could not be
+        // obtained. It matches the code a DECLINED install already returns, so
+        // `lexe install app.lexe && systemctl restart svc` behaves the same way
+        // whether the user said no or was never able to be asked.
+        //
+        // Refusing rather than assuming "no" is deliberate. Printing
+        // "installation cancelled" would claim a person made a choice, and
+        // nobody did; the sentence below says what is actually true and names
+        // the documented non-interactive path.
+        //
+        // The throw-site hint matters here: the PermissionError type fallback
+        // is "Review the requested permissions, then re-run with
+        // --accept-permissions", which is about package capabilities and is
+        // wrong for this. ERRORS.md §3 gives the throw site priority for
+        // exactly this reason.
+        throw PermissionError(
+            "cannot ask for confirmation: standard input is not a terminal and "
+            "is not a file holding an answer, so this would wait for input that "
+            "may never arrive",
+            "Re-run with --yes to confirm without a prompt, or run it from a "
+            "terminal.");
+    }
     std::cout << question << " [y/N] " << std::flush;
     std::string line;
     if (!std::getline(std::cin, line)) {
@@ -2072,7 +2145,32 @@ int cmd_source(const std::vector<std::string>& args) {
     // check — a URL can also arrive from a manifest — but failing at the moment
     // somebody types it is the difference between an actionable error and a
     // mysterious update failure weeks later.
-    http::require_secure_url(url);
+    //
+    // …and a refusal HERE is exit 2, not 1. This is the argument that a URL
+    // typed on the command line is the command line being wrong (ERRORS.md §1),
+    // and the messages pass §3's test for a UsageError on the nose: each one
+    // already is the remedy, which is why `lexe source set <id> ""` was 2 all
+    // along while `lexe source set <id> ftp://…` was 1.
+    //
+    // The SAME check at fetch time keeps its Error and its exit 1, deliberately:
+    // there the URL came out of a stored installation record or an update
+    // manifest, and telling a user their `lexe update` command line was wrong
+    // would be false. Same rule, two different provenances, two different
+    // codes — which is the distinction the single shared type had erased.
+    //
+    // The hint survives the translation. `hint_for()` gives a throw-site hint
+    // priority over every type fallback, and §3's "UsageError is deliberately
+    // silent" is about the FALLBACK, not a gag order: the paragraph on why
+    // plaintext lets anyone on the path hold you at an older signed version is
+    // the most useful sentence in this command and is not derivable from the
+    // type.
+    try {
+        http::require_secure_url(url);
+    } catch (const UsageError&) {
+        throw;
+    } catch (const Error& e) {
+        throw UsageError(e.what(), e.hint());
+    }
 
     Updater(Paths::detect()).set_source(id, url);
     std::cout << "Update source for " << id << " set to " << url << "\n";
@@ -3244,8 +3342,18 @@ int cmd_runtime(const std::vector<std::string>& args) {
                 if (!known.empty()) known += ", ";
                 known += candidate.id;
             }
+            // With a throw-site hint, because the NotFoundError type fallback
+            // is "Check the path, or run `lexe apps` to see installed
+            // applications." — and this question is about neither a path nor an
+            // installed application. The error already names the five runtimes
+            // it knows, so the hint was the only wrong sentence on the screen,
+            // and it sent the reader to a command that cannot answer them.
+            // ERRORS.md §3: a hint the throw site attached wins, precisely
+            // because the type fallback knows only the category.
             throw NotFoundError("no such compatibility runtime \"" + which +
-                                "\". Known: " + known);
+                                    "\". Known: " + known,
+                                "`lexe runtime list` shows each of these and "
+                                "whether it is installed on this host.");
         }
         const std::vector<std::string> searched = provider_search_paths(which);
         if (json) {
@@ -3673,16 +3781,61 @@ int cmd_compat(const std::vector<std::string>& args) {
     } else if (const auto set = parsed.options.find("--set");
                set != parsed.options.end()) {
         const std::string& chain = set->second;
+        // "There is no such chain" and "this application forbids that chain"
+        // are different facts, and they used to produce the same exit 1 and the
+        // same sentence:
+        //
+        //   compat <id> --set frobnicate  ->  1  "this application's execution
+        //                                         policy does not permit the
+        //                                         "frobnicate" chain"
+        //   compat <id> --set wine        ->  1  (identical, with "wine")
+        //   runtime show frobnicate       ->  4  "no such compatibility runtime"
+        //
+        // The first is a diagnosis of something that did not happen. This
+        // application's execution policy has no opinion about `frobnicate`,
+        // because `frobnicate` is not a chain — and `lexe runtime show`, in
+        // this same binary, says so correctly. Someone who mistyped `box64` was
+        // told their package forbids a chain, and went looking at the manifest.
+        //
+        // So the vocabulary check comes FIRST and answers 4, matching `runtime
+        // show` for the identical argument. `known_chain_ids()` is the one
+        // list, already documented in execpolicy.hpp as being "for help text
+        // and validation" — this is the validation half, which had no caller.
+        {
+            const std::vector<std::string> known = known_chain_ids();
+            if (std::find(known.begin(), known.end(), chain) == known.end()) {
+                throw NotFoundError(
+                    "no such execution chain \"" + chain +
+                        "\". Known: " + join(known, ", "),
+                    "These are the chains this runtime understands, whatever "
+                    "any package permits. `lexe runtime list` shows which of "
+                    "them are actually installed here.");
+            }
+        }
         // §6/§8: a preference can only ever narrow or reorder what the PACKAGE
         // permits. Refusing here — rather than silently ignoring it at launch
         // — is what keeps the policy honest.
+        //
+        // UsageError -> 2, where this was a plain Error -> 1. A real chain that
+        // this application's signed policy excludes is the command line being
+        // wrong for this application (ERRORS.md §1), and the message passes §3's
+        // test exactly: "Permitted: native, box64" already IS the remedy, which
+        // is why it needs no hint. `lexe trust forget <id>` while the
+        // application is installed is the same shape and has always been a
+        // UsageError — a refusal that depends on state rather than on syntax,
+        // whose message names the way out.
+        //
+        // 1 was the other candidate and is what this returned; it is rejected
+        // because §1 defines 1 as "no more specific code" and there is one. The
+        // load-bearing part is not which of 2 or 1 this is, but that it is no
+        // longer the SAME answer as a chain that does not exist.
         if (!manifest.chain_allowed(chain)) {
             std::string allowed;
             for (const std::string& c : manifest.effective_allowed_chains()) {
                 if (!allowed.empty()) allowed += ", ";
                 allowed += c;
             }
-            throw Error(
+            throw UsageError(
                 "this application's execution policy does not permit the \"" +
                 chain + "\" chain" +
                 (manifest.mission_critical

@@ -123,6 +123,67 @@ util::ProcessResult run_cli_stdin(const std::vector<std::string>& args,
 #endif
 }
 
+/// Run `lexe <args…>` CAPTURING STDERR as well as stdout.
+///
+/// `run_cli` leaves stderr inherited, so `result.stderr_text` is empty for it
+/// and every `contains(r.stderr_text, …)` written against it is vacuously true
+/// whatever the CLI prints. One such assertion went in earlier in this file
+/// before the streams were checked; it is now written against this helper
+/// instead. Error messages are half the taxonomy — a caller reads the code and
+/// the sentence — so asserting on them needs a helper that actually has them.
+util::ProcessResult run_cli_err(const std::vector<std::string>& args) {
+    std::vector<std::string> argv{cli_binary().string()};
+    argv.insert(argv.end(), args.begin(), args.end());
+    util::RunOptions opts;
+    opts.capture_stderr = true;
+    return util::run_process(argv, opts);
+}
+
+#ifndef _WIN32
+/// Run `lexe <args…>` with stdin an OPEN PIPE that nobody ever writes to, under
+/// a hard wall-clock cap.
+///
+/// This is the shape `/dev/null` and a closed pipe do NOT reproduce: both of
+/// those deliver EOF immediately, so a prompt that is purely EOF-driven looks
+/// perfectly well behaved against them and hangs forever against this. A FIFO
+/// with a live writer that stays silent is the CI job whose stdin is an
+/// inherited pipe.
+///
+/// `timeout` is what makes the failure legible rather than fatal: a regression
+/// here returns 124 after ten seconds instead of wedging the whole suite, so the
+/// assertion below can say which outcome it got.
+util::ProcessResult run_cli_open_pipe_stdin(const std::vector<std::string>& args,
+                                            const fs::path& scratch) {
+    static std::atomic<int> counter{0};
+    const int n = counter.fetch_add(1);
+    const fs::path fifo = scratch / ("openpipe-" + std::to_string(n) + ".fifo");
+    const fs::path script = scratch / ("openpipe-" + std::to_string(n) + ".sh");
+    std::string text =
+        "#!/bin/sh\n"
+        "command -v timeout >/dev/null 2>&1 || exit 91\n"
+        "command -v mkfifo  >/dev/null 2>&1 || exit 91\n"
+        "rm -f \"" + fifo.string() + "\"\n"
+        "mkfifo \"" + fifo.string() + "\" || exit 91\n"
+        // A writer that holds the pipe open and sends nothing. Its open() and
+        // the redirect's open() release each other, which is why neither blocks.
+        "sleep 30 > \"" + fifo.string() + "\" &\n"
+        "writer=$!\n"
+        "timeout 10 \"" + cli_binary().string() + "\"";
+    for (const std::string& arg : args) text += " \"" + arg + "\"";
+    text += " < \"" + fifo.string() + "\"\n"
+            "rc=$?\n"
+            "kill \"$writer\" 2>/dev/null\n"
+            "rm -f \"" + fifo.string() + "\"\n"
+            "exit $rc\n";
+    util::spit(script, std::string_view(text));
+    std::error_code ec;
+    fs::permissions(script, fs::perms::owner_all, fs::perm_options::add, ec);
+    util::RunOptions opts;
+    opts.capture_stderr = true; // the refusal sentence is part of the claim
+    return util::run_process({"/bin/sh", script.string()}, opts);
+}
+#endif
+
 bool contains(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
@@ -597,10 +658,17 @@ TEST_CASE("a path that names nothing is 4 on every command that takes one, "
     // invalid application id: "<path>"` -- an internal component the user never
     // named, complaining that a documented argument form (`info <file.lexe |
     // id>`) is not the other one.
-    const auto info = run_cli({"info", absent});
+    // run_cli_err, not run_cli: run_cli leaves stderr inherited, so a
+    // `contains(r.stderr_text, …)` written against it is true of any output at
+    // all. This assertion was that shape when it was written and proved
+    // nothing; the message is half of what changed here, so it is now checked
+    // against a helper that has the bytes.
+    const auto info = run_cli_err({"info", absent});
     CHECK(info.exit_code == 4);
     CHECK(info.exit_code != 1);
+    CHECK_FALSE(info.stderr_text.empty()); // the helper really did capture
     CHECK_FALSE(contains(info.stderr_text, "invalid application id"));
+    CHECK(contains(info.stderr_text, "no such package file or installed"));
 
     // The point is the DISTINCTION, so the neighbouring facts are asserted in
     // the same case: a file that EXISTS and is not a package is still 3, and an
@@ -941,6 +1009,111 @@ TEST_CASE("install refuses a tampered package with exit 3") {
               .exit_code);
 }
 
+TEST_CASE("compat --set separates a chain that does not exist from one this "
+          "application forbids") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path pkg = make_versioned_package(work.dir, key, "1.0.0");
+    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
+
+    // Both of these used to be exit 1 with the SAME sentence -- "this
+    // application's execution policy does not permit the "<x>" chain" -- which
+    // for `frobnicate` was a diagnosis of something that never happened. The
+    // package has no opinion about `frobnicate`; it is not a chain. Someone who
+    // mistyped `box64` was sent to read a manifest.
+    const auto absent = run_cli_err({"compat", kId, "--set", "frobnicate"});
+    const auto forbidden = run_cli_err({"compat", kId, "--set", "wine"});
+
+    CHECK(absent.exit_code == 4);    // no such chain, anywhere
+    CHECK(forbidden.exit_code == 2); // a real chain, excluded by this package
+    // The claim is that they DIFFER; either code alone is satisfied by a
+    // command that answers it for everything.
+    CHECK(absent.exit_code != forbidden.exit_code);
+    CHECK(absent.exit_code != 1);
+    CHECK(forbidden.exit_code != 1);
+
+    // On both channels, not just the exit status. The identical SENTENCE was
+    // half the defect, so the codes alone would not have settled it.
+    CHECK_FALSE(absent.stderr_text.empty());
+    CHECK(contains(absent.stderr_text, "no such execution chain"));
+    CHECK_FALSE(contains(absent.stderr_text, "does not permit"));
+    CHECK(contains(forbidden.stderr_text, "does not permit"));
+    CHECK(contains(forbidden.stderr_text, "Permitted:"));
+
+    // `lexe runtime show` in this same binary always knew, and still does --
+    // that disagreement between two commands about the same word is what made
+    // this a defect rather than a wording preference.
+    const auto show = run_cli_err({"runtime", "show", "frobnicate"});
+    CHECK(show.exit_code == 4);
+    CHECK(contains(show.stderr_text, "no such compatibility runtime"));
+    // …and its hint no longer leaks the generic NotFoundError fallback. The
+    // error names the runtimes it knows; "run `lexe apps` to see installed
+    // applications" answered a question nobody asked (docs/ERRORS.md §3).
+    CHECK_FALSE(contains(show.stderr_text, "lexe apps"));
+    CHECK(contains(show.stderr_text, "lexe runtime list"));
+
+    // A permitted chain still sets, so this is a gate and not a wall.
+    const auto ok = run_cli({"compat", kId, "--set", "native"});
+    CHECK(contains(ok.stdout_text, "compatibility preference set to \"native\""));
+    CHECK(ok.exit_code != 2);
+    CHECK(ok.exit_code != 4);
+    // And an unknown application is still 4 -- reached before either check.
+    CHECK(run_cli({"compat", "com.example.absent", "--set", "native"})
+              .exit_code == 4);
+}
+
+#ifndef _WIN32
+TEST_CASE("the install prompt refuses an input that may never answer, rather "
+          "than waiting for it forever") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path pkg = make_versioned_package(work.dir, key, "1.0.0");
+
+    // stdin is an OPEN PIPE with a live writer that sends nothing. The prompt
+    // was purely EOF-driven with no check on what it was reading from, so this
+    // sat in getline; an independent pass measured it still running at 180
+    // seconds. /dev/null and a CLOSED pipe both deliver EOF at once and cancel
+    // instantly, which is why every obvious test of this looked fine.
+    //
+    // The helper caps the child at 10 seconds, so a regression here is 124
+    // rather than a wedged suite -- and the assertion can then say which of the
+    // two it saw instead of never being reached.
+    const auto hung = run_cli_open_pipe_stdin({"install", pkg.string()}, work.dir);
+    REQUIRE_MESSAGE(hung.exit_code != 91,
+                    "BLOCKED: this host has no timeout(1)/mkfifo(1), so the "
+                    "hang could not be observed either way");
+    CHECK(hung.exit_code != 124); // 124 == still waiting when the cap expired
+    // 5, "permission or consent required": consent was required and there was
+    // nowhere to obtain it. The same code a declined install returns, so
+    // `lexe install app.lexe && systemctl restart svc` behaves identically
+    // whether the user said no or could never be asked. Emphatically not 0.
+    CHECK(hung.exit_code == 5);
+    CHECK_FALSE(Registry(Paths::detect()).is_installed(kId));
+    CHECK(contains(hung.stderr_text, "not a terminal"));
+    CHECK(contains(hung.stderr_text, "--yes"));
+
+    // The distinctions, in this same case, because "refuse everything" passes
+    // every assertion above.
+    //
+    // 1. --yes still installs with no prompt at all, on that same open pipe.
+    const auto yes =
+        run_cli_open_pipe_stdin({"install", pkg.string(), "--yes"}, work.dir);
+    CHECK(yes.exit_code == 0);
+    CHECK(Registry(Paths::detect()).is_installed(kId));
+    REQUIRE(run_cli({"remove", kId, "--yes"}).exit_code == 0);
+
+    // 2. An answer written down in a FILE is still read and still honoured --
+    //    the read is bounded by the file, so it cannot produce the unbounded
+    //    wait this is about. Dropping that would have left the consent-accept
+    //    path with no automated coverage at all, since the suite has no pty.
+    const auto answered = run_cli_stdin({"install", pkg.string()}, "y\n", work.dir);
+    CHECK(answered.exit_code == 0);
+    CHECK(Registry(Paths::detect()).is_installed(kId));
+}
+#endif
+
 TEST_CASE("install --channel records the channel in installation.json") {
     test::TempLexeHome home;
     TempWorkDir work;
@@ -1102,6 +1275,75 @@ TEST_CASE("source set records a new update source") {
     CHECK(run_cli({"source"}).exit_code == 2);              // missing subcommand
     CHECK(run_cli({"source", "get", kId}).exit_code == 2);  // unknown subcommand
     CHECK(run_cli({"source", "set", kId}).exit_code == 2);  // missing url
+}
+
+TEST_CASE("source set is a positive scheme check, not a two-scheme blocklist") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path pkg = make_versioned_package(work.dir, key, "1.0.0");
+    // An application must be INSTALLED or every probe below short-circuits on
+    // "not installed" (4) without ever reaching the gate — which is how a first
+    // measurement of this concluded there was nothing wrong.
+    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
+    const Registry registry(Paths::detect());
+
+    const std::string good = (work.dir / "good" / "update.json").string();
+    REQUIRE(run_cli({"source", "set", kId, good}).exit_code == 0);
+    REQUIRE(registry.read_record(kId).update_url == good);
+
+    // The defect. `require_secure_url` called itself an allowlist and was one
+    // only for strings containing "://" — so a scheme with a single colon was
+    // not seen as a scheme at all, and every one of these was ACCEPTED AND
+    // RECORDED as though it were a relative filesystem path.
+    for (const char* hostile : {"javascript:alert(1)", "data:text/plain,x",
+                                "mailto:someone@example.com", "gopher:x"}) {
+        CAPTURE(hostile);
+        const auto r = run_cli({"source", "set", kId, hostile});
+        CHECK(r.exit_code == 2);
+        CHECK(r.exit_code != 0); // it did not merely fail to be refused: it WON
+        // The load-bearing assertion. An exit code says what the command
+        // claimed; the record says what it did, and the old behaviour stored
+        // the value while the exit code was 0.
+        CHECK(registry.read_record(kId).update_url == good);
+    }
+
+    // The two the blocklist did catch: same refusal, now exit 2 rather than 1
+    // (see the ERRORS.md §1/§3 argument at the throw site). The plaintext
+    // paragraph is the most useful sentence this command has, and it survives
+    // the type change because a throw-site hint outranks every type fallback.
+    for (const char* insecure : {"http://example.com/u.json",
+                                 "HTTP://example.com/u.json",
+                                 "ftp://example.com/u.json"}) {
+        CAPTURE(insecure);
+        const auto r = run_cli({"source", "set", kId, insecure});
+        CHECK(r.exit_code == 2);
+        CHECK(registry.read_record(kId).update_url == good);
+    }
+    // The plaintext paragraph survives the Error -> UsageError change. §3 says
+    // UsageError takes no hint from the TYPE fallback; a hint the throw site
+    // attached still wins, and this is the most useful sentence the command has.
+    const auto plain =
+        run_cli_err({"source", "set", kId, "http://example.com/u.json"});
+    CHECK_FALSE(plain.stderr_text.empty());
+    CHECK(contains(plain.stderr_text, "older signed version"));
+
+    // …and what must still be ACCEPTED, asserted in the same case, because a
+    // gate that refuses everything satisfies every assertion above. The
+    // refusal's own hint has always promised "an https:// URL, a file:// URL,
+    // or a filesystem path", and all three still work. `not-a-url` is a
+    // relative path, which is a legitimate thing to configure before it exists;
+    // a later `update` names it as a missing source, which is the right error
+    // for a path.
+    const std::string secure = "https://example.com/u.json";
+    CHECK(run_cli({"source", "set", kId, secure}).exit_code == 0);
+    CHECK(registry.read_record(kId).update_url == secure);
+    const std::string file_url = "file://" + (work.dir / "u.json").string();
+    CHECK(run_cli({"source", "set", kId, file_url}).exit_code == 0);
+    CHECK(run_cli({"source", "set", kId, "not-a-url"}).exit_code == 0);
+    CHECK(run_cli({"source", "set", kId, "./relative/u.json"}).exit_code == 0);
+    CHECK(run_cli({"source", "set", kId, good}).exit_code == 0);
+    CHECK(registry.read_record(kId).update_url == good);
 }
 
 // ------------------------------------------------------------------ remove

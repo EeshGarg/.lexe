@@ -46,6 +46,38 @@ bool is_remote_url(const std::string& url) {
     return scheme == "http" || scheme == "https";
 }
 
+/// The RFC 3986 scheme at the head of `s`, lowercased, or "" when there is none.
+///
+/// `scheme_of` above looks for "://" and is right for what it does -- picking
+/// out the hierarchical URLs this runtime actually fetches. It is the wrong
+/// tool for a GATE, because a scheme needs only a single colon. `javascript:`,
+/// `data:` and `mailto:` have no "//" at all, so `scheme_of` returned "" for
+/// them and require_secure_url read that as "a filesystem path" and let them
+/// through. A gate that recognises two schemes and waves everything else past
+/// is a blocklist wearing an allowlist's comment.
+///
+/// scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"  -- so an absolute
+/// path (`/srv/u.json`), a relative one (`./u.json`, `update.json`) and a
+/// Windows-style `..\u.json` all correctly answer "": none of them starts with
+/// a letter followed only by scheme characters and a colon. A relative path
+/// whose FIRST segment is bare alphanumerics followed by a colon
+/// (`backup:2024/u.json`) does answer a scheme and is refused -- deliberately,
+/// because that string is ambiguous with a URI and this gate fails closed.
+std::string uri_scheme(const std::string& s) {
+    const std::size_t colon = s.find(':');
+    if (colon == std::string::npos || colon == 0) return {};
+    if (std::isalpha(static_cast<unsigned char>(s[0])) == 0) return {};
+    std::string out;
+    out.reserve(colon);
+    for (std::size_t i = 0; i < colon; ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        const bool ok = std::isalnum(c) != 0 || c == '+' || c == '-' || c == '.';
+        if (!ok) return {};
+        out.push_back(static_cast<char>(std::tolower(c)));
+    }
+    return out;
+}
+
 std::string percent_decode(std::string_view s) {
     std::string out;
     out.reserve(s.size());
@@ -160,8 +192,51 @@ void require_secure_url(const std::string& url) {
     // missed `HTTP://` -- and a denylist on a string prefix is exactly the
     // shape that produces that class of miss. An allowlist fails closed for
     // every scheme nobody has thought about yet.
-    const std::string scheme = scheme_of(url);
-    if (scheme.empty() || scheme == "file" || scheme == "https") return;
+    //
+    // That was the intent. The implementation did not deliver it, because it
+    // asked `scheme_of`, which requires "://". Measured against an installed
+    // application (the earlier probe had short-circuited on "not installed"
+    // before ever reaching this gate):
+    //
+    //     https://e.com/u     accepted   correct
+    //     ftp://e.com/u       refused    correct
+    //     http://e.com/u      refused    correct
+    //     javascript:alert(1) ACCEPTED AND RECORDED
+    //     not-a-url           accepted   correct -- see below
+    //     file:///etc/passwd  accepted   correct -- see below
+    //
+    // So it recognised exactly two schemes and passed everything else, which is
+    // a blocklist. `uri_scheme` is the positive check the comment above always
+    // claimed: anything that parses as a URI scheme must be one this runtime
+    // supports, and only a string that is not a URI at all is treated as a path.
+    //
+    // `file://` and a bare filesystem path stay ACCEPTED, and that is not an
+    // oversight. The refusal's own hint has always said an update source may be
+    // "an https:// URL, a file:// URL, or a filesystem path"; file:// is what
+    // the test suite uses, and a path that does not exist yet is a legitimate
+    // thing to configure. `not-a-url` is accepted as the relative path it is,
+    // and a later `update` says "source not found" naming it -- which is the
+    // right error for a path, and the wrong one only if you expected this gate
+    // to be a URL validator. It is not; it is a transport gate.
+    const std::string scheme = uri_scheme(url);
+    if (scheme.empty() || scheme == "https") return;
+    if (scheme == "file") {
+        // Accepted only in the form `local_source` can actually resolve. It
+        // strips exactly "file://"; `file:/etc/u.json` would be handed on as a
+        // literal path with the scheme still attached, and fail later with a
+        // message naming a file nobody asked for.
+        if (url.size() >= 7) {
+            std::string head = url.substr(0, 7);
+            for (char& ch : head) {
+                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + 32);
+            }
+            if (head == "file://") return;
+        }
+        throw Error("refusing a file: update source that is not a file:// URL: " +
+                        url,
+                    "Write it as `file:///absolute/path/update.json`, or give "
+                    "the filesystem path on its own.");
+    }
     if (scheme == "http") {
         throw Error("refusing a plaintext http:// source: " + url,
                     "Format 0.1 requires an https:// update source. A "

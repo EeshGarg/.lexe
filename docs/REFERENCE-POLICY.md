@@ -474,6 +474,22 @@ it.
 
 * **Sandboxing** is bubblewrap on Linux. The format requires isolation between
   applications (§9.6); it does not name a mechanism.
+* **A confirmation prompt needs an input that can answer it.** `lexe install` and
+  `lexe remove` prompt only when stdin is a **terminal** (a person is there) or a
+  **regular file** (the answer is already written down, all of it, so the read is
+  bounded). On anything else — a pipe, a socket, `/dev/null` — they refuse with
+  exit 5 and name `--yes`, rather than waiting.
+
+  Not cosmetic: with stdin an OPEN pipe that nothing ever writes to, the prompt
+  was still waiting at 180 seconds. `/dev/null` and a closed pipe deliver EOF at
+  once and cancelled instantly, so the failure is invisible to the obvious tests
+  of it, and the shape that reproduces it is the ordinary one — a CI job whose
+  stdin is an inherited pipe.
+
+  Refusing beats assuming "no": printing "cancelled" would claim somebody made a
+  choice. Exit 5 is the code a *declined* install already returns, so
+  `lexe install app.lexe && systemctl restart svc` behaves the same way whether
+  consent was withheld or could never be sought.
 * **Proton is invoked as `proton runinprefix`, never `proton run`**, and there is
   now measured evidence for that beyond the reason originally recorded.
 
