@@ -69,10 +69,36 @@ TEST_CASE("and the predicate refuses whenever a chain might matter") {
     const HostFacts host = detect_host();
 
     SUBCASE("a Windows payload is never native") {
+        // allowed_chains MUST permit "native" here, and that is the whole point
+        // of this subcase rather than an incidental detail.
+        //
+        // It used to say {"wine"}, which makes chain_allowed("native") false --
+        // and that check returns one line BEFORE the application-kind check this
+        // subcase is named for. So it passed without ever evaluating the line it
+        // exists to protect, and an evidence audit proved it by flipping that
+        // line to `return true`: the subcase stayed green while a legal Windows
+        // package went from working to permanently unlaunchable.
+        //
+        // The parser allows this shape -- manifest.cpp requires at least one
+        // foreign-OS chain, not the absence of "native" -- so it is a legal
+        // package, not a contrived one. Instance ten of docs/ERRORS.md §7, in a
+        // test written specifically to prevent it.
         Manifest m = native_manifest();
         m.application_kind = ApplicationType::Windows;
-        m.allowed_chains = {"wine"};
+        m.allowed_chains = {"native", "wine"};
+        REQUIRE(m.chain_allowed("native")); // else this subcase proves nothing
         CHECK_FALSE(native_launch_is_certain(m, AppConfig{}, host));
+    }
+
+    SUBCASE("the control: the same manifest as a NATIVE payload is certain") {
+        // Without this, the subcase above is satisfied by a function that always
+        // returns false -- which is exactly how a mutant survives a check that
+        // only ever asks for one answer.
+        Manifest m = native_manifest();
+        m.application_kind = ApplicationType::Native;
+        m.allowed_chains = {"native", "wine"};
+        REQUIRE(m.chain_allowed("native"));
+        CHECK(native_launch_is_certain(m, AppConfig{}, host));
     }
 
     SUBCASE("a package that does not permit the native chain") {

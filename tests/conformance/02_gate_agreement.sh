@@ -47,6 +47,18 @@ fi
 # One good package to mutate. Built from a COPY: `lexe build` rewrites a
 # manifest's "AUTO" publicKey in place and would dirty the tracked example.
 cp -r "$ACC_REPO/examples/service/heartbeat" "$ACC_ROOT/work/project"
+# Build the payload first. Only the SOURCES are tracked -- payload/bin is
+# compiled output and correctly gitignored -- so on a fresh clone there is
+# nothing to package until make has run. This lane used to assume the
+# binary was lying around from some earlier run, which is true on a
+# developer machine and false everywhere else; an evidence audit hit it by
+# working from a `git archive` extraction, which is what a fresh clone is.
+if ! make -s -C "$ACC_ROOT/work/project" >"$ACC_ROOT/work/make.log" 2>&1; then
+    fail "the example payload could not be compiled"
+    note "$(tail -3 "$ACC_ROOT/work/make.log")"
+    acc_summary
+    exit $?
+fi
 if ! "$LEXE" build "$ACC_ROOT/work/project" -o "$ACC_ROOT/work/good.lexe" \
         --key "$ACC_ROOT/work/key.json" >"$ACC_ROOT/work/build.log" 2>&1; then
     fail "the base package could not be built"
@@ -54,6 +66,9 @@ if ! "$LEXE" build "$ACC_ROOT/work/project" -o "$ACC_ROOT/work/good.lexe" \
     acc_summary
     exit $?
 fi
+
+MUTANTS_ATTEMPTED=0
+MUTANTS_CHECKED=0
 
 # check_gate <package> <label>
 #
@@ -133,13 +148,29 @@ for spec in \
     "dot-segment:a '.' path segment"
 do
     tag="${spec%%:*}"; label="${spec#*:}"
+    MUTANTS_ATTEMPTED=$((MUTANTS_ATTEMPTED + 1))
     pkg="$(mutate "$tag")"
     if [[ -z "$pkg" || ! -f "$pkg" ]]; then
         skip "could not build the mutation: $label"
         note "$(tail -2 "$ACC_ROOT/work/mutate.log")"
         continue
     fi
+    MUTANTS_CHECKED=$((MUTANTS_CHECKED + 1))
     check_gate "$pkg" "$label"
 done
+
+# A lane that checked NO mutants has not tested the gate, whatever its
+# summary says. Every mutation becoming a `skip` leaves the one PASS from
+# the unmodified package, and acc_summary returns 0 whenever nothing
+# FAILED -- so the runner recorded "PASS conformance 4 passed, 0 failed"
+# over zero mutants checked. An evidence audit produced exactly that by
+# breaking mutate.py, and it is the same shape as a lane exiting 0 having
+# executed nothing, which the workload lane already guards against.
+printf "  %d mutation(s) attempted, %d actually built and checked\n" \
+    "$MUTANTS_ATTEMPTED" "$MUTANTS_CHECKED"
+if [[ "$MUTANTS_CHECKED" -eq 0 ]]; then
+    fail "no mutation could be built, so the install gate was never exercised"
+    note "the unmodified package passing proves only that the happy path works"
+fi
 
 acc_summary
