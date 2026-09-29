@@ -234,10 +234,28 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
     // it resolves here and is unreachable to the loader. `runtimeUnreachable` is
     // the launch question. Both are published because both are real, and a
     // consumer that cares whether the thing will RUN wants the second.
+    //
+    // `bundle` is likewise a RECOMMENDATION count — how many dependencies the
+    // engine says to carry — and it read the same, 1, for a package whose only
+    // payload file was its executable and for the control that genuinely
+    // carried payload/lib/libz.so.1. `origin` distinguishes them per
+    // dependency; nothing aggregated it, so a gate reading only the summary
+    // could not tell "ships zlib" from "was told to ship zlib".
+    //
+    // `bundle` keeps its published meaning and `bundledInPackage` is added
+    // beside it. docs/COMPATIBILITY.md rates `--json` shapes Informative --
+    // "may gain fields; treat additively" -- which is permission to add a key
+    // and not to silently change what an existing one counts under readers who
+    // cannot see the change.
+    std::size_t bundled_in_package = 0;
+    for (const Dependency* d : r.dependencies.of_kind(DependencyKind::Bundle)) {
+        if (d->origin == DependencyOrigin::Payload) ++bundled_in_package;
+    }
     j["dependencySummary"] = {
         {"total", r.dependencies.dependencies.size()},
         {"hostInterface", r.dependencies.count(DependencyKind::HostInterface)},
         {"bundle", r.dependencies.count(DependencyKind::Bundle)},
+        {"bundledInPackage", bundled_in_package},
         {"forbidden", r.dependencies.count(DependencyKind::Forbidden)},
         {"unresolved", r.dependencies.count(DependencyKind::Unresolved)},
     };

@@ -209,4 +209,47 @@ TEST_CASE("a disregarded out-of-package rpath is actually shown to the publisher
                     "outside the package"));
 }
 
+TEST_CASE("dependencySummary distinguishes recommended-to-bundle from bundled") {
+    // The same conflation as the compatibility warning, one level down and in
+    // machine-readable form. `bundle` counts DependencyKind::Bundle, which is a
+    // RECOMMENDATION, and it read 1 both for a package whose payload was one
+    // executable and for the control that genuinely carried payload/lib/
+    // libz.so.1 -- so a gate reading --json could not tell them apart at all.
+    // `origin` already carried the fact per dependency; nothing aggregated it.
+    //
+    // `bundle` keeps its meaning (the recommendation) and `bundledInPackage` is
+    // added beside it: docs/COMPATIBILITY.md calls `--json` shapes Informative,
+    // "may gain fields; treat additively", so redefining a published count
+    // under existing readers is the one move that surface forbids.
+    //
+    // Both cases are asserted together: a test pinning only one number passes
+    // for an implementation that hard-codes it.
+    auto summary = [](DependencyOrigin origin) {
+        DependencyReport deps;
+        deps.root_info.is_elf = true;
+        deps.root_info.machine = elf::Machine::X86_64;
+        deps.dependencies = {dep("libc.so.6", DependencyKind::HostInterface, "",
+                                 DependencyOrigin::System),
+                             dep("libz.so.1", DependencyKind::Bundle,
+                                 std::string(64, 'a'), origin)};
+        return build_report_json(
+                   assemble_report(std::move(deps), RuntimeProfile::CorePortable))
+            .at("dependencySummary");
+    };
+
+    const nlohmann::ordered_json on_host = summary(DependencyOrigin::System);
+    const nlohmann::ordered_json in_package = summary(DependencyOrigin::Payload);
+
+    CHECK(on_host != in_package);
+    // The recommendation is the same in both -- that is what `bundle` means.
+    CHECK(on_host.at("bundle") == 1);
+    CHECK(in_package.at("bundle") == 1);
+    // What the package actually carries is not.
+    CHECK(on_host.at("bundledInPackage") == 0);
+    CHECK(in_package.at("bundledInPackage") == 1);
+    // A host interface found on the host is not package content either, however
+    // it was classified.
+    CHECK(on_host.at("hostInterface") == 1);
+}
+
 } // TEST_SUITE("buildreport")

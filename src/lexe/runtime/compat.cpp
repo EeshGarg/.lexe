@@ -148,22 +148,63 @@ CompatibilityReport analyze_compatibility(const DependencyReport& deps) {
                  ". Add the library to the payload, or confirm every target "
                  "host provides it; until then compatibility cannot be assured."});
     }
-    // Unusual bundles: host-typical libraries carried in the payload.
-    std::set<std::string> unusual;
+    // Host-typical libraries. TWO situations, and they used to share one
+    // sentence: libraries the package really carries, and libraries the engine
+    // has merely recommended it carry.
+    //
+    // DependencyKind::Bundle is a RECOMMENDATION — "an ordinary library,
+    // recommend bundling it" (DEPENDENCY_ENGINE.md, depengine.hpp) — while
+    // DependencyOrigin::Payload is the finding that the file actually came out
+    // of the package. Keying a present-tense claim on the recommendation made
+    // `lexe analyze` contradict its own adjacent line, for a package whose
+    // payload was a single executable:
+    //
+    //     - libz.so.1  sha256:86200da3…  [found on this host, NOT in the package]
+    //   ! Bundles unusual libraries: Bundling libraries usually provided by the
+    //     host (libz.so.1) …
+    //
+    // and the control — the same program with payload/lib/libz.so.1 genuinely
+    // present — produced byte-identical warning text, so the warning carried no
+    // information about the package at all. DEPENDENCY_ENGINE.md specifies this
+    // warning as "host-typical libraries bundled into the payload"; the code
+    // disagreed with the spec, so the code was the defect.
+    //
+    // The advice is worth giving in both cases. It just needs different words
+    // in the case where the library is not there yet.
+    std::set<std::string> carried, advised;
     for (const Dependency* d : deps.of_kind(DependencyKind::Bundle)) {
-        if (commonly_host_provided(d->soname)) unusual.insert(d->soname);
+        if (!commonly_host_provided(d->soname)) continue;
+        // Payload is the only origin that means "the package carries it".
+        // System is the build host's copy; Elsewhere is a path that will not
+        // even exist inside the sandbox. Neither is package content.
+        (d->origin == DependencyOrigin::Payload ? carried : advised)
+            .insert(d->soname);
     }
-    if (!unusual.empty()) {
+    const auto join = [](const std::set<std::string>& s) {
         std::string list;
-        for (const std::string& s : unusual) {
+        for (const std::string& v : s) {
             if (!list.empty()) list += ", ";
-            list += s;
+            list += v;
         }
+        return list;
+    };
+    if (!carried.empty()) {
         rep.warnings.push_back(
             {"Bundles unusual libraries",
-             "Bundling libraries usually provided by the host (" + list +
+             "Bundling libraries usually provided by the host (" +
+                 join(carried) +
                  ") improves portability but pins their versions; keep them "
                  "updated for security fixes."});
+    }
+    if (!advised.empty()) {
+        rep.warnings.push_back(
+            {"Advised to bundle host-provided libraries",
+             "Bundling is the recommended handling for libraries usually "
+             "provided by the host (" + join(advised) +
+                 "), and they are not in the package yet — the copies listed "
+                 "above were found on this host. Bundling them improves "
+                 "portability but pins their versions; keep them updated for "
+                 "security fixes."});
     }
     return rep;
 }

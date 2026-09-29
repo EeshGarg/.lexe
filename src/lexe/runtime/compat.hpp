@@ -2,8 +2,12 @@
 // compat — compatibility analysis (Phase 2 / DX4). Turns a dependency graph
 // into a human-readable compatibility report: which known target runtimes the
 // package should run on, and WHY any of them are a warning or incompatible. The
-// report explains issues (newer glibc symbols, host driver passthrough, unusual
-// bundles, unknown dependencies) rather than merely listing them.
+// report explains issues (newer glibc symbols, host driver passthrough,
+// host-typical libraries, unknown dependencies) rather than merely listing them.
+//
+// Every warning that makes a claim ABOUT THE PACKAGE keys on
+// DependencyOrigin, never on DependencyKind: `kind` is the recommended
+// handling, `origin` is what was found. See DEPENDENCY_ENGINE.md.
 
 #include "lexe/analysis/depengine.hpp"
 

@@ -44,9 +44,22 @@ from a root binary:
     passthrough) and must **not** be bundled.
   - **unresolved** — a soname that could not be found anywhere; a warning.
   - **language-runtime** — reserved for the future extension hooks.
+- **Origin** is a *separate* axis from classification, and neither is inferable
+  from the other. `kind` says how a dependency should be **handled**; `origin`
+  says where the file was actually **found** — `payload` (the package really
+  carries it), `system` (a host library directory), `elsewhere` (only via an
+  `RPATH`/`RUNPATH` pointing outside both, which a sandboxed launch will not
+  have), or `none`. In particular **`kind: bundle` is a recommendation, not a
+  finding**: it means "carry this", not "this is carried". Only
+  `origin: payload` says the package contains the file. Anything that makes a
+  statement *about the package* — a heading, a warning, a count — must key on
+  `origin`, never on `kind`.
 - The graph is **deduplicated** (each soname once, with all dependants
   recorded), **cycle-safe** (a visited set prevents infinite recursion; cycles
-  are noted), and resolved bundle files are **hashed** (SHA-256).
+  are noted), and resolved bundle files are **hashed** (SHA-256). A digest is of
+  whatever file was *found*, so for `system`/`elsewhere` it is a hash of a file
+  on the analysing host and not of package content; it is always printed next to
+  the origin.
 - Versioned requirements are aggregated: `max_glibc_version()` returns the
   **package's own** highest `GLIBC_x.y` — the root executable plus every
   **bundled** library. Host-interface libraries are excluded: the target host
@@ -63,8 +76,21 @@ from a root binary:
 per-runtime verdict (UshaOS Core / Fedora / Debian / Ubuntu, each with a
 documented glibc baseline) plus cross-cutting warnings that explain the issue —
 newer glibc symbols, GPU driver passthrough, unknown dependencies, and
-host-typical libraries bundled into the payload. See
-[RUNTIME_PROFILES.md](RUNTIME_PROFILES.md).
+host-typical libraries. See [RUNTIME_PROFILES.md](RUNTIME_PROFILES.md).
+
+Host-typical libraries (`libz`, `libssl`, `libstdc++`, …) produce **two distinct
+warnings**, chosen by `origin` and not by `kind`:
+
+- **"Bundles unusual libraries"** — `origin: payload`. The package really does
+  carry them. A present-tense statement about the package as it exists.
+- **"Advised to bundle host-provided libraries"** — any other origin. The engine
+  recommends carrying them and they are **not in the package**; the copies the
+  report lists were found on the analysing host.
+
+These were one warning keyed on `kind: bundle`, which made `lexe analyze` print
+`[found on this host, NOT in the package]` and `Bundles unusual libraries` on
+consecutive lines for the same library — and produce *byte-identical* warning
+text for a control package that genuinely carried it.
 
 ## One graph, reused by the Tux32 verifier
 
@@ -80,6 +106,22 @@ typed verdict. There is exactly one notion of "what this binary needs".
 - CLI: `lexe analyze <binary | project-dir | payload-dir> [--json]
   [--profile <p>]`; `lexe sdk verify <target> [--json]` for the typed Core 1
   verdict.
+- `--json` `dependencySummary` counts, made explicit because the distinction
+  above is easy to lose in an aggregate:
+  - `total` — every node in the graph.
+  - `hostInterface`, `bundle`, `forbidden`, `unresolved` — counts **by `kind`**,
+    i.e. by recommended handling. `bundle` is "how many the engine says to
+    carry", **not** "how many the package carries".
+  - `bundledInPackage` — counts `kind: bundle` entries whose `origin` is
+    `payload`: how many the package actually carries. `bundle` minus this is the
+    outstanding work.
+  - `runtimeUnreachable` — present only when the runtime contract was checked
+    (see `runtimeContract`); absent and empty must not read the same.
+
+  `--json` shapes are *Informative* under [COMPATIBILITY.md](COMPATIBILITY.md)
+  and grow additively, so `bundledInPackage` was **added** rather than `bundle`
+  redefined: changing what a published count counts is invisible to every
+  existing reader of it.
 - Builder: Step 1 (Source) runs `detect_source`, which uses the engine to find
   the main executable + its dependency graph; Step 2 (Dependencies) shows the
   classified review; the Build step verifies the closure against Core 1.
