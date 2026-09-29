@@ -259,6 +259,51 @@ std::string sandbox_runtime_dir_for_current_user();
 std::map<std::string, std::string>
 sanitize_environment(const IsolationRequest& req);
 
+/// Host locations of the system TLS trust store, bound read-only into the
+/// sandbox ONLY when the `network` permission is granted.
+///
+/// The sandbox's `/etc` is an allowlist, and the allowlist was chosen for
+/// dynamic linking and name resolution. The trust store was not on it, so a
+/// granted `network` permission produced a network on which no ordinary Linux
+/// TLS client could verify a certificate. Measured on Ubuntu 24.04 in a
+/// sandbox built from the argv render_bwrap_argv() produces for a
+/// network-permitted console launch: `http://example.com/` returned 200 (so
+/// the network and DNS both worked) and `https://example.com/` failed with
+/// curl exit 77, "error setting certificate file" — while the same URL with
+/// `-k`, or with a CA bundle shipped in the payload, returned 200. That is a
+/// granted permission silently not working, which is the opposite of this
+/// runtime's fail-closed posture. Whether the file is reachable at all,
+/// through the real launcher and with and without the permission, is asserted
+/// in tests/test_etc_surface.cpp.
+///
+/// Gated on `network` rather than always bound, for the same reason
+/// `resolv.conf` and `hosts` are: the permission is what makes a trust store
+/// meaningful, and an application with no network has no use for one. The
+/// contents are public CA root certificates — the same bytes on every machine
+/// of a given distribution — so this widens the `/etc` surface by nothing
+/// secret. Every entry is an OPTIONAL bind: a host that lacks one skips it.
+///
+/// Verified on Debian/Ubuntu (`/etc/ssl/certs`). The Fedora/RHEL and
+/// openSUSE/Arch locations are included from their documented layout, not from
+/// a measurement on this host, and are labelled as such in docs/ISOLATION.md.
+std::vector<std::string> tls_trust_store_paths();
+
+/// Whether `sysroot` (in production "/") actually holds a system TLS trust
+/// store. Separate from the bind list because the binds are optional and a
+/// missing source is silently skipped — which is exactly the failure this
+/// function exists to make loud.
+bool tls_trust_store_present(const std::filesystem::path& sysroot);
+
+/// The one-line warning to print before running `plan`, or "" when there is
+/// nothing to warn about.
+///
+/// Non-empty only when the plan shares the host network (the `network`
+/// permission was granted) and `sysroot` has no trust store to bind. Pure
+/// given `sysroot`, so it can be tested against a fabricated tree on any
+/// platform instead of only on a host that happens to be misconfigured.
+std::string tls_trust_store_warning(const IsolationPlan& plan,
+                                    const std::filesystem::path& sysroot);
+
 /// Build a deterministic isolation plan from a request and probed capabilities.
 /// Decides network sharing, the read-only/writable binds, the sanitized env,
 /// and the control-state map. Throws IsolationError (fail closed) when a

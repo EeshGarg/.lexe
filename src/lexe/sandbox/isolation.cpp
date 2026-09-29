@@ -172,6 +172,72 @@ sanitize_environment(const IsolationRequest& req) {
     return env;
 }
 
+std::vector<std::string> tls_trust_store_paths() {
+    return {
+        // Debian, Ubuntu, Arch, Gentoo, Alpine. The directory holds both the
+        // concatenated bundle (`ca-certificates.crt`, what OpenSSL calls a
+        // CAfile) and the hash-named symlinks a CApath lookup walks, so
+        // binding it covers both ways a client can be configured. Measured
+        // sufficient on this host: with it, curl and python3's ssl module both
+        // completed a verified https:// request inside the sandbox.
+        "/etc/ssl/certs",
+        // The administrator's OpenSSL configuration. Not the trust store, but
+        // the file that can constrain how it is used (some distributions set
+        // `MinProtocol` and a cipher `SECLEVEL` here; Ubuntu 24.04's copy does
+        // not). Leaving it out is the same class of problem as leaving out the
+        // trust store: the sandbox silently ignores host TLS policy.
+        "/etc/ssl/openssl.cnf",
+        // Fedora, RHEL, CentOS.
+        "/etc/pki/tls",
+        "/etc/pki/ca-trust",
+        // openSUSE and Arch keep the trust SOURCES here; openSUSE's generated
+        // bundle is /etc/ssl/ca-bundle.pem, a symlink into /var/lib, which the
+        // /etc/ssl/certs entry above does not cover.
+        "/etc/ca-certificates",
+        "/var/lib/ca-certificates",
+    };
+}
+
+bool tls_trust_store_present(const fs::path& sysroot) {
+    const auto under = [&](const char* absolute) {
+        // `absolute` is a rooted path; appending it to a path would replace
+        // the root, so strip the leading separator first.
+        return sysroot / fs::path(absolute + 1);
+    };
+    std::error_code ec;
+    // A named bundle file is the unambiguous answer.
+    for (const char* f : {"/etc/ssl/certs/ca-certificates.crt",
+                          "/etc/ssl/cert.pem",
+                          "/etc/ssl/ca-bundle.pem",
+                          "/etc/pki/tls/certs/ca-bundle.crt",
+                          "/etc/pki/tls/cert.pem"}) {
+        if (fs::exists(under(f), ec)) return true;
+    }
+    // Otherwise a non-empty hashed CApath directory also counts: a client
+    // configured that way can verify with it and nothing else.
+    for (const char* d : {"/etc/ssl/certs", "/etc/pki/tls/certs"}) {
+        const fs::path dir = under(d);
+        if (!fs::is_directory(dir, ec)) continue;
+        fs::directory_iterator it(dir, ec);
+        if (!ec && it != fs::directory_iterator()) return true;
+    }
+    return false;
+}
+
+std::string tls_trust_store_warning(const IsolationPlan& plan,
+                                    const fs::path& sysroot) {
+    // `network_shared` is true exactly when the `network` permission was
+    // granted and honoured; a denied network needs no trust store, and a
+    // build's network is denied unconditionally.
+    if (!plan.network_shared) return {};
+    if (tls_trust_store_present(sysroot)) return {};
+    return "lexe: warning: the `network` permission was granted, but this host "
+           "has no system TLS trust store in any known location (/etc/ssl/certs, "
+           "/etc/pki/tls, ...). Certificate verification will FAIL inside the "
+           "sandbox unless the application ships its own CA bundle. See "
+           "docs/ISOLATION.md, \"TLS trust store\".";
+}
+
 namespace {
 
 /// The host path of the Wayland display socket, or "" when there is none.
@@ -250,6 +316,17 @@ IsolationPlan build_plan(const IsolationRequest& req,
         // Name resolution config only when networking is permitted.
         plan.binds.push_back({"/etc/resolv.conf", "/etc/resolv.conf", true, true});
         plan.binds.push_back({"/etc/hosts", "/etc/hosts", true, true});
+        // …and the trust store, for the same reason and on the same terms: a
+        // network the application cannot use safely is not the permission the
+        // manifest asked for. See tls_trust_store_paths() for why this is
+        // gated on `network` rather than always bound, and for the measurement
+        // that showed it was needed. Optional binds throughout — a host
+        // missing one of these layouts skips it; a host missing ALL of them is
+        // warned about by the backend rather than left to discover it at
+        // runtime.
+        for (const std::string& p : tls_trust_store_paths()) {
+            plan.binds.push_back({p, p, /*read_only=*/true, /*optional=*/true});
+        }
     } else if (caps.network_namespaces) {
         plan.network_shared = false;
         plan.controls[IsolationControl::NetworkDenied] = ControlState::Enforced;
@@ -598,6 +675,16 @@ public:
                 "isolation: bubblewrap backend disappeared before launch");
         }
         const std::vector<std::string> argv = render_bwrap_argv(plan, bwrap);
+        // The trust-store binds are optional, so a host with no trust store at
+        // all produces a sandbox that starts perfectly and fails every
+        // certificate check inside it. Say so, once, before the application
+        // runs — stderr, because stdout belongs to the application and this is
+        // the runtime talking. On any ordinary host this is silent.
+        if (const std::string warning = tls_trust_store_warning(plan, "/");
+            !warning.empty()) {
+            std::fprintf(stderr, "%s\n", warning.c_str());
+            std::fflush(stderr);
+        }
         if (plan.detach) {
             util::DetachOptions detach_opts;
             detach_opts.supervisor_lock_file = plan.supervisor_lock_file;
