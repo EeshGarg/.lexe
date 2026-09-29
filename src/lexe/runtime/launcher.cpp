@@ -39,6 +39,7 @@
 #ifndef _WIN32
 #include <langinfo.h>
 #include <locale.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -164,6 +165,50 @@ bool stdout_is_terminal() {
     return true;
 #else
     return ::isatty(STDOUT_FILENO) == 1;
+#endif
+}
+
+/// May the launcher put a pipe between the caller and the application without
+/// the application being able to tell?
+///
+/// Only when the caller's stream is ALREADY a pipe. Interposing is not
+/// invisible: a program can `fstat` its own descriptors, and real programs do.
+/// Measured against direct execution of the same binary:
+///
+///   caller's stdout      direct              through .LEXE (before this)
+///   ------------------   -----------------   ---------------------------
+///   regular file         regular, seekable   fifo, NOT seekable
+///   closed (`>&-`)       closed, EBADF       fifo, and the write says "ok"
+///
+/// The second row is the one that matters. A program closes fd 1 to mean
+/// "produce nothing"; it produced output anyway, and a program checking for
+/// EBADF to detect that was told the write had landed when it had not.
+///
+/// The old predicate was `!stdout_is_terminal()`, whose comment read "a console
+/// application with nowhere to print". A regular file is somewhere to print --
+/// the condition conflated "not a terminal" with "nowhere to print", and every
+/// redirect to a file paid for it.
+///
+/// FORMAT-0.1 §9.5.2 exists for exactly this class: properties a package can
+/// OBSERVE, which therefore make it work on one conforming implementation and
+/// fail on another. stdio shape is observable, so it is specified there now.
+///
+/// Requiring BOTH streams is deliberate. Capture is all-or-nothing below, so
+/// `prog | grep x 2>err.log` -- stdout a pipe, stderr a file -- must not buy
+/// stdout's retention at the cost of stderr's shape.
+bool stdio_interposition_is_invisible() {
+#ifdef _WIN32
+    return false;
+#else
+    const auto is_fifo = [](int fd) {
+        struct stat st {};
+        // A descriptor we cannot stat (closed, most importantly) is never
+        // safe to replace: substituting a pipe for a closed fd is precisely
+        // the defect above.
+        if (::fstat(fd, &st) != 0) return false;
+        return S_ISFIFO(st.st_mode);
+    };
+    return is_fifo(STDOUT_FILENO) && is_fifo(STDERR_FILENO);
 #endif
 }
 
@@ -791,11 +836,20 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
         request.detach ||
         (manifest.launch_mode == LaunchMode::Service && !request.wait_for_exit);
 
-    // A console application with nowhere to print gets its output captured so
-    // it can be shown afterwards; everything else owns our streams directly.
-    // A detached launch has nobody left to show it to, so it captures nothing.
+    // Capture only where a pipe is INDISTINGUISHABLE from what the caller
+    // already had -- see stdio_interposition_is_invisible(). A detached launch
+    // has nobody left to show output to, so it captures nothing.
+    //
+    // This narrows what `lexe errors` retains, and that is the right trade
+    // rather than a regrettable one. Retention was already absent for the
+    // commonest case (a terminal), so it was never something a caller could
+    // rely on; and where it is now skipped -- a redirect to a file -- the bytes
+    // are in the file the caller chose, which is where they asked for them.
+    // Fidelity of a stream the application can inspect outranks a diagnostic
+    // convenience that was never uniform.
     const bool capture_output = !detach &&
-        manifest.launch_mode == LaunchMode::Console && !stdout_is_terminal();
+        manifest.launch_mode == LaunchMode::Console &&
+        stdio_interposition_is_invisible();
 
     int exit_code = 0;
     std::optional<int> signal;
