@@ -71,8 +71,8 @@ path API that `lock` and `trust` were both reaching for. Moving them, with
 fails, a subsystem that exists on disk but not in the order above fails (and the
 reverse), the engine including a frontend fails, and a frontend including anything
 but engine headers and `gui/*.hpp` fails. That last rule is not hypothetical — it
-is what caught `lexe-ui` including `src/gui/main.cpp`, another frontend's
-translation unit, to reuse its view model.
+is what caught `lexe-ui` including `src/gui/lexe-builder/builder.cpp`, another
+frontend's translation unit, to reuse its view model.
 
 Modules, in dependency order:
 

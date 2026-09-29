@@ -39,7 +39,7 @@ coordination are Linux features.
 
 ## The locks
 
-All locks go through `OperationLockManager` (`src/lexe/base/lock.hpp`). The scopes are
+All locks go through `OperationLockManager` (`src/lexe/state/lock.hpp`). The scopes are
 distinct C++ types so a misuse is a compile error, not a runtime surprise.
 
 | Lock | Type | Mode | Scope | Held for |

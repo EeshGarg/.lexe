@@ -151,9 +151,10 @@ Explicit tests beyond FORMAT §7's happy path:
 
 ## H. GUI Thinness Rule
 
-`src/gui/main.cpp` MAY include only the public headers the CLI uses
+The GUI frontends (`src/gui/lexe-builder/builder.cpp`, `src/gui/lexe-ui/ui.cpp`)
+MAY include only the public headers the CLI uses
 (`manifest`, `verify`, `installer`, `updater`, `launcher`, `error`, `paths`) and
-MUST NOT contain installation logic — it renders reports and calls the same
+MUST NOT contain installation logic — they render reports and call the same
 `lexe_engine` entry points as the CLI. Replacing GTK3 with GTK4/Qt later must not
 touch a single line under `src/lexe/`. Enforced by review + an include audit in
 the hardening pass.
