@@ -178,6 +178,21 @@ private:
     Paths paths_;
 };
 
+/// Whether this runtime may DELETE `file`: true only inside the five
+/// directories it writes into.
+///
+/// Exported because the integration module is not the only place that reads
+/// absolute paths out of local unsigned state and removes them. The uninstall
+/// sweep in `installer.cpp` reads `installation.json`'s `createdFiles` and had
+/// no such guard, so the rule this function exists to enforce held on one path
+/// and not on its sibling. A guard that one caller honours is a convention, not
+/// an invariant; the point of a shared predicate is that there is one answer to
+/// "may Lexe delete this?" and every deletion asks it.
+///
+/// Callers must not treat `false` as "skip quietly" — a recorded path outside
+/// the tree is a finding, and both callers report it.
+bool may_delete(const Paths& paths, const std::filesystem::path& file);
+
 /// Refresh the freedesktop MIME/desktop databases (best effort; the tools may
 /// be absent, which is not an error).
 void refresh_desktop_databases(const Paths& paths);

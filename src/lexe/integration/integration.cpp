@@ -284,7 +284,7 @@ bool icon_content_is_plausible(const fs::path& file, bool is_svg) {
 /// record naming anything else is not silently obeyed and not silently ignored:
 /// it is REPORTED, because an artifact record pointing outside the tree is
 /// itself a finding.
-bool may_delete(const Paths& paths, const fs::path& file) {
+bool may_delete_impl(const Paths& paths, const fs::path& file) {
     std::error_code ec;
     const fs::path resolved = fs::weakly_canonical(file, ec);
     const fs::path candidate = ec ? file : resolved;
@@ -308,6 +308,14 @@ bool may_delete(const Paths& paths, const fs::path& file) {
 std::string icon_name(const std::string& id) { return "lexe-" + id; }
 
 } // namespace
+
+// Exported so every reader of recorded absolute paths asks the same question.
+// The predicate above was written for `integration.json`; `installation.json`'s
+// `createdFiles` is the same kind of state read by a different module, and the
+// uninstall sweep there had no guard at all. See integration.hpp.
+bool may_delete(const Paths& paths, const fs::path& file) {
+    return may_delete_impl(paths, file);
+}
 
 const char* to_string(ArtifactKind k) {
     switch (k) {

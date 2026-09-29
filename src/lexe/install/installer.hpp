@@ -154,6 +154,20 @@ public:
     /// for deterministic contention checks.
     void set_mutation_wait(const WaitPolicy& wait) { mutation_wait_ = wait; }
 
+    /// Paths `uninstall` declined to delete because they lie outside the
+    /// directories this runtime writes into. Cleared at the start of each
+    /// uninstall; read it afterwards.
+    ///
+    /// `installation.json` records absolute paths and is local unsigned state,
+    /// so a recorded path is not a licence to remove a file — see
+    /// `may_delete` in integration.hpp, which this mirrors deliberately. A
+    /// refusal is neither obeyed nor swallowed: a record naming a path outside
+    /// the tree is itself a finding, and the caller decides how loudly to say
+    /// so.
+    const std::vector<std::string>& refused_paths() const {
+        return refused_paths_;
+    }
+
     /// The policy currently in force. Exists so a test can assert the DEFAULT,
     /// which otherwise nothing observes: every contention test in the suite
     /// calls set_mutation_wait(WaitPolicy::none()) to stay deterministic, so
@@ -241,6 +255,7 @@ private:
     Paths paths_;
     std::shared_ptr<OperationLockManager> locks_;
     WaitPolicy mutation_wait_ = WaitPolicy::bounded(std::chrono::seconds(10));
+    std::vector<std::string> refused_paths_;
 };
 
 } // namespace lexe

@@ -1033,8 +1033,40 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     // … then a portable sweep so every recorded file is gone even where the
     // desktop module is a recorded no-op (FORMAT-0.1 §9: uninstall removes
     // everything recorded in installation.json, then the app directory).
+    // Every one of these paths is asked `may_delete` first, because
+    // `installation.json` is local unsigned state and a recorded path is not a
+    // licence to remove a file.
+    //
+    // Without the guard this loop deleted whatever the record named.
+    // Demonstrated: two paths appended to `createdFiles` -- an ordinary
+    // directory and an ordinary file, both far outside LEXE_HOME -- and
+    // `lexe remove` destroyed both, the directory RECURSIVELY, while reporting
+    // a clean removal.
+    //
+    // The same defect was found and fixed once already, in
+    // `integration.cpp`: artifact records pointing into $HOME, deleted by
+    // `doctor --repair`. `may_delete` is the fix from that round. It was
+    // applied to the module where the bug was demonstrated and not to this
+    // one, which reads a different file for the same purpose -- so the rule
+    // held on one path and not on its sibling, and HARDENING.md went on
+    // claiming "installer-owned cleanup cannot delete arbitrary paths" for
+    // both. A guard only one caller honours is a convention, not an invariant.
+    //
+    // It is not a privilege boundary: whoever can write this record can
+    // usually delete these files directly. The likelier route is not malice at
+    // all -- a truncated or garbled record with a mangled path reaches the same
+    // `remove_recursive`, and this one is recursive.
+    //
+    // Refusals are reported rather than swallowed: a record naming a path
+    // outside the tree is itself a finding.
+    refused_paths_.clear();
     for (const std::string& file : record.created_files) {
-        util::remove_recursive(fs::path(file));
+        const fs::path path(file);
+        if (!may_delete(paths_, path)) {
+            refused_paths_.push_back(file);
+            continue;
+        }
+        util::remove_recursive(path);
     }
     util::remove_recursive(registry.app_dir(id));
 
