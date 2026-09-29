@@ -356,6 +356,36 @@ TEST_CASE("structure: missing package file is reported, not thrown") {
     VerificationReport report;
     CHECK_NOTHROW(report = lexe::verify_package(absent));
     expect_failure_at(report, "structure");
+
+    // …and it is categorised as NOT-FOUND, not as a defect in bytes nobody read.
+    //
+    // docs/ERRORS.md §5 says `category` "exists for exactly one decision, and it
+    // is the one place where reading the English would give a wrong answer", and
+    // that `format-invalid` means any conforming implementation MUST reject the
+    // package. This file was never opened, so saying that about it inverts the
+    // very guarantee the field exists to make.
+    const lexe::VerificationStage* absent_failure = report.first_failure();
+    REQUIRE(absent_failure != nullptr);
+    CHECK(absent_failure->category == lexe::FailureCategory::NotFound);
+    CHECK(absent_failure->category != lexe::FailureCategory::FormatInvalid);
+    CHECK(std::string(to_string(lexe::FailureCategory::NotFound)) ==
+          "not-found");
+
+    // The distinction that makes the categorisation non-trivial, asserted in
+    // the SAME case: a missing REQUIRED ENTRY also raises NotFoundError, from
+    // the very next statement in the pipeline, and it IS a §2 violation by an
+    // archive that was read in full. Classifying by exception type would have
+    // swept it into "not-found" and quietly told every gate that a package
+    // missing its hashes is merely a path someone mistyped.
+    const lexe::crypto::KeyPair key = lexe::test::make_keypair();
+    const fs::path pkg = lexe::test::make_test_package(home.path(), key);
+    remove_raw_entry(pkg, "metadata/hashes.json");
+    const VerificationReport gutted = lexe::verify_package(pkg);
+    const lexe::VerificationStage* gutted_failure = gutted.first_failure();
+    REQUIRE(gutted_failure != nullptr);
+    CHECK(std::string(gutted_failure->name) == "structure"); // same stage
+    CHECK(gutted_failure->category == lexe::FailureCategory::FormatInvalid);
+    CHECK(gutted_failure->category != lexe::FailureCategory::NotFound);
 }
 
 // ===================================================================
@@ -741,12 +771,27 @@ TEST_CASE("verify_package_or_throw throws VerificationError naming the "
     }
 }
 
-TEST_CASE("verify_package_or_throw throws VerificationError for a missing "
-          "file") {
+// It used to throw VerificationError here, which is what made `lexe install
+// /does/not/exist.lexe` exit 3 -- "the file was not accepted" -- about a file
+// that was never opened. VerificationError is a verdict on bytes; there were no
+// bytes. docs/ERRORS.md §2 puts a mistyped path under NotFoundError, which is
+// exit 4, and that is what every caller of this function now reports.
+TEST_CASE("verify_package_or_throw throws NotFoundError for a missing file, "
+          "and VerificationError for a file that is merely bad") {
     TempLexeHome home;
     CHECK_THROWS_AS(
         (void)lexe::verify_package_or_throw(home.path() / "absent.lexe"),
-        lexe::VerificationError);
+        lexe::NotFoundError);
+
+    // The distinction, in the same case. NotFoundError derives from Error, not
+    // from VerificationError, so this second assertion is not implied by the
+    // first -- and without it the test would be satisfied by a pipeline that
+    // had stopped telling the two apart in the other direction.
+    const fs::path junk = home.path() / "not-a-package.lexe";
+    lexe::util::spit(junk, std::string_view("this is not a PK archive"));
+    CHECK_THROWS_AS((void)lexe::verify_package_or_throw(junk),
+                    lexe::VerificationError);
+    CHECK_THROWS_AS((void)lexe::verify_package_or_throw(junk), lexe::Error);
 }
 
 // The pipeline reports stages as MESSAGES only, so a hint attached where the
@@ -771,10 +816,16 @@ TEST_CASE("verify_package_or_throw keeps the failing stage's own hint") {
     }
 
     SUBCASE("a mistyped path points at the path") {
+        // NotFoundError now, not VerificationError -- see the
+        // or_throw/NotFoundError case above for why. The guarantee this SUBCASE
+        // exists for is unchanged and is still the point: the hint the throw
+        // site attached ("Check the path to the .lexe file.") survives the trip
+        // out of the pipeline, instead of being replaced by a type fallback
+        // that told someone who mistyped a path to re-download the package.
         try {
             (void)lexe::verify_package_or_throw(home.path() / "absent.lexe");
             FAIL("a missing file must not verify as a package");
-        } catch (const lexe::VerificationError& e) {
+        } catch (const lexe::NotFoundError& e) {
             CHECK(contains(e.what(), "file not found"));
             CHECK(contains(e.hint(), "path"));
         }

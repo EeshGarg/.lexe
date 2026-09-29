@@ -39,6 +39,23 @@ enum class FailureCategory {
     /// is invalid, and a gate that reported it as malformed would be making a
     /// claim about the format that the format does not support.
     ResourceLimit,
+    /// There was nothing at that path to read. No claim whatsoever is made
+    /// about any bytes, because none were seen.
+    ///
+    /// This exists because the alternative was a lie in the one field
+    /// docs/ERRORS.md §5 says exists so that a gate never has to read the
+    /// English. `verify --json /does/not/exist` reported
+    /// `"category":"format-invalid"` -- "the package violates Format 0.1, any
+    /// conforming implementation must reject it" -- about a file that was never
+    /// opened. That is the same inversion §5 warns about, pointed the other
+    /// way: there, a runtime's own limit was reported as a defect in the
+    /// package; here, a mistyped path was.
+    ///
+    /// The distinction is NOT drawn from the exception type. A missing REQUIRED
+    /// ENTRY inside an archive also raises NotFoundError and is a genuine §2
+    /// violation, which must stay `format-invalid`; only the failure to open
+    /// the package file at all lands here.
+    NotFound,
 };
 const char* to_string(FailureCategory c);
 

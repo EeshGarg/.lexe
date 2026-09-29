@@ -446,6 +446,12 @@ returning 0:
 | `lexe sdk verify` | conformant to the profile | a non-conformant verdict |
 | `lexe analyze` | the loader can reach every dependency | it cannot — the program would not start |
 
+A path that names nothing is 4, not 3, on all three — and on `install`, `open`
+and `info`. 3 is a verdict on a file that was read; a typo is not a verdict.
+`verify --json` still emits its document in that case, with
+`failure.category` set to `not-found` rather than `format-invalid` (ERRORS.md
+§5), so a gate reads an answer rather than an empty stdout.
+
 `analyze` used to return 0 unconditionally, on the reasoning that analysis is
 informational and the report conveys the issues. That is true of a human reading
 the report and false of every other consumer. `analyze` is the pre-ship gate — it

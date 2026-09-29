@@ -564,9 +564,76 @@ TEST_CASE("verify --json reports every stage; tampering exits 3") {
     CHECK(human.exit_code == 3);
     CHECK(contains(human.stdout_text, "verification: FAILED (hashes)"));
 
-    // A file that is not a package at all -> structure failure, exit 3.
+    // A path that names NOTHING is 4, not 3. It used to be 3 here, beside the
+    // tampered package above, which said "the file was not accepted" about a
+    // file that was never opened. See the taxonomy case below for the whole
+    // argument and for the distinction from a file that exists and is bad.
     CHECK(run_cli({"verify", (work.dir / "missing.lexe").string()})
-              .exit_code == 3);
+              .exit_code == 4);
+}
+
+TEST_CASE("a path that names nothing is 4 on every command that takes one, "
+          "and never claims the format was violated") {
+    test::TempLexeHome home;
+    TempWorkDir work;
+    const std::string absent = (work.dir / "no-such-file.lexe").string();
+
+    // ERRORS.md §2: NotFoundError is "no such application, file or entry", and
+    // "a mistyped path lands here too". These already agreed.
+    CHECK(run_cli({"inspect", absent}).exit_code == 4);
+    CHECK(run_cli({"analyze", absent}).exit_code == 4);
+    CHECK(run_cli({"sdk", "verify", absent}).exit_code == 4);
+
+    // These did not. `verify`, `install` and `open` each ran the §6 pipeline
+    // against a file that was not there and reported 3 -- "verification
+    // failure, the file was not accepted" -- for which §1 promises that "there
+    // is no --force that turns it into an acceptance". That promise is about
+    // bytes, and there were none.
+    CHECK(run_cli({"verify", absent}).exit_code == 4);
+    CHECK(run_cli({"install", absent, "--yes"}).exit_code == 4);
+    CHECK(run_cli({"open", absent, "--yes"}).exit_code == 4);
+
+    // And `lexe info` answered 1, the untyped catch-all, with `registry:
+    // invalid application id: "<path>"` -- an internal component the user never
+    // named, complaining that a documented argument form (`info <file.lexe |
+    // id>`) is not the other one.
+    const auto info = run_cli({"info", absent});
+    CHECK(info.exit_code == 4);
+    CHECK(info.exit_code != 1);
+    CHECK_FALSE(contains(info.stderr_text, "invalid application id"));
+
+    // The point is the DISTINCTION, so the neighbouring facts are asserted in
+    // the same case: a file that EXISTS and is not a package is still 3, and an
+    // App ID that is well-formed but not installed is still 4.
+    const fs::path junk = work.dir / "not-a-package.lexe";
+    util::spit(junk, std::string_view("this is not a PK archive"));
+    CHECK(run_cli({"verify", junk.string()}).exit_code == 3);
+    CHECK(run_cli({"install", junk.string(), "--yes"}).exit_code == 3);
+    CHECK(run_cli({"info", "com.example.absent"}).exit_code == 4);
+
+    // The machine-readable half. `verify --json <missing>` said
+    // `"category":"format-invalid"` -- per ERRORS.md §5, "the package violates
+    // Format 0.1, ANY conforming implementation must reject it" -- about a file
+    // it had not read. §5 says that field "exists for exactly one decision, and
+    // it is the one place where reading the English would give a wrong answer",
+    // so the wrong value there is worse than a wrong sentence anywhere else.
+    //
+    // The document is still produced: a gate gets an answer, not an empty
+    // stdout. Only the claim changed.
+    const auto missing_json = run_cli({"verify", "--json", absent});
+    CHECK(missing_json.exit_code == 4);
+    const json mj = json::parse(missing_json.stdout_text);
+    CHECK_FALSE(mj.at("ok").get<bool>());
+    CHECK(mj.at("failure").at("category") == "not-found");
+    CHECK(mj.at("failure").at("category") != "format-invalid");
+
+    // A file that exists and violates §2 still says format-invalid, in this
+    // same case, because an assertion that only ever sees "not-found" is
+    // satisfied by a runtime that stopped categorising altogether.
+    const auto junk_json = run_cli({"verify", "--json", junk.string()});
+    CHECK(junk_json.exit_code == 3);
+    CHECK(json::parse(junk_json.stdout_text).at("failure").at("category") ==
+          "format-invalid");
 }
 
 TEST_CASE("verify keeps its OK verdict and exit code but notes that install "
@@ -855,9 +922,23 @@ TEST_CASE("install refuses a tampered package with exit 3") {
     CHECK(run_cli({"install", pkg.string(), "--yes"}).exit_code == 3);
     CHECK_FALSE(Registry(Paths::detect()).is_installed(kId));
 
-    // Nonexistent package file is a structure failure -> exit 3 as well.
+    // A nonexistent package file is 4, and this case is where the difference is
+    // easiest to see: the two invocations sat one line apart and answered the
+    // same 3.
+    //
+    // For the package above, 3 is a verdict -- its payload hash does not match
+    // what the publisher signed, and docs/ERRORS.md §1 promises that "the file
+    // was not accepted... there is no --force that turns it into an
+    // acceptance". For the path below there was no file to render a verdict on,
+    // and that promise is about bytes nobody read. ERRORS.md §2 has always put
+    // a mistyped path under NotFoundError.
     CHECK(run_cli({"install", (work.dir / "nope.lexe").string(), "--yes"})
-              .exit_code == 3);
+              .exit_code == 4);
+    // Asserted together, because the point is that they DIFFER: a single
+    // expected code is satisfied by an install that answers it for everything.
+    CHECK(run_cli({"install", pkg.string(), "--yes"}).exit_code !=
+          run_cli({"install", (work.dir / "nope.lexe").string(), "--yes"})
+              .exit_code);
 }
 
 TEST_CASE("install --channel records the channel in installation.json") {

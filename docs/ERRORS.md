@@ -33,6 +33,11 @@ The inspection commands carry a typed exit rather than always returning 0:
 `lexe verify` exits 3 when a package was not accepted, `lexe sdk verify` exits 3
 on a non-conformant verdict, and `lexe analyze` exits 3 when the dynamic loader
 could not reach every dependency — that is, when the program would not start.
+
+A path that names **nothing** is 4 on every command that takes one, including
+`verify`, `install`, `open` and `info`. Exit 3 is a verdict on a file, and there
+was no file; `info` used to answer 1 for this, through `registry: invalid
+application id: "/…/no-such-file.lexe"`.
 `analyze` returned 0 unconditionally until it was pointed out that a pre-ship
 gate which always succeeds is not a gate.
 
@@ -189,6 +194,9 @@ the English would give a wrong answer.
   *this* runtime imposes: total uncompressed size, entry count, expansion ratio,
   per-entry size. Another conforming implementation may set a different limit, or
   none, and read the same package correctly.
+* **`not-found`** — there was nothing at that path. No claim is made about any
+  bytes, because none were read. Fix the path; there is nothing here to reject
+  or to raise a limit for. `lexe verify` exits **4** for this, not 3.
 
 So a `resource-limit` failure **is not evidence that the package is bad**, and a
 gate that reported it as malformed would be making a claim the format does not
@@ -199,6 +207,15 @@ This is also why the generic `VerificationError` hint ("re-download it from the
 original source") is wrong for a hintless `ResourceLimitError`: the download was
 fine. It is the same mistake, in the same words, that repair used to make when it
 told users to re-download a package that was never the problem.
+
+`not-found` was added for the same reason, pointed the other way. `verify --json
+/does/not/exist.lexe` used to report `"category":"format-invalid"` — "any
+conforming implementation must reject these bytes" — about a file that had never
+been opened. A gate acting on that would have quarantined a publisher over a
+typo in its own configuration. The category is not derived from the exception
+type, because a missing **required entry** inside an archive raises the same
+`NotFoundError` and *is* a §2 violation: only the failure to open the package
+file at all is `not-found`.
 
 ---
 

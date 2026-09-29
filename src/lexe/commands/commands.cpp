@@ -1625,9 +1625,20 @@ int cmd_info(const std::vector<std::string>& args) {
     }
 
     // Installed mode.
+    //
+    // `lexe info` documents its argument as `<file.lexe | id>`, so a path is a
+    // documented argument form -- and a path that named no file fell through to
+    // here, where `Registry::app_dir` validated it as an App ID and threw a
+    // plain Error: `registry: invalid application id: "/tmp/no-such-file.lexe"`,
+    // exit 1. That is the catch-all code, reported through an internal
+    // component the user never named, for the single most ordinary mistake
+    // anyone makes with this command. The shape is checked HERE so the answer
+    // is the one ERRORS.md §2 gives -- "no such application, file or entry... a
+    // mistyped path lands here too" -- and the same 4 that `inspect`, `analyze`
+    // and `verify` give for the same typo.
     const Paths paths = Paths::detect();
     const Registry registry(paths);
-    if (!registry.is_installed(target)) {
+    if (!app_id_is_valid(target) || !registry.is_installed(target)) {
         throw NotFoundError("no such package file or installed application: " +
                             target);
     }
@@ -2030,6 +2041,18 @@ int cmd_verify(const std::vector<std::string>& args) {
     // Unchanged: 0/3 is the §6 verdict on the PACKAGE. A local conflict is a
     // note, never a failure — scripts treat these codes as a compatibility
     // promise, and `lexe install` is the command that owns exit 7.
+    //
+    // The one addition: a path that named nothing is 4, because there was no
+    // package to render a verdict on. It kept the JSON document — a gate reads
+    // `failure.category`, now "not-found" rather than "format-invalid", and
+    // gets an answer instead of an empty stdout — but the exit code says which
+    // question was answered. `--json` on a missing file is the case
+    // docs/ERRORS.md §5 is about: `format-invalid` asserts that any conforming
+    // implementation must reject these bytes, and there were no bytes.
+    if (const VerificationStage* failure = report.first_failure();
+        failure != nullptr && failure->category == FailureCategory::NotFound) {
+        return 4;
+    }
     return report.ok() ? 0 : 3;
 }
 
@@ -2866,6 +2889,14 @@ int cmd_open(const std::vector<std::string>& args) {
     const VerificationReport report = verify_package(artifact, false);
     if (!report.ok()) {
         const VerificationStage* failure = report.first_failure();
+        // A path that names nothing never verified or failed to verify; there
+        // was nothing there. Saying "this .lexe artifact did not verify" about
+        // a typo (exit 3) told the user to distrust a file rather than to check
+        // the path, which is the mistake they actually made.
+        if (failure != nullptr &&
+            failure->category == FailureCategory::NotFound) {
+            throw NotFoundError(failure->detail, failure->hint);
+        }
         throw VerificationError(
             "this .lexe artifact did not verify (stage \"" +
             (failure != nullptr ? failure->name : std::string("unknown")) +

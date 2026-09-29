@@ -44,6 +44,7 @@ const char* to_string(FailureCategory c) {
     switch (c) {
     case FailureCategory::FormatInvalid: return "format-invalid";
     case FailureCategory::ResourceLimit: return "resource-limit";
+    case FailureCategory::NotFound: return "not-found";
     }
     return "format-invalid";
 }
@@ -478,15 +479,36 @@ PipelineOutcome run_pipeline(const fs::path& lexe_file,
     std::vector<std::uint8_t> hashes_bytes;
     std::vector<std::uint8_t> manifest_sig;
     std::vector<std::uint8_t> payload_sig;
+    // OPENING the file is separated from READING ITS ENTRIES, and the split is
+    // the whole point rather than tidiness.
+    //
+    // Both steps can raise NotFoundError, and the two mean opposite things. "No
+    // such file" is a statement about the path and none at all about any bytes.
+    // "required entry missing: metadata/hashes.json" is a §2 violation by an
+    // archive that was read in full. Categorising by exception TYPE would have
+    // collapsed them, so the classification is by which step failed.
     try {
         reader.emplace(lexe_file);
+    } catch (const NotFoundError& e) {
+        // Nothing was read, so nothing may be claimed about the contents --
+        // docs/ERRORS.md §5. Callers turn this back into exit 4.
+        fail(report, kStructure, e.what(), e.hint(), FailureCategory::NotFound);
+        return out;
+    } catch (const Error& e) {
+        // A directory, a non-regular file, an oversized file: the path named
+        // SOMETHING and it is not a package. verify_package never throws for a
+        // failing package, so these become a recorded structure failure.
+        fail_from(kStructure, e);
+        return out;
+    }
+    try {
         manifest_bytes = reader->read_entry("lexe.json");
         hashes_bytes = reader->read_entry("metadata/hashes.json");
         manifest_sig = reader->read_entry("signatures/manifest.sig");
         payload_sig = reader->read_entry("signatures/payload.sig");
     } catch (const Error& e) {
-        // NotFoundError (no such file) and VerificationError (bad archive)
-        // both land here: verify_package never throws for a failing package.
+        // Including NotFoundError for a missing required entry, which IS a
+        // format violation and keeps `format-invalid`.
         fail_from(kStructure, e);
         return out;
     }
@@ -645,6 +667,19 @@ Manifest verify_package_or_throw(const fs::path& lexe_file,
         // records at least the structure stage), so failure is non-null.
         // failure->hint is empty unless that stage's throw site attached one;
         // VerificationError then falls back to the hint for its type.
+        //
+        // A path that names nothing is NOT a verification failure, and every
+        // caller of this function used to report one: `lexe install
+        // /does/not/exist.lexe` exited 3, "the file was not accepted", about a
+        // file nobody ever opened. ERRORS.md §2 puts a mistyped path under
+        // NotFoundError, and §1 gives 3 the property that "the file was not
+        // accepted... there is no --force that turns it into an acceptance" --
+        // a promise that means nothing when the file was never read. 4 here
+        // also matches what `inspect`, `analyze`, `build`, `pack`,
+        // `sign-update` and `sdk verify` already answered for the same typo.
+        if (failure->category == FailureCategory::NotFound) {
+            throw NotFoundError(failure->detail, failure->hint);
+        }
         throw VerificationError("verification failed at stage \"" +
                                     failure->name + "\": " + failure->detail,
                                 failure->hint);
