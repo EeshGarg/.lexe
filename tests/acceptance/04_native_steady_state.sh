@@ -91,12 +91,29 @@ else
     # The steady state is exactly: lexe -> bwrap (the sandbox) -> the payload.
     # bwrap is ISOLATION, not a compatibility layer, and it execs the payload
     # rather than emulating it.
-    leaf_count="$(grep -c "$payload" "$tree" || true)"
-    acc_true "$([[ "$leaf_count" -ge 1 ]] && echo 0 || echo 1)" \
-        "the payload itself is in the tree (not merely an emulator running it)"
-    non_sandbox="$(grep -vE "bwrap|$payload|lexe run|/lexe " "$tree" | grep -cE '[a-z]' || true)"
-    acc_equals "$non_sandbox" "0" \
-        "nothing but the runtime, the sandbox and the payload is in the path"
+    # $payload is spliced into both patterns below, and the second splices it
+    # into an ERE ALTERNATION. If it were ever empty, that alternation gains an
+    # empty branch — `bwrap||lexe run|/lexe ` — which matches every line, so
+    # `grep -v` would discard the entire process tree and "nothing but the
+    # runtime, the sandbox and the payload is in the path" would be green over
+    # any tree whatsoever, emulators included. The first would count every line
+    # instead of the payload's. Both are the empty-pattern tautology, in the one
+    # block of this suite where it would hide a compatibility layer.
+    #
+    # Also -F for the count: $payload is a filesystem path, and as a regular
+    # expression every "." in it matches any character.
+    if [[ -z "$payload" ]]; then
+        fail "the payload path is known, so the process-tree checks mean something" \
+            "\$payload is empty; every pattern built from it below would match" \
+            "everything, and both assertions would pass having discriminated nothing"
+    else
+        leaf_count="$(grep -cF -- "$payload" "$tree" || true)"
+        acc_true "$([[ "$leaf_count" -ge 1 ]] && echo 0 || echo 1)" \
+            "the payload itself is in the tree (not merely an emulator running it)"
+        non_sandbox="$(grep -vE "bwrap|$payload|lexe run|/lexe " "$tree" | grep -cE '[a-z]' || true)"
+        acc_equals "$non_sandbox" "0" \
+            "nothing but the runtime, the sandbox and the payload is in the path"
+    fi
 
     # No compatibility provider is even installed on this host.
     if "$LEXE" doctor 2>/dev/null | grep -q "Compatibility:"; then

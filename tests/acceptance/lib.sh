@@ -140,7 +140,25 @@ acc_file_absent() {
 }
 
 # acc_contains <haystack> <needle> <description>
+#
+# An EMPTY needle is a hard failure, not a match. `[[ "$haystack" == *""* ]]` is
+# true for every string there is, including the empty one — so an assertion whose
+# needle came from a variable that turned out empty would pass unconditionally,
+# and would go on passing however badly the behaviour regressed.
+#
+# This is the same shape as the empty `grep` pattern that made
+# tests/lifecycle/lib.sh's lc_kill_at interrupt nothing for its whole life, and
+# there are a dozen callers here that pass a variable rather than a literal:
+# acc_contains "$ref_role" "$ACC_APP_ID", "$compat_out" "$permitted",
+# "$(read_report after)" "$expect_class", "$doctor_out" "$LC_APP_ID". Any of
+# those going empty is a bug in the test, and it must read as one.
 acc_contains() {
+    if [[ -z "$2" ]]; then
+        fail "${3:-<no description>}" \
+            "acc_contains was given an EMPTY needle, which matches every string." \
+            "That is a defect in the test, not a passing assertion."
+        return 1
+    fi
     if [[ "$1" == *"$2"* ]]; then pass "$3"; else fail "$3" "expected to contain: $2" "actual: $1"; fi
 }
 
