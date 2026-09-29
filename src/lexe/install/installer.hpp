@@ -154,6 +154,16 @@ public:
     /// for deterministic contention checks.
     void set_mutation_wait(const WaitPolicy& wait) { mutation_wait_ = wait; }
 
+    /// The policy currently in force. Exists so a test can assert the DEFAULT,
+    /// which otherwise nothing observes: every contention test in the suite
+    /// calls set_mutation_wait(WaitPolicy::none()) to stay deterministic, so
+    /// changing the default below to none() or forever() would break no test
+    /// while changing what a contended `lexe install` does -- from "waits out a
+    /// brief overlap" to "refuses instantly", or to "hangs". docs/ERRORS.md §7:
+    /// a check cannot detect what it holds constant, and every check here holds
+    /// this constant.
+    const WaitPolicy& mutation_wait() const { return mutation_wait_; }
+
     /// Full §6 pipeline (with architecture check), then extract payload/ to
     /// versions/<version>/, write manifest.json + installation.json, flip
     /// `current`, run desktop integration. When the app is already installed,

@@ -62,6 +62,35 @@ distinct C++ types so a misuse is a compile error, not a runtime surprise.
   then takes each app's own mutation lock, so unrelated App IDs are never
   serialized for the duration of their recovery.
 
+### How long "a bounded interval" is
+
+The bound is part of the contract, not an implementation detail: a caller
+writing a retry loop, or sizing a CI job's timeout, needs the number. There are
+three, and they differ on purpose.
+
+| Waiter | Bound | Where |
+|---|---|---|
+| Install / update / rollback / remove / repair / recover / cleanup | **10s** | `Installer`'s default `mutation_wait` |
+| A trust mutation (`lexe trust …`) | **10s** | `trust_mutation_lock` |
+| A launch taking its shared lease | **5s** | `launcher.cpp`, before exec |
+| Version GC hold | **0s** — never waits | `try_lock_version_for_gc` |
+
+A launch waits for less than a mutation because the two failures are not
+equally bad. Making someone's application take ten seconds to start, and then
+refuse, is worse than telling them promptly that an install is in progress;
+whereas an install that gives up too eagerly turns a momentary overlap into a
+user-visible failure for no reason. The GC hold never waits at all — it is the
+one operation that can simply be skipped and retried on the next pass.
+
+Tests set `WaitPolicy::none()` to keep contention deterministic. That means the
+suite exercises the *mechanism* — `flock: bounded wait yields BusyError when the
+holder does not release` — with a short bound of its own, and pins the
+*defaults* separately, against the table above, in `installer: the DEFAULT
+mutation wait is bounded, and is the documented 10s`. Both are needed: before
+the second one existed, changing the default to `none()` or `forever()` would
+have changed what a contended `lexe install` does with the whole suite still
+green.
+
 ## Lock ordering (deadlock avoidance)
 
 Locks are always acquired in increasing class order, and a holder of a later

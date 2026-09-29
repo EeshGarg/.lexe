@@ -229,4 +229,72 @@ TEST_CASE("installer: uninstall refuses while a version is leased (running)") {
     CHECK_FALSE(Registry(paths).is_installed(kAppA));
 }
 
+// ------------------------------------------ the wait POLICY, not the mechanism
+
+// `flock: bounded wait yields BusyError when the holder does not release`
+// above proves the mechanism: a bounded wait really waits, then gives up. What
+// nothing proved is the POLICY -- that a production Installer is configured
+// with a bounded wait at all.
+//
+// Every contention test in this file and in test_storage.cpp and
+// test_trust_adversarial.cpp opens with set_mutation_wait(WaitPolicy::none()),
+// and rightly so: waiting is nondeterministic and they are testing refusal, not
+// patience. But that means the default is overwritten before it is ever
+// observed. Changing installer.hpp's default to none() would turn every
+// contended `lexe install` from "waits out a brief overlap" into "refuses
+// instantly with exit 6" -- and changing it to forever() would turn a busy
+// store into a hang -- with the whole suite still green either way.
+//
+// docs/ERRORS.md §7: a check cannot detect what it holds constant.
+//
+// The value is asserted exactly, not merely as "nonzero", because it is a
+// documented number: docs/CONCURRENCY.md publishes 10s so that a caller can
+// size a retry loop or a CI timeout around it. Pinning it here means the
+// document and the code cannot drift apart silently -- if this test has to
+// change, the document has to change with it.
+// The documented contract, as a predicate, so it can be aimed at things OTHER
+// than the value under test. A test that only ever evaluates its predicate on
+// the answer it expects has not shown the predicate can return anything else --
+// which is how a check ends up incapable of failing. This project has found
+// eleven of those, including one in the evidence lane itself.
+static bool matches_documented_mutation_wait(const WaitPolicy& w) {
+    return !w.block_forever && w.timeout == std::chrono::seconds(10);
+}
+
+TEST_CASE("installer: the DEFAULT mutation wait is bounded, and is the "
+          "documented 10s") {
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    Installer installer(paths, std::make_shared<test::FakeLockManager>());
+
+    SUBCASE("the predicate discriminates") {
+        // Run FIRST and deliberately: these are the three ways the default
+        // could be wrong, and each must be rejected. Without this, the subcase
+        // below would pass just as happily against a predicate that returned
+        // true unconditionally.
+        //
+        // WaitPolicy::none() -- a contended `lexe install` would stop waiting
+        // and refuse instantly with exit 6, turning a half-second overlap
+        // between two operations into a user-visible failure.
+        CHECK_FALSE(matches_documented_mutation_wait(WaitPolicy::none()));
+        // WaitPolicy::forever() -- a busy store would hang instead of
+        // returning. docs/CONCURRENCY.md promises the opposite in as many
+        // words: "rather than blocking forever".
+        CHECK_FALSE(matches_documented_mutation_wait(WaitPolicy::forever()));
+        // A different bound is still a broken promise, because the number is
+        // published for callers to size a retry loop or a CI timeout around.
+        CHECK_FALSE(matches_documented_mutation_wait(
+            WaitPolicy::bounded(std::chrono::seconds(5))));
+    }
+
+    SUBCASE("the default satisfies it") {
+        CHECK(matches_documented_mutation_wait(installer.mutation_wait()));
+
+        // Stated separately so a failure says WHICH way it broke rather than
+        // just "the predicate said no".
+        CHECK_FALSE(installer.mutation_wait().block_forever);
+        CHECK(installer.mutation_wait().timeout == std::chrono::seconds(10));
+    }
+}
+
 } // TEST_SUITE("lock")
