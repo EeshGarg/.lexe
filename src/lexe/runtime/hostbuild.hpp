@@ -74,6 +74,38 @@ ToolchainReport probe_toolchain(const BuildRecipe& recipe);
 /// `command` -> exactly the manifest's argv, once
 std::vector<std::vector<std::string>> build_commands(const Manifest& manifest);
 
+/// The directory a recipe's own commands actually run in, RELATIVE to the
+/// payload root. "" means the payload root itself.
+///
+/// `build.sourceDir` is not a working directory, and the three drivers do not
+/// agree about it:
+///
+///   make    -> sourceDir. `make -C <dir>` changes make's directory, so every
+///              rule in the Makefile runs there.
+///   cmake   -> "" (the payload root). `cmake -S <dir> -B lexe-build` reads
+///              the sources from sourceDir without changing directory.
+///   command -> "" (the payload root). The argv runs exactly as written and
+///              sourceDir is not applied to it AT ALL.
+///
+/// It is exported because it is the one statement of this that both the
+/// publisher-facing hint below and the test that runs a real build read from.
+/// Neither can then drift from the other without failing: the hint claims a
+/// directory, and the test compares that claim against the `pwd` a build
+/// inside the sandbox reports for itself.
+///
+/// `entrypoint.executable` is resolved from the payload root under every
+/// driver, which is why a `make` recipe must write it one level up.
+std::string build_working_subdir(const Manifest& manifest);
+
+/// One publisher-facing paragraph naming where this package's build ran and
+/// how `sourceDir` did (or did not) reach it.
+///
+/// Attached to a failed build, because the commonest failure of a `command`
+/// recipe — `./configure: not found`, `sh: 0: cannot open build.sh` — is the
+/// cwd, the files are right there one directory down, and nothing in the
+/// diagnostic said so. Every publisher rediscovered `cd <sourceDir> &&`.
+std::string build_layout_note(const Manifest& manifest);
+
 /// Who approved compiling this package, and when (property 1).
 ///
 /// There is no privileged "administrator" in a per-user installation, and

@@ -88,6 +88,54 @@ std::vector<std::vector<std::string>> build_commands(const Manifest& manifest) {
     return {};
 }
 
+std::string build_working_subdir(const Manifest& manifest) {
+    switch (manifest.build.system) {
+    // `make -C <dir>` chdirs make itself, so the recipe lines run in <dir>.
+    case BuildSystem::Make:
+        return manifest.build.source_dir;
+    // `cmake -S <dir>` reads sources from <dir> without leaving the payload
+    // root; the argv of a `command` recipe is run exactly as written, and
+    // sourceDir is not applied to it at all.
+    case BuildSystem::CMake:
+    case BuildSystem::Command:
+        return {};
+    }
+    return {};
+}
+
+std::string build_layout_note(const Manifest& manifest) {
+    const std::string& dir = manifest.build.source_dir;
+    const std::string entry = manifest.entrypoint_executable;
+    switch (manifest.build.system) {
+    case BuildSystem::Make:
+        return "Where this build ran: `make -C " + dir +
+               "`, so the Makefile's rules ran with \"" + dir +
+               "\" as their working directory and relative paths in it are "
+               "resolved there. The entrypoint \"" + entry +
+               "\" is resolved from the PAYLOAD ROOT one level up, so the "
+               "recipe must write it as \"../" + entry + "\".";
+    case BuildSystem::CMake:
+        return "Where this build ran: `cmake -S " + dir +
+               " -B lexe-build` from the payload root, which is also where "
+               "the entrypoint \"" + entry +
+               "\" is resolved from. build.sourceDir reaches cmake as -S and "
+               "does not change the working directory.";
+    case BuildSystem::Command:
+        return "Where this build ran: the working directory was the PAYLOAD "
+               "ROOT, not build.sourceDir (\"" + dir +
+               "\"). A `command` recipe is run exactly as its argv is written "
+               "and build.sourceDir is not applied to it at all — unlike "
+               "`make`, which the runtime invokes as `make -C " + dir +
+               "`. So `./configure`, `sh build.sh` or `make` with no argument "
+               "look for files that are one directory down: reach them as \"" +
+               dir + "/…\", or make the recipe change into \"" + dir +
+               "\" itself. The entrypoint \"" + entry +
+               "\" is resolved from the payload root, which is where the "
+               "recipe already starts.";
+    }
+    return {};
+}
+
 // ------------------------------------------------------------------- record
 
 namespace {
@@ -347,7 +395,8 @@ CompileResult compile_for_host(const Paths& paths, const CompileRequest& req) {
                     render_argv(argv) + "` exited with code " +
                     std::to_string(run.exit_code),
                 "The build output is kept with the failure record — `lexe "
-                "errors " + manifest.id + " --latest` names the files.");
+                "errors " + manifest.id + " --latest` names the files. " +
+                    build_layout_note(manifest));
         }
     }
 

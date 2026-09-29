@@ -953,6 +953,34 @@ signed.
 **4. Approval grants no privilege.** It authorizes the operation. It MUST NOT
 elevate the build, the installer, or the application.
 
+**Where the build runs.** `build.sourceDir` declares where the sources are. It
+is **not** a working directory and **not** a boundary, and the three drivers do
+not treat it alike:
+
+| `build.system` | invoked as | the recipe's own working directory | reaches `build.sourceDir` |
+|---|---|---|---|
+| `make` | `make -C <sourceDir>` | `payload/<sourceDir>` — `make -C` chdirs make | by the driver |
+| `cmake` | `cmake -S <sourceDir> -B lexe-build`, then `cmake --build lexe-build` | the payload root | by the driver, as `-S` |
+| `command` | `build.command`, exactly as written | the payload root | **not at all** |
+
+`entrypoint.executable` is resolved from the **payload root** under every
+driver. A `make` recipe therefore writes it one level up (`../bin/app`), and a
+`command` recipe writes it where it already stands (`bin/app`).
+
+A `command` recipe is the escape hatch: its argv runs unchanged, so a recipe
+that means to run `./configure` or `make` inside the sources must say so
+(`["sh", "-c", "cd src && ./configure && make"]`). This is stated because it is
+not inferable from `sourceDir`'s presence, and because the failure it produces
+— `./configure: not found` with the file demonstrably packaged — names the
+symptom and not the cause.
+
+**`sourceDir` confines nothing.** The build gets the whole staged version
+directory writable, which is what item 2 above says and all it says. A recipe
+can read and write every `payload/` entry whether or not it lies under
+`sourceDir`; `make -C` and `cmake -S` change a tool's directory, they do not
+restrict what a recipe can reach. 0.1 enforces no boundary *inside* the
+payload, and a publisher must not read one into `sourceDir`.
+
 **The build must happen before promotion.** Every failure above — including a
 refused approval — MUST leave a previously installed version of the application
 exactly as it was.

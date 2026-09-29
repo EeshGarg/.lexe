@@ -42,6 +42,32 @@ using lexe::test::TempLexeHome;
 
 namespace {
 
+/// The value of a `KEY=value` line anywhere in `out`, or "" if absent.
+///
+/// Build drivers interleave their own chatter with the recipe's output --
+/// `make -C` announces the directory it entered before the recipe runs at all
+/// -- so a test that wants a recipe's answer must ask for it by name rather
+/// than by position. Returns "" rather than throwing so the caller can decide
+/// how loud an absence is; every caller here treats it as fatal.
+std::string marked_value(const std::string& out, const std::string& key) {
+    const std::string needle = key + "=";
+    // Anchored to a line start, so a key mentioned inside some other line
+    // (a path, an echoed command) cannot be mistaken for the marker.
+    std::size_t pos = out.compare(0, needle.size(), needle) == 0
+                          ? 0
+                          : out.find("\n" + needle);
+    if (pos == std::string::npos) return {};
+    if (pos != 0) ++pos; // step over the newline
+    pos += needle.size();
+    const std::size_t end = out.find('\n', pos);
+    std::string value =
+        out.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+    while (!value.empty() && (value.back() == '\r' || value.back() == ' ')) {
+        value.pop_back();
+    }
+    return value;
+}
+
 bool contains(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
@@ -333,6 +359,202 @@ TEST_CASE("each build system resolves to an exact argv") {
     const auto own = build_commands(command);
     REQUIRE(own.size() == 1);
     CHECK(own[0] == command.build.command);
+}
+
+// ---------------------------------------------------------------------------
+// `build.sourceDir` is not a working directory, and the drivers disagree about
+// it. The schema used to say the build "sees this directory and nothing else of
+// the package"; neither half was true of any driver. These two cases pin what
+// IS true, and they are written to fail if anyone makes them agree by accident.
+//
+// The pair is deliberate. The first is pure and asserts the DISTINCTION between
+// drivers — a single-driver test would pass unchanged if all three were
+// flattened to the same answer, which is exactly the defect. The second is the
+// independent observer: it runs a real build in the sandbox and takes the
+// directory from the BUILD's own `pwd`, not from anything the runtime says
+// about itself. If the runtime's answer and the build's answer ever diverge,
+// the second fails — and neither test can be satisfied by machinery reporting
+// on itself.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("sourceDir reaches the three drivers differently, and the note says "
+          "which") {
+    TempLexeHome home;
+
+    const Manifest make = portable_manifest(BuildSystem::Make);
+    const Manifest cmake = portable_manifest(BuildSystem::CMake);
+    const Manifest command = portable_manifest(BuildSystem::Command);
+
+    // The distinction, stated as a distinction: `make -C src` chdirs make, the
+    // other two do not move at all.
+    CHECK(build_working_subdir(make) == "src");
+    CHECK(build_working_subdir(cmake).empty());
+    CHECK(build_working_subdir(command).empty());
+    CHECK(build_working_subdir(make) != build_working_subdir(command));
+
+    // And the publisher-facing note distinguishes them too — the `command`
+    // case in particular has to name the payload root, because "my configure
+    // script is not found and it is right there in the package" is the failure
+    // this note exists to answer.
+    CHECK(contains(build_layout_note(command), "PAYLOAD ROOT"));
+    CHECK(contains(build_layout_note(command), "not applied to it at all"));
+    CHECK(contains(build_layout_note(make), "make -C src"));
+    CHECK(build_layout_note(make) != build_layout_note(command));
+    CHECK(build_layout_note(cmake) != build_layout_note(command));
+}
+
+TEST_CASE("the directory a build really runs in is the one the runtime claims, "
+          "and sourceDir confines nothing") {
+    TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const std::unique_ptr<IsolationBackend> backend =
+        make_isolation_backend(paths);
+    if (backend->capabilities().status != CapabilityStatus::Available) {
+        MESSAGE("SKIP: no usable sandbox on this host");
+        return;
+    }
+
+    // One tree, two recipes over it, differing ONLY in build.system.
+    //
+    // OUTSIDE-SOURCEDIR sits at the payload root, outside `src`. Each recipe
+    // reads it by a path relative to its own working directory, so a success
+    // is evidence about BOTH facts at once: where the build stands, and that
+    // the package outside sourceDir is reachable from there.
+    const auto run = [&](BuildSystem system) {
+        Manifest m = portable_manifest(system);
+        m.build.toolchain = {system == BuildSystem::Make ? "make" : "sh"};
+        const std::string tag =
+            system == BuildSystem::Make ? "make" : "command";
+        const fs::path tree = home.path() / ("cwd-" + tag) / "version";
+        fs::create_directories(tree / "src");
+        util::spit(tree / "OUTSIDE-SOURCEDIR",
+                   std::string_view("payload root marker\n"));
+        if (system == BuildSystem::Make) {
+            // `make -C src` runs these rules inside src, so the marker is one
+            // level up from where this recipe stands.
+            // `$$(pwd)` because make eats one `$`; the shell then runs pwd.
+            util::spit(tree / "src" / "Makefile",
+                       std::string_view("all:\n\t@echo \"PWD_MARK=$$(pwd)\"\n"
+                                        "\t@cat ../OUTSIDE-SOURCEDIR\n"));
+            // A SECOND, equally valid Makefile at the payload root.
+            //
+            // Nothing invokes it while `make -C src` is correct, and that is
+            // the point: if the driver ever stopped passing `-C`, make would
+            // find THIS one and the build would still succeed -- reporting the
+            // payload root. Without it, a driver that lost `-C` fails with
+            // "No targets specified and no makefile found", which is a loud
+            // and obviously different symptom; with it, the failure is the
+            // quiet one the relative-position check below is here to catch.
+            //
+            // So this file exists to make the dangerous case REACHABLE. A
+            // fixture that only permits the loud failure cannot demonstrate
+            // that the quiet one is detected.
+            util::spit(tree / "Makefile",
+                       std::string_view("all:\n\t@echo \"PWD_MARK=$$(pwd)\"\n"
+                                        "\t@cat OUTSIDE-SOURCEDIR\n"));
+        } else {
+            m.build.command = {"sh", "-c",
+                               "echo \"PWD_MARK=$(pwd)\"; cat OUTSIDE-SOURCEDIR"};
+        }
+        CompileRequest req;
+        req.manifest = m;
+        req.build_tree = tree;
+        req.scratch_dir = home.path() / ("scratch-" + tag);
+        req.approval = CompileApproval::grant();
+        return std::tuple{m, tree, compile_for_host(paths, req)};
+    };
+
+    std::string observed[2];
+    fs::path trees[2];
+    for (int i = 0; i < 2; ++i) {
+        const BuildSystem system =
+            i == 0 ? BuildSystem::Command : BuildSystem::Make;
+        const auto [m, tree, result] = run(system);
+        trees[i] = tree;
+        if (result.outcome == CompileOutcome::ToolchainMissing) {
+            MESSAGE("SKIP: this host lacks sh/make");
+            return;
+        }
+        // The commands run and print; nothing produces bin/app, so the compile
+        // is expected to stop at output verification. That is the point at
+        // which the build's own stdout is already captured.
+        REQUIRE(result.outcome == CompileOutcome::OutputNotAccepted);
+
+        // Read the MARKED line, not the first one.
+        //
+        // The first version of this observer took `out.substr(0, first \n)`,
+        // which is correct for `sh` and wrong for `make`: invoked as
+        // `make -C src`, GNU make announces
+        //
+        //     make: Entering directory '/.../version/src'
+        //
+        // BEFORE the recipe produces anything, so line 1 was make's chatter.
+        // The comparison then read `"src'" == "src"` and the test failed for a
+        // reason that had nothing to do with the property under test. A test
+        // that fails for the wrong reason is no better evidence than one that
+        // passes for the wrong reason -- it just wastes the failure.
+        //
+        // Suppressing the chatter with --no-print-directory was the other
+        // option and is the wrong one: that changes the PRODUCT to suit the
+        // observer. The recipe emits a key nothing else in the stream uses,
+        // and the observer finds it by name.
+        const std::string out = result.stdout_text;
+        observed[i] = marked_value(out, "PWD_MARK");
+
+        // An absent marker must fail LOUDLY. Left as an empty string, the two
+        // drivers would compare equal to each other and to a `claimed` path
+        // that is never empty -- so a broken recipe would look like a
+        // disagreement about working directories rather than like a broken
+        // recipe. REQUIRE, not CHECK: nothing below this line means anything
+        // if the build did not report where it stood.
+        REQUIRE_MESSAGE(!observed[i].empty(),
+                        "the build produced no PWD_MARK= line; its stdout was: "
+                            << out);
+
+        // 1. The runtime's claim, checked against the build's own answer.
+        const std::string subdir = build_working_subdir(m);
+        const fs::path claimed =
+            subdir.empty() ? tree : tree / fs::path(subdir);
+        CHECK(fs::path(observed[i]).generic_string() ==
+              fs::path(claimed).generic_string());
+
+        // 2. "and nothing else of the package" — retracted, and here is why:
+        //    a payload file OUTSIDE sourceDir was read by the build, under
+        //    both drivers.
+        CHECK(contains(out, "payload root marker"));
+    }
+
+    // 3. The asymmetry itself, stated WITHOUT asking the product where it
+    //    thinks it put the build.
+    //
+    //    Assertion 1 compares the product's behaviour against the product's
+    //    own `build_working_subdir()`. That is worth having and it is not
+    //    independent: both sides come from the same source, so if that helper
+    //    and the driver were wrong in the same direction, assertion 1 would
+    //    agree with the defect. docs/TESTING.md §1.5 -- a test written from the
+    //    implementation agrees with the implementation by construction. This
+    //    block therefore uses only paths the TEST itself created.
+    //
+    //    The earlier form compared observed[0] and observed[1] to each other:
+    //
+    //        CHECK(fs::path(observed[1]).parent_path() == fs::path(observed[0]));
+    //
+    //    The two drivers deliberately run in SEPARATE trees (`cwd-command` and
+    //    `cwd-make`), so those paths share no ancestor and that check could
+    //    never have passed, whatever the product did. It was a second defect
+    //    in the observer, hidden behind the first: the `make: Entering
+    //    directory` parsing bug failed earlier and masked it.
+    //
+    //    The comparable quantity is each driver's position RELATIVE to its own
+    //    payload root.
+    const fs::path rel_command =
+        fs::path(observed[0]).lexically_relative(trees[0]);
+    const fs::path rel_make =
+        fs::path(observed[1]).lexically_relative(trees[1]);
+
+    CHECK(rel_command == fs::path("."));  // `command`: stands at the payload root
+    CHECK(rel_make == fs::path("src"));   // `make -C`: one level in, at sourceDir
+    CHECK(rel_command != rel_make);       // and the asymmetry is real
 }
 
 // ---------------------------------------------------------------------------
