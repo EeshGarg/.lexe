@@ -43,8 +43,9 @@
 # It was only found when an independent audit broke the relay on purpose and
 # noticed this lane did not care.
 #
-# Found by putting 184 independently written programs through the runtime and
-# comparing against their recorded direct-execution baselines, which is why the
+# Found by putting the whole workload corpus — independently written programs
+# that .LEXE did not author — through the runtime and comparing against their
+# recorded direct-execution baselines, which is why the
 # specimen here is a purpose-built program with an exactly known output rather
 # than one of the examples.
 set -euo pipefail

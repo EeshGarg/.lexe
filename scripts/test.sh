@@ -192,8 +192,13 @@ session_check() {
 # a fresh clone this lane has nothing to run. That must read as BLOCKED, never
 # as PASS: the lane's own summary exits 0 when every specimen was blocked, so if
 # this check passed the run through, `--all` would report a green lane having
-# executed none of the 184 specimens. Fake coverage is worse than a missing lane,
+# executed none of the specimens. Fake coverage is worse than a missing lane,
 # because it is indistinguishable from real coverage in the summary.
+#
+# (No number here on purpose. This comment said "the 184 specimens" while the
+# corpora held 201 ELF and 148 PE. A count written into prose is a claim nothing
+# re-checks, so it is right exactly once; the lane derives its own totals from
+# index.json at runtime, and this comment does not need to compete with it.)
 # Where the corpora actually are.
 #
 # They were generated under /tmp, which a WSL restart wipes -- it has done so
