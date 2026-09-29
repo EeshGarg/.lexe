@@ -170,7 +170,34 @@ _pd_inner() {
     # No shared X authority: nothing outside this namespace has the socket.
     export XAUTHORITY=/dev/null
 
-    "$@"
+    # Run it WITHOUT the shell narrating its death into the caller's stderr.
+    #
+    # `"$@"` on a signal-killed child makes bash write
+    #
+    #     .../private-display.sh: line NNN: 26093 Segmentation fault (core dumped) "$@"
+    #
+    # to this shell's stderr -- which is the caller's stderr. For a workload
+    # harness measuring "how many bytes did the program write to stderr", that
+    # is 136 bytes of the wrapper talking about itself, attributed to the
+    # specimen. It made `linux-gui-crash-with-window` look as though .LEXE lost
+    # the program's stderr: the baseline "had" 136 bytes and .LEXE delivered 0,
+    # when the specimen writes NOTHING to stderr and .LEXE, which reaps its own
+    # child, has no shell to add a line. The harness was comparing its own
+    # wrapper against the runtime.
+    #
+    # Backgrounding and waiting with the WAIT's stderr silenced is the only
+    # construction that satisfies all three requirements. Measured, all four:
+    #
+    #   "$@"                        exit 139, 227 bytes, shell narrated
+    #   "$@" & wait $!              exit 139, 227 bytes, shell narrated
+    #   ( exec "$@" )               exit 139, 236 bytes, shell narrated
+    #   "$@" & { wait $!; } 2>/dev/null   exit 139,  13 bytes, child only
+    #
+    # The child inherits the real stderr when it is started, so silencing the
+    # wait afterwards hides the shell's commentary and nothing of the program's.
+    "$@" &
+    local _pd_child=$!
+    { wait "$_pd_child"; } 2>/dev/null
     local status=$?
     # SIGTERM lets Xvfb remove its own /tmp/.X<n>-lock, which lives on the
     # SHARED /tmp and would otherwise block this number for the next run.
