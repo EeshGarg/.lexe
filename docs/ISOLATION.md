@@ -96,8 +96,12 @@ an entry fails that test as loudly as removing one, because an addition to
 | `/etc/alternatives` | always | Debian alternatives symlinks, which `/usr` paths resolve through |
 | `/etc/localtime` | always | local time |
 | `/etc/resolv.conf`, `/etc/hosts` | `network` granted | DNS and static name resolution |
-| `/etc/ssl/certs`, `/etc/ssl/openssl.cnf`, `/etc/pki/tls`, `/etc/pki/ca-trust`, `/etc/ca-certificates`, `/var/lib/ca-certificates` | `network` granted | the system TLS trust store — see below |
-| `/etc/fonts`, `/etc/machine-id` | `launch.mode` is `gui` | font configuration (fontconfig keys its cache on the machine id) |
+| `/etc/ssl/certs`, `/etc/ssl/openssl.cnf`, `/etc/pki/tls`, `/etc/pki/ca-trust`, `/etc/ca-certificates`, `/var/lib/ca-certificates`† | `network` granted | the system TLS trust store — see below |
+| `/etc/fonts`, `/etc/machine-id`, `/var/cache/fontconfig`† | `launch.mode` is `gui` | font configuration (fontconfig keys its cache on the machine id) |
+
+† Not under `/etc`, but listed here because it belongs to the same decision:
+openSUSE's generated CA bundle and fontconfig's cache both live outside `/etc`
+and would otherwise look like separate grants.
 
 Note that `launch.mode` **defaults to `gui`** in FORMAT 0.1. A manifest that
 declares no mode receives the GUI row, including `/etc/machine-id` — a stable
