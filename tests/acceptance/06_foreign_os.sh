@@ -65,7 +65,11 @@ pass "lexe build packaged a Windows payload"
 
 verify_out="$("$LEXE" verify "$package" 2>&1)"
 acc_true "$?" "the Windows package passes the full verification pipeline"
-acc_contains "$verify_out" "windows" \
+# NOT the bare word "windows". The package file, the project directory and the
+# entrypoint in this suite are all named "windows-hello", so `verify` echoes the
+# word in paths it merely quotes back; the assertion passed on the filename
+# rather than on anything payload-role decided.
+acc_contains "$verify_out" 'applicationType "windows"' \
     "payload-role reports the package as a Windows payload"
 acc_contains "$verify_out" "runnable Windows executable" \
     "payload-role says it checked the entrypoint is runnable"

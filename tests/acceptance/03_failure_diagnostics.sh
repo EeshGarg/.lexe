@@ -120,7 +120,12 @@ acc_refused "$tamper_status" \
     "$(sed 's/^/    /' "$ACC_ROOT/work/tampered.out" 2>/dev/null | tail -5)"
 acc_equals "$(acc_launch_count)" "$before" \
     "the tampered payload was never executed (its launch log did not grow)"
-acc_contains "$(cat "$ACC_ROOT/work/tampered.out")" "integrity" \
+# The whole clause, not the bare word "integrity". The runtime prints
+# "integrity" in more than one place -- including messages about checks it
+# SKIPPED -- so the loose form would keep passing if the refusal were replaced
+# by a note that the check had been bypassed, which is the regression this line
+# exists to catch.
+acc_contains "$(cat "$ACC_ROOT/work/tampered.out")" "fails its recorded integrity check" \
     "the refusal explains that the integrity check failed"
 
 tamper_record="$(find "$errdir" -name '*.json' | sort | tail -1)"

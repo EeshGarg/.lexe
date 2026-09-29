@@ -142,8 +142,12 @@ lc_current_version() {
         2>/dev/null || true
 }
 
+# -F and --, so the id is matched as literal text rather than as a regular
+# expression: a dot in "org.lexe.lifecycle.subject" otherwise matches any
+# character, and an id that happened to start with "-" would be read as a flag.
 lc_is_installed() {
-    "$LEXE" list 2>/dev/null | grep -q "$LC_APP_ID"
+    [[ -n "$LC_APP_ID" ]] || return 1
+    "$LEXE" list 2>/dev/null | grep -qF -- "$LC_APP_ID"
 }
 
 # What the RUNNING program says it is, which is the only answer that cannot be

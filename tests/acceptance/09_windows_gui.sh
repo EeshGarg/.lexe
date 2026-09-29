@@ -90,7 +90,9 @@ pass "lexe build packaged a Windows GUI payload"
 
 verify_out="$("$LEXE" verify "$package" 2>&1)"
 acc_true "$?" "it passes the full verification pipeline"
-acc_contains "$verify_out" "windows" "payload-role reports a Windows payload"
+# The full clause: "windows" alone is echoed back from the package path and the
+# project name, so the loose form could not fail while those were spelled that way.
+acc_contains "$verify_out" 'applicationType "windows"' "payload-role reports a Windows payload"
 
 if ! "$LEXE" install "$package" --yes --trust >"$work/install.log" 2>&1; then
     fail "it installs" "$(sed 's/^/    /' "$work/install.log")"

@@ -85,9 +85,13 @@ acc_file_exists "$entry" "the installed entrypoint is where the record says"
 printf 'tampered' >> "$entry"
 
 run_out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"
-acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
-    "a tampered entrypoint is refused rather than executed"
-acc_contains "$run_out" "integrity" "and the refusal names integrity as the reason"
+run_status=$?
+# `-ne 0` accepted 124 -- a launch that hung for two minutes satisfied "is
+# refused", and `$?` read from inside a `$(...)` works only while the
+# substitution is the very next thing evaluated.
+acc_refused "$run_status" "a tampered entrypoint is refused rather than executed" "$run_out"
+acc_contains "$run_out" "fails its recorded integrity check" \
+    "and the refusal names integrity as the reason"
 
 acc_true "$("$LEXE" repair "$LC_APP_ID" >/dev/null 2>&1; echo $?)" \
     "repair restores the tampered entrypoint"

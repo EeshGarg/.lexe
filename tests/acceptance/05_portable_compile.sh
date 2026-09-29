@@ -58,7 +58,12 @@ pass "lexe build packaged a source-only project"
 # 1. It verifies, and the payload-role stage says what it checked.
 verify_out="$("$LEXE" verify "$package" 2>&1)"
 acc_true "$?" "the portable package passes the full verification pipeline"
-acc_contains "$verify_out" "portable" \
+# NOT the bare word "portable". `lexe verify` also prints a PORTABILITY section
+# whose text reads "... (not Core 1 portable)" for any package that exceeds the
+# symbol ceiling -- so the loose form was satisfied by output saying the exact
+# opposite of what this line claims to check, and would have kept passing if
+# payload-role stopped recognising portable packages altogether.
+acc_contains "$verify_out" 'applicationType "portable"' \
     "payload-role reports the package as portable source"
 acc_contains "$verify_out" "compiled for this host at install" \
     "payload-role says the entrypoint is produced at install, not shipped"
