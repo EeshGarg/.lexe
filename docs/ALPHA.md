@@ -233,7 +233,7 @@ than Windows because the POSIX-only behaviour is compiled in only there: the
 bubblewrap isolation and cross-process race suites, plus the individual cases
 guarded for fork/exec, symlinks, file locking and FIFOs.
 
-Beyond the unit binary, on this machine: **10 acceptance suites**, 3 lifecycle
+Beyond the unit binary, on this machine: **11 acceptance suites**, 3 lifecycle
 scripts (including the interrupted-operation torture set), the security lane, and
 2 integration scripts — all green. `./scripts/test.sh --all` runs every one of
 them and distinguishes PASS from SKIP from BLOCKED, so a capability this machine
