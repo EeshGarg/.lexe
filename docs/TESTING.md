@@ -316,3 +316,75 @@ then did not survive a reboot. Persistence, repair and uninstall are part of
 correctness, which is why `--lifecycle` interrupts operations on purpose and
 `tests/acceptance/02_persistence.sh` destroys installed state and demands that
 `lexe doctor` name each missing artifact before repairing it.
+
+## 9. When to stop building test infrastructure
+
+Every section above argues for more machinery. This one argues for less, because
+the machinery has a cost that does not show up as a failing test, and there is a
+point past which the next lane is a liability rather than an asset.
+
+The cost is not CPU time. It is that **test infrastructure is code nobody
+tests**, and this project has the numbers to prove that is not a slogan. Roughly
+a dozen defects have been found in `.LEXE` itself. **Eleven** have been found in
+the machinery built to find them — a fingerprint that hashed nothing and
+approved every run it saw; an evidence lane structurally incapable of failing; a
+relay regression that had been vacuous since the day it was written; an
+interruption suite that interrupted nothing; a mutation gate that passed having
+checked zero mutants. That ratio is about one to one. Machinery is not a free
+multiplier on confidence; it is a second body of code with its own defect rate,
+and its defects are worse than product defects because they are silent and they
+launder false confidence.
+
+So: **stop adding lanes when the marginal lane is more likely to be wrong than
+the code it would test.** Four signals that the point has arrived, in rough
+order of how early they show up.
+
+**1. The last few additions found nothing the existing lanes would not have.**
+Ask it concretely and answer with names: what did the last three lanes find? If
+the honest answer is "they found problems in themselves", the useful work is
+repairing what exists, not extending it.
+
+**2. Specimen count grows without dimension growth.** Five thousand copies of
+hello world is not five thousand tests. A corpus earns its size by spanning
+axes — link mode, symbol versioning, rpath shape, exit behaviour, output volume
+— and a specimen that differs from an existing one only in its name adds
+maintenance and subtracts nothing from the space of undetected bugs.
+
+**3. Real software is available and is not being used.** This is the strongest
+signal, and the cheapest to act on. Sixteen ordinary Linux CLI programs —
+packaged, installed and run against direct-execution baselines — produced three
+findings that 201 purpose-built synthetic specimens had not: a granted `network`
+permission on which no standard TLS client can verify a certificate, an `/etc`
+reduction that strips an application's *own* hardening so it is less restricted
+inside the sandbox than outside it, and a report contradicting its own adjacent
+line. None of those was reachable by a specimen written to test a dimension,
+because each came from software doing something nobody thought to model. Real
+software is also the better deal on maintenance: it is written and maintained by
+someone else.
+
+**4. The proportion of effort spent on observability exceeds the proportion
+spent on coverage.** A check that is not observed is not a check (§1.6). If most
+of the work is going into proving that existing checks fire, that is not a
+failure — it is the correct response to signal 1, and it is finished work when
+the existing checks are trustworthy, not when more exist.
+
+### What this rule does not apply to
+
+**The evidence lane is exempt.** `tests/evidence/` tests the machinery that
+decides whether a run may be cited at all, and it exists precisely because that
+machinery was wrong twice without anyone noticing. A stop condition on the thing
+that detects false confidence would be self-defeating.
+
+**So is anything closing a BLOCKED row in §6.** Those are claims this machine
+cannot make, recorded as gaps. Work that converts one into a demonstration is
+never "more infrastructure for its own sake" — it is the only thing that moves
+the honesty of §6 forward.
+
+### What to do instead
+
+Run real applications, and follow §1.5's rule while doing it: record the
+direct-execution baseline **first**, or a divergence is unattributable. Then
+classify every divergence as a `.LEXE` defect, intended runtime semantics with
+the specification cited, a packaging mistake, or a property of the application —
+and report intended semantics as intended, not as a finding. The temptation at
+this stage is to count divergences; the value is in attributing them.
