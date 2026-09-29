@@ -36,7 +36,42 @@ set -uo pipefail
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${LEXE_BUILD_DIR:-$REPO/build}"
-JOBS="$(nproc 2>/dev/null || echo 4)"
+# Build/test concurrency, bounded by the resource policy (docs/TESTING.md §10).
+#
+# This was `nproc`, which is 24 here and is the wrong question. A clean build
+# metered at -j6 peaks at 2938 MiB -- 71% of the policy's 4 GiB budget -- while
+# using only 23.4% CPU. Compilation of this tree costs roughly 490 MiB per
+# worker, so this project is MEMORY-bound, not core-bound, and `nproc` would
+# have run 24 workers at an extrapolated ~11.8 GiB: nearly 3x the budget, on a
+# machine whose CPU target would still have looked fine.
+#
+# Even the policy's CPU-derived ceiling, ceil(logical/2) = 12, extrapolates to
+# ~5.9 GiB and breaks the budget by 44%. Measurement beats the formula, which
+# is what §10.1 says and this is the case that proves it.
+#
+# The cap is derived from the memory budget and then held below the CPU ceiling
+# as well, so it stays correct on a small machine (4 cores -> 2 workers) and on
+# a large one (24 cores -> 6 workers, set by RAM).
+# The headroom fraction is not timidity. The 490 MiB/worker figure comes from
+# ONE measured point (j=6 -> 2938 MiB) and cannot separate fixed overhead from
+# marginal cost, so extrapolating it upward is exactly the kind of inference
+# this project distrusts. Planning to sit at 100% of budget on a one-point
+# linear model means the first link step or heavy TU puts the run over, and a
+# run that breaks the budget is an INFRASTRUCTURE FAILURE (§10.3) -- the whole
+# result is thrown away, not just slowed down.
+#
+# So the PLANNED peak targets 75% of budget, which lands on the configuration
+# actually measured safe. Without this, the arithmetic returns 8, extrapolating
+# to ~96% of budget at a concurrency nobody has measured.
+LEXE_MEM_BUDGET_MIB="${LEXE_MEM_BUDGET_MIB:-4096}"
+LEXE_MIB_PER_WORKER="${LEXE_MIB_PER_WORKER:-490}"   # measured, see §10.1
+LEXE_MEM_HEADROOM_PCT="${LEXE_MEM_HEADROOM_PCT:-75}"
+_logical="$(nproc 2>/dev/null || echo 4)"
+_cpu_cap=$(( (_logical + 1) / 2 ))                  # ceil(logical/2)
+_mem_cap=$(( (LEXE_MEM_BUDGET_MIB * LEXE_MEM_HEADROOM_PCT / 100) / LEXE_MIB_PER_WORKER ))
+JOBS=$(( _cpu_cap < _mem_cap ? _cpu_cap : _mem_cap ))
+(( JOBS >= 1 )) || JOBS=1
+JOBS="${LEXE_JOBS:-$JOBS}"
 VERBOSE=0
 DO_BUILD=1
 LANES=()
