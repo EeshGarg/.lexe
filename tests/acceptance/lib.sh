@@ -149,6 +149,36 @@ acc_equals() {
     if [[ "$1" == "$2" ]]; then pass "$3"; else fail "$3" "expected: $2" "actual:   $1"; fi
 }
 
+# acc_refused <exit-status> <description>
+#
+# For a command that was supposed to FAIL ON PURPOSE: a refused launch, a
+# rejected package, a guarded operation. The naive form of this assertion is
+# `[[ $status -ne 0 ]]`, and that form cannot tell a designed refusal from a
+# HANG.
+#
+# `timeout N cmd` exits 124 when it had to kill the command, and 128+9 = 137
+# when the kill needed SIGKILL. Neither is an exit the program chose; both mean
+# the operation never reached a decision. A refusal and a hang are opposite
+# outcomes — one proves the guard fired, the other proves nothing at all — and
+# an assertion that accepts both is green over a deadlock.
+#
+# Two acceptance checks were in exactly that state: "a failing launch
+# propagates a non-zero exit status" and "the runtime REFUSES to launch a
+# tampered entrypoint" both passed on a `timeout 20` kill.
+acc_refused() {
+    local status="$1" what="$2"
+    if [[ "$status" == "124" || "$status" == "137" ]]; then
+        fail "$what" \
+            "exit $status: the command was KILLED at the timeout. It neither" \
+            "completed nor refused, so this check observed no decision at all." \
+            "${@:3}"
+    elif [[ "$status" == "0" ]]; then
+        fail "$what" "exit 0: the command SUCCEEDED where it was required to fail" "${@:3}"
+    else
+        pass "$what (refused with exit $status)"
+    fi
+}
+
 # ----------------------------------------------------------------- binaries
 
 acc_require_binaries() {
@@ -287,8 +317,22 @@ print(eval(sys.argv[2]))
 # command printed to stdout rather than wrote to a file.
 acc_json_str() { printf '%s' "$1" | acc_json - "$2"; }
 
-acc_have_display() {
-    [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]
+# DELIBERATELY NOT `acc_have_display`.
+#
+# There used to be a helper by that name which asked `[[ -n $DISPLAY ]]` — after
+# line 29 of this very file had unset DISPLAY for the whole harness. It was
+# therefore false on every machine, in every run, forever, and the one lane that
+# gated on it (01_install_and_launch.sh's real-window checks) skipped
+# unconditionally with the reason "no WAYLAND_DISPLAY/DISPLAY on this host" —
+# blaming the host for something the harness did two hundred lines earlier.
+# Three assertions had never executed once.
+#
+# A check cannot detect what it holds constant. So the only thing left to ask
+# about the host session is what was RECORDED before it was severed, and the
+# only way to actually render anything is to bring a display of one's own:
+# scripts/lib/private-display.sh, as 08_native_gui.sh does.
+acc_host_had_session() {
+    [[ -n "${ACC_HOST_SESSION:-}" && "$ACC_HOST_SESSION" != "none" ]]
 }
 
 # How many times the payload has recorded a start of its own (the example app

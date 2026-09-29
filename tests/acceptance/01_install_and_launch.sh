@@ -12,6 +12,10 @@
 #      appears."
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+# The real-window section at the bottom needs a display, and lib.sh severed the
+# developer's session for the whole harness on purpose. So it brings its own —
+# the same private, namespaced X server 08_native_gui.sh uses.
+source "$ACC_REPO/scripts/lib/private-display.sh"
 
 acc_begin "01 install and launch"
 acc_require_binaries
@@ -140,17 +144,94 @@ else
 fi
 
 # ------------------------------------------------------------- real GUI
-# With a session display present, run the application for real (no --selftest)
-# and assert it entered its GUI path and stayed up. `launch.mode: "gui"` is what
+#
+# Run the application for real (no --selftest) and assert it entered its GUI
+# path, put a window on a display, and stayed up. `launch.mode: "gui"` is what
 # binds the display socket into the sandbox; a package that did not declare it
 # would get no display at all.
-if acc_have_display; then
-    gui_out="$ACC_ROOT/work/gui.out"
-    set +e
-    timeout 5 "$LEXE" run "$ACC_APP_ID" >"$gui_out" 2>&1
-    gui_status=$?
-    set -e
+#
+# WHY THIS SECTION LOOKS NOTHING LIKE IT USED TO. It was gated on
+# `acc_have_display`, which asked whether DISPLAY was set — inside a harness
+# whose lib.sh unsets DISPLAY at line 29, before any test runs, deliberately and
+# unconditionally. The gate was therefore false on every machine in every run
+# since it was written, all three assertions below had never executed once, and
+# the SKIP it printed blamed the host ("no WAYLAND_DISPLAY/DISPLAY on this
+# host") for something the harness itself had done. A lane cannot detect what it
+# holds constant, and an unexecuted check is not a passing check.
+#
+# The fix is not to un-sever the session — putting a window on the developer's
+# screen is forbidden (docs/TESTING.md §3) and would make the result depend on
+# whoever is logged in. It is to bring a display of our own: the private mount +
+# network namespace with its own Xvfb, from scripts/lib/private-display.sh. When
+# that is genuinely impossible here, this reports BLOCKED with the real reason,
+# which is a claim that is still unproven — not a SKIP, and never a PASS.
+#
+# The "stayed up" check no longer infers a live window from `timeout` exit 124
+# either. A hang produces 124 just as faithfully as a healthy GUI does; the
+# window is now witnessed by xwininfo, and liveness by kill -0.
+gui_report="$ACC_ROOT/work/gui-report"
+mkdir -p "$gui_report"
+
+if ! command -v xwininfo >/dev/null 2>&1; then
+    blocked "xwininfo is not installed, so a mapped window cannot be witnessed" \
+        "apt-get install x11-utils. The host session recorded at harness start" \
+        "was \"$ACC_HOST_SESSION\", but using it is forbidden regardless."
+elif ! pd_available; then
+    blocked "no private display is possible here: $PD_UNAVAILABLE_REASON" \
+        "The harness severs the developer's session by design (lib.sh), and" \
+        "binding it back is forbidden (docs/TESTING.md §3). Host session at" \
+        "harness start was \"$ACC_HOST_SESSION\"."
+else
+    # Everything below the pd_run runs inside the namespace, and results come
+    # back through FILES: the subshell cannot update this shell's counters, and
+    # an assignment that dies with a subshell is the documented way checks in
+    # this repository have silently stopped working.
+    pd_run 91 -- bash -c '
+set -uo pipefail
+report="$1"; lexe="$2"; app_id="$3"
+export LEXE_HOME="$4"
+source "$5"
+
+printf "%s" "${DISPLAY:-}" > "$report/display"
+printf "%s" "${WAYLAND_DISPLAY:-none}" > "$report/wayland"
+
+"$lexe" run "$app_id" > "$report/gui.out" 2>&1 &
+run_pid=$!
+if pd_wait_for_window 25 "Lexe GUI Hello"; then
+    printf "yes" > "$report/mapped"
+else
+    printf "no" > "$report/mapped"
+fi
+# Alive AFTER the window appeared is the claim. Reading it from `kill -0`
+# rather than from a timeout means a hang and a healthy GUI are told apart.
+if kill -0 "$run_pid" 2>/dev/null; then
+    printf "alive" > "$report/liveness"
+else
+    printf "dead" > "$report/liveness"
+fi
+pkill -f "$LEXE_HOME/apps/" 2>/dev/null
+kill "$run_pid" 2>/dev/null
+wait "$run_pid" 2>/dev/null
+printf "%s" "$?" > "$report/exit"
+' _ "$gui_report" "$LEXE" "$ACC_APP_ID" "$LEXE_HOME" \
+  "$ACC_REPO/scripts/lib/private-display.sh"
+    pd_status=$?
     acc_kill_app
+
+    gui_read() { cat "$gui_report/$1" 2>/dev/null || printf ''; }
+    gui_out="$gui_report/gui.out"
+
+    if [[ $pd_status -ne 0 && ! -s "$gui_report/display" ]]; then
+        fail "the private display served the launch" \
+            "pd_run exited $pd_status and the namespace reported nothing," \
+            "so none of the checks below observed a launch"
+    fi
+
+    acc_equals "$(gui_read display)" ":${PD_DISPLAY_NUM}" \
+        "the launch ran against a display the test owns, not the developer's session"
+    acc_equals "$(gui_read wayland)" "none" \
+        "and with no Wayland display in scope, so GTK could not reach the real desktop"
+
     log="$(acc_app_data)/gui-hello-launches.log"
     if grep -q "mode=gui" "$log" 2>/dev/null; then
         pass "the application entered its GUI path under the sandbox"
@@ -158,20 +239,24 @@ if acc_have_display; then
         fail "the application entered its GUI path under the sandbox" \
             "no mode=gui line in $log" "$(cat "$gui_out" 2>/dev/null || true)"
     fi
-    if [[ $gui_status -eq 124 ]]; then
-        pass "the GUI stayed running until the harness stopped it (a window was open)"
-    else
-        fail "the GUI stayed running until the harness stopped it" \
-            "exit status $gui_status — the application terminated early" \
-            "$(cat "$gui_out" 2>/dev/null || true)"
-    fi
-    if grep -qiE 'cannot open display|no display available|Gdk-.*(ERROR|CRITICAL)' "$gui_out"; then
-        fail "the sandbox forwarded a usable display to the application" "$(cat "$gui_out")"
+
+    acc_equals "$(gui_read mapped)" "yes" \
+        "a real top-level window appeared — witnessed by xwininfo, not by lexe"
+    acc_equals "$(gui_read liveness)" "alive" \
+        "the GUI was still running when the harness stopped it"
+
+    if grep -qiE 'cannot open display|no display available|Gdk-.*(ERROR|CRITICAL)' \
+            "$gui_out" 2>/dev/null; then
+        fail "the sandbox forwarded a usable display to the application" \
+            "$(cat "$gui_out")"
+    elif [[ ! -f "$gui_out" ]]; then
+        # The negative form of this assertion is satisfied by a file that does
+        # not exist, which would mean the launch never ran at all.
+        fail "the sandbox forwarded a usable display to the application" \
+            "no launch output was captured, so nothing was inspected"
     else
         pass "the sandbox forwarded a usable display to the application"
     fi
-else
-    skip "no WAYLAND_DISPLAY/DISPLAY on this host — the real-window check needs a session (see REBOOT.md)"
 fi
 
 acc_summary
