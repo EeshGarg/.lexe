@@ -163,12 +163,34 @@ that verification will fail. On an ordinary host it is silent.
 ### What the allowlist costs
 
 An allowlist chosen for linking and name resolution removes far more than it
-was aimed at, and some of what it removes is an application's **own security
-configuration**. This is a real, measured limitation, not a theoretical one,
-and it is written up as threat #12 in [THREAT-MODEL.md](THREAT-MODEL.md) rather
-than being claimed away here. Read that row before assuming that running
-something under `.LEXE` is at least as safe as running it directly — for one
-class of application it is not.
+was aimed at. The set of things real software reads out of `/etc` is much
+larger than linking and names: trust stores, `openssl.cnf`, `mime.types`,
+fontconfig, `timezone`, X11 resource files, and per-application security
+policy. Three consequences have been measured on this host, and they are three
+severities of the same cause:
+
+* **a granted permission that does not work** — the trust store, fixed above;
+* **an application that renders visibly wrong** — `/etc/X11/app-defaults`. On
+  Debian/Ubuntu the Xt resource search path resolves *only* there; this host
+  has no `/usr/share/X11/app-defaults` fallback. Running the host `xcalc`
+  twice and changing nothing but `XFILESEARCHPATH`/`XUSERFILESEARCHPATH`, with
+  `xwininfo` as the witness, it goes from 226x394 titled "Calculator" to 74x45
+  titled "xcalc" — a calculator with no keypad. `xmessage` goes from 67x52 to
+  51x52. Both 2/2 reproducible, and matching what the packaged applications do
+  under `.LEXE`;
+* **an application that loses its own hardening** — threat #12 in
+  [THREAT-MODEL.md](THREAT-MODEL.md), which is the one with a security
+  consequence and is documented rather than fixed.
+
+Read that row before assuming that running something under `.LEXE` is at least
+as safe as running it directly — for one class of application it is not.
+
+One thing that looked like part of this and is not: **fonts**. `/etc/fonts` is
+absent for a console launch and fontconfig says so loudly ("Cannot load default
+config file"), but in the cases measured the message was cosmetic — stdout and
+the mapped window were unaffected, and the X11 applications above use
+server-side core fonts the sandbox never touches. The noisiest symptom here was
+the least important one.
 
 ## Writable roots
 

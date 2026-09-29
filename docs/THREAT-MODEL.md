@@ -53,8 +53,17 @@ ImageMagick reports `Path: [built-in]` with `rights: None` instead.
 | Disk limit | 2GiB | unlimited |
 
 ImageMagick is only the witness; the class is "application reads its security
-policy from `/etc`", and ghostscript, fontconfig, Java security properties and
-OpenSSL's `MinProtocol`/`SECLEVEL` settings are the same shape.
+policy from `/etc`", and ghostscript, Java security properties and OpenSSL's
+`MinProtocol`/`SECLEVEL` settings are the same shape.
+
+The same root cause has two milder manifestations, which are worth naming
+because together they show the allowlist is narrow in general and not merely
+missing one file: a granted `network` permission that could not verify a
+certificate (fixed — see [ISOLATION.md](ISOLATION.md#tls-trust-store)), and GUI
+applications that render visibly wrong because `/etc/X11/app-defaults` is the
+only place the Xt resource search path resolves on Debian/Ubuntu (`xcalc` loses
+its keypad). Only the hardening case has a security consequence, and only it is
+retracted here.
 
 **Why this is not fixed by binding `/etc` read-only.** That was weighed, and it
 does work for the measured case — with all of `/etc` bound, `convert -list

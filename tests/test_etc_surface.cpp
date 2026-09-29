@@ -94,6 +94,17 @@ const std::vector<EtcEntry>& contract() {
         {"/etc/ImageMagick-6/policy.xml", Visibility::Never,
          "an application's own host-installed security policy — the witness "
          "for THREAT-MODEL.md #12"},
+        // X11 resource files. On Debian/Ubuntu the Xt search path resolves
+        // ONLY here — there is no /usr/share/X11/app-defaults fallback — so
+        // losing this directory is not cosmetic. Measured on this host with
+        // xwininfo as the witness, running the host binary twice and changing
+        // nothing but XFILESEARCHPATH/XUSERFILESEARCHPATH: xcalc goes from
+        // 226x394 titled "Calculator" to 74x45 titled "xcalc", which is a
+        // calculator with no keypad, and xmessage from 67x52 to 51x52. Both
+        // 2/2 reproducible.
+        {"/etc/X11/app-defaults", Visibility::Never,
+         "Xt application resource files; a GUI application silently renders "
+         "wrong without them"},
         {"/etc/mime.types", Visibility::Never, "content-type database"},
         {"/etc/timezone", Visibility::Never, "the host's timezone name"},
         {"/etc/hostname", Visibility::Never, "the host's name"},
