@@ -69,7 +69,12 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --------------------------------------------------------------- configuration
 ARM_PORT="${LEXE_ARM_PORT:-8022}"
-ARM_SSH="${LEXE_ARM_SSH:-ssh -p $ARM_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 localhost}"
+ARM_USER="${LEXE_ARM_USER:-u0_a248}"
+ARM_KEY="${LEXE_ARM_KEY:-$HOME/.ssh/lexe_arm_worker}"
+# Key-only, and deliberately so: BatchMode plus PasswordAuthentication=no means
+# an unattended run FAILS instead of blocking on a prompt nobody will answer,
+# and no password can be typed, logged, or captured into an evidence file.
+ARM_SSH="${LEXE_ARM_SSH:-ssh -p $ARM_PORT -i $ARM_KEY -o IdentitiesOnly=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $ARM_USER@127.0.0.1}"
 ARM_JOBS="${LEXE_ARM_JOBS:-2}"           # tablet: start low, thermal headroom
 ARM_WORK="${LEXE_ARM_WORK:-\$HOME/lexe-arm}"   # expanded ON the worker
 ARM_DISTRO="${LEXE_ARM_DISTRO:-debian}"  # proot-distro name
@@ -267,11 +272,49 @@ done")"
 # mapped here is printed as UNMAPPED rather than quietly run or quietly
 # dropped -- a mapping that silently drifts is the "a check cannot detect what
 # it holds constant" failure wearing a config file.
-L1_SUITES="crypto,ed25519_strict,json_strict,manifest,elf,pe,package,limits,tux32,depengine,compat,paths,architecture,envelope-seams,payload_role,presentation,runtime-profile,launch-cost,execution-architecture,buildreport,permissions,settings,http"
-L2_SUITES="installer,transaction,registry,storage,crash_recovery,repair-after-rollback,trust,trust-adversarial,trust-lifecycle,hostile_packages,invariants,install_reporting,no_execution,health_check,lock,concurrent-state,cli,cli_apps,cli_inspect,cli_e2e,cli_sdk_verify,cli_ux,builder,security-boundary,integration-durability"
+L1_SUITES="crypto,ed25519_strict,json_strict,manifest,elf,pe,package,limits,tux32,depengine,compat,paths,architecture,envelope-seams,payload_role,presentation,runtime-profile,launch-cost,execution-architecture,buildreport,permissions,settings,http,tux32-verify,ui,util,verify,version,versioncmp"
+L2_SUITES="installer,transaction,registry,storage,crash_recovery,repair-after-rollback,trust,trust-adversarial,trust-lifecycle,hostile_packages,invariants,install_reporting,no_execution,health_check,lock,concurrent-state,cli,cli_apps,cli_inspect,cli_e2e,cli_sdk_verify,cli_ux,builder,security-boundary,integration-durability,uninstall_paths,updater"
 L3_SUITES="launcher,hostbuild,race"
 L4_SUITES="isolation,isolation_linux,etc_surface,desktop,session-units,gui"
 L5_SUITES="proton"
+
+# Every suite the binary has must belong to a level.
+#
+# This is not bookkeeping. `-ts=a,b,c` silently runs nothing for a name that
+# does not exist, and a suite absent from every list is silently never run --
+# so "levels 0-3 passed on ARM" would be a claim about a subset nobody
+# enumerated, shrinking quietly as the suite grows. Written as a runtime check
+# rather than a one-off, because a one-off audit is true on the day it is run.
+#
+# It found eight on its first execution -- tux32-verify, ui, uninstall_paths,
+# updater, util, verify, version, versioncmp -- in a mapping written the same
+# afternoon.
+audit_level_mapping() {
+    local mapped
+    mapped="$(printf '%s\n%s\n%s\n%s\n%s\n' "$L1_SUITES" "$L2_SUITES" "$L3_SUITES" \
+                 "$L4_SUITES" "$L5_SUITES" | tr ',' '\n' | grep -v '^$' | sort -u)"
+    local have
+    have="$(arm_guest "cd $ARM_WORK/repo && ./build-arm64/lexe_tests --list-test-suites 2>/dev/null" \
+            | sed -n '3,$p' | grep -v '^\[doctest\]' | grep -v '^=*$' \
+            | sed 's/[[:space:]]*$//' | grep -v '^$' | sort -u)"
+    [[ -n "$have" ]] || { block "could not list suites on the worker; level coverage UNVERIFIED"; return 1; }
+
+    local unmapped stale
+    unmapped="$(comm -23 <(printf '%s\n' "$have") <(printf '%s\n' "$mapped"))"
+    stale="$(comm -13 <(printf '%s\n' "$have") <(printf '%s\n' "$mapped"))"
+
+    if [[ -n "$unmapped" ]]; then
+        bad "suites belong to no level and would never run here:"
+        printf '%s\n' "$unmapped" | sed 's/^/          /'
+        return 1
+    fi
+    if [[ -n "$stale" ]]; then
+        block "level lists name suites the binary does not have (they match nothing):"
+        printf '%s\n' "$stale" | sed 's/^/          /'
+    fi
+    ok "level mapping covers every suite the worker's binary reports"
+    return 0
+}
 
 run_level_suites() {  # <level> <comma-list>
     local level="$1" suites="$2"
@@ -307,6 +350,9 @@ echo READELF=\$(readelf -h build-arm64/lexe 2>/dev/null | awk '/Machine:/{print 
         return 1
     fi
     [[ "$want" -ge 1 ]] || return 0
+
+    # Before claiming a level passed, establish that the levels cover the suite.
+    audit_level_mapping || true
 
     say "  -- LEVEL 1: pure unit logic (parsers, format, crypto)"
     run_level_suites 1 "$L1_SUITES"; local r1=$?
