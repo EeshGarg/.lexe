@@ -936,9 +936,31 @@ void collect_tree(const fs::path& dir, const std::string& prefix,
                   std::vector<WriteEntry>& out) {
     for (fs::recursive_directory_iterator it(dir), end; it != end; ++it) {
         if (fs::is_symlink(it->symlink_status())) {
-            throw Error("pack: symbolic links are not supported in package "
-                        "sources: " +
-                        it->path().string());
+            // Say what this COSTS, not only what it forbids.
+            //
+            // The rule itself is FORMAT-0.1 §2: a reader must reject an entry
+            // whose mode is S_IFLNK, because a link extracted from an archive
+            // is the classic way out of the directory it was extracted into.
+            // That is not up for negotiation here.
+            //
+            // But the message named the file and stopped, and the two cases
+            // that actually hit it are not obvious from that. A real source
+            // tarball carries links; and a shared library's ordinary version
+            // chain -- libfoo.so -> libfoo.so.1 -> libfoo.so.1.2.3 -- is two
+            // links and one file, so a package cannot bundle a `.so` the way
+            // every build system produces it. A publisher who is told only
+            // "symbolic links are not supported" has to work that out from
+            // first principles while looking at a build tree that seems fine.
+            throw Error(
+                "pack: symbolic links are not supported in package sources: " +
+                    it->path().string(),
+                "FORMAT-0.1 §2 requires a reader to reject symlink entries: a "
+                "link extracted from an archive is how an archive escapes the "
+                "directory it was extracted into. Replace the link with the "
+                "file it points at. Note this also means a shared library's "
+                "usual `libfoo.so -> libfoo.so.1 -> libfoo.so.1.2.3` chain "
+                "cannot be packaged as-is -- bundle the real file under the "
+                "name the entrypoint links against.");
         }
         if (it->is_directory()) continue;
         if (!it->is_regular_file()) {

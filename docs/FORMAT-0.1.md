@@ -75,6 +75,24 @@ Writers (i.e. `lexe pack`) MUST produce **deterministic** archives:
 * entries are added in lexicographic byte order of their full path;
 * all entry timestamps are zeroed (the reference implementation compiles miniz with
   `MINIZ_NO_TIME`);
+
+  **What this costs a `portable` package, stated because it is not obvious.**
+  Zeroed timestamps mean a package carries no *relative* modification order
+  between its files. On install, extraction writes them in archive order and
+  they take the wall-clock time as they land — so the installed tree's mtimes
+  reflect the order they were written, not the order the publisher built them.
+  A build system that treats mtime ordering as its rebuild signal will
+  therefore draw conclusions the publisher did not intend. Autotools is the
+  common case: it may decide `configure` is older than `configure.ac` and try
+  to regenerate it with tools the build sandbox does not have and cannot
+  fetch, since the build runs with the network denied.
+
+  This is a deliberate trade, not an oversight. Reproducible packing requires
+  that the same inputs produce the same bytes, and embedded timestamps destroy
+  that. A `portable` package whose build is mtime-sensitive should ship
+  pre-generated artifacts and a recipe that does not try to regenerate them —
+  for autotools, that means shipping `configure` and invoking it directly
+  rather than relying on `make` to decide whether it is stale.
 * entry paths use forward slashes (`/`) and are UTF-8;
 * compression is DEFLATE at a fixed level (9), or STORE for entries smaller than
   64 bytes;
