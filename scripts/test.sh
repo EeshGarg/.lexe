@@ -445,7 +445,27 @@ sanitizers_run() {
         -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" >/dev/null || return 1
-    cmake --build "$san_dir" -j "$JOBS" --target lexe_tests || return 1
+    # Sanitizer builds get their OWN, lower concurrency.
+    #
+    # docs/TESTING.md §10.1 already said they would. This line said `-j $JOBS`
+    # and inherited the ordinary build's 6 -- so the document described a limit
+    # that nothing implemented, which is the failure this project keeps finding
+    # in its own machinery and had here in its own resource policy. It surfaced
+    # the way these things do: the machine showing 3.2 GB while the sanitizer
+    # lane was compiling.
+    #
+    # ASan instruments every memory access and carries shadow-memory metadata
+    # through the compiler, so a translation unit costs substantially more to
+    # build than it does unsanitized. The exact multiplier here is NOT yet
+    # measured, so this halves the worker count rather than inventing a
+    # per-worker figure to divide by -- a conservative bound honestly labelled,
+    # instead of a precise-looking number with nothing behind it. When
+    # SAN_MIB_PER_WORKER is measured, this should switch to the same budget
+    # arithmetic JOBS uses.
+    SAN_JOBS="${LEXE_SAN_JOBS:-$(( JOBS / 2 ))}"
+    (( SAN_JOBS >= 1 )) || SAN_JOBS=1
+    printf '  sanitizer build at -j%s (ordinary builds use -j%s)\n' "$SAN_JOBS" "$JOBS"
+    cmake --build "$san_dir" -j "$SAN_JOBS" --target lexe_tests || return 1
     : > "$stamp" # the build completed; this tree may be trusted incrementally
     # The vendored ed25519 performs signed left-shifts that UBSan reports.
     # Suppress them BY NAME so a new finding is still visible, rather than

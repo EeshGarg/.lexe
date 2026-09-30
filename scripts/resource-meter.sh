@@ -56,6 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $# -gt 0 ]] || usage
 
+CLK_TCK="$(getconf CLK_TCK 2>/dev/null || echo 100)"
 NCPU="$(nproc 2>/dev/null || echo 1)"
 [[ "$NCPU" -gt 0 ]] || NCPU=1
 
@@ -85,10 +86,10 @@ while kill -0 "$child" 2>/dev/null; do
     # One ps per sample; awk computes the transitive closure of descendants of
     # $child by iterating to a fixpoint, because `ps` output is in no useful
     # order and a child can appear before its parent.
-    read -r sum_rss sum_cpu < <(
-        ps -eo pid=,ppid=,rss=,pcpu= 2>/dev/null |
+    read -r sum_rss sum_jiffies < <(
+        ps -eo pid=,ppid=,rss= 2>/dev/null |
         awk -v root="$child" '
-            { pid[$1]=$1; par[$1]=$2; rss[$1]=$3; cpu[$1]=$4; ord[++n]=$1 }
+            { par[$1]=$2; rss[$1]=$3; ord[++n]=$1 }
             END {
                 mine[root]=1
                 changed=1
@@ -99,11 +100,44 @@ while kill -0 "$child" 2>/dev/null; do
                         if (!mine[p] && mine[par[p]]) { mine[p]=1; changed=1 }
                     }
                 }
-                r=0; c=0
-                for (i=1;i<=n;i++) { p=ord[i]; if (mine[p]) { r+=rss[p]; c+=cpu[p]*10 } }
-                printf "%d %d\n", r, c
+                r=0; j=0
+                for (i=1;i<=n;i++) {
+                    p=ord[i]
+                    if (!mine[p]) continue
+                    r += rss[p]
+                    # utime+stime in clock ticks, fields 14 and 15 of
+                    # /proc/<pid>/stat. Read here rather than taking ps -o
+                    # pcpu, which is the process LIFETIME AVERAGE: summing
+                    # that across many short-lived compilers reported 107.1%
+                    # of 24 CPUs, which is not a possible number. CPU used
+                    # between two samples is a difference of counters, not a
+                    # sum of averages.
+                    f = "/proc/" p "/stat"
+                    if ((getline line < f) > 0) {
+                        # comm can contain spaces and parentheses; everything
+                        # after the last ")" is positionally reliable.
+                        k = index(line, ")")
+                        rest = substr(line, k + 2)
+                        m = split(rest, fld, " ")
+                        # rest[1] is state, so utime is 12 and stime 13 here.
+                        if (m >= 13) j += fld[12] + fld[13]
+                    }
+                    close(f)
+                }
+                printf "%d %d\n", r, j
             }'
     )
+    # Instantaneous tree utilization = ticks consumed between samples, over
+    # ticks available in that wall time across all CPUs.
+    sum_cpu=0
+    if [[ -n "${prev_jiffies:-}" && -n "${sum_jiffies:-}" ]]; then
+        delta=$(( sum_jiffies - prev_jiffies ))
+        (( delta < 0 )) && delta=0
+        # tenths of a percent of ONE cpu, to match the reporting below
+        avail=$(awk -v i="$INTERVAL" -v hz="$CLK_TCK" 'BEGIN{printf "%d", i*hz}')
+        (( avail > 0 )) && sum_cpu=$(( delta * 1000 / avail ))
+    fi
+    prev_jiffies="${sum_jiffies:-0}"
     if [[ -n "${sum_rss:-}" && "$sum_rss" -gt 0 ]]; then
         (( sum_rss > peak_rss_kb )) && peak_rss_kb=$sum_rss
         (( sum_cpu > peak_cpu_pct )) && peak_cpu_pct=$sum_cpu
