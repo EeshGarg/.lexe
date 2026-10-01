@@ -193,23 +193,24 @@ lc_complete_install() {
     else
         out="$("$LEXE" install "$package" --yes --trust 2>&1)"
         local st=$?
-        # Exit 6 is "the requested state already holds", which the CLI documents
-        # as distinct from exit 1 ("the install was attempted and failed"). It
-        # is a legitimate completion here and not a failure:
+        # Exactly 0. This used to accept 6 as well, and the reason it gave was
+        # true of the runtime at the time: installation.json is read BEFORE this
+        # invocation, an interrupted install leaves a pending transaction, and
+        # the next `lexe install` rolls it forward first -- after which it
+        # reported exit 6, "already installed and current".
         #
-        #   installation.json is read BEFORE this invocation runs, and an
-        #   interrupted install leaves a pending transaction that the next
-        #   `lexe install` rolls forward before it does anything else. So the
-        #   file can still say 1.0.0 while the very next command recovers to
-        #   2.0.0 and then, correctly, reports that there is nothing left to do.
+        # 45704e1 decided that report was the defect: exit 6 means the requested
+        # state ALREADY held and this call did nothing (docs/ERRORS.md §6), and
+        # a call that healed an interrupted install did something. It now
+        # returns 0. Still accepting 6 here kept the old misreport legal in the
+        # one lane built to provoke it, so a regression of 45704e1 would have
+        # passed through this suite unnoticed.
         #
-        # Treating 6 as failure made "the update can be completed after being
-        # interrupted" fail against a runtime that had completed it perfectly
-        # -- and the coherence check on the NEXT line passed at the new version,
-        # which is how obvious it was once the failure said which step it was.
-        # The end state is still demanded in full below; only the route to it
-        # has one more legitimate shape.
-        if [[ $st -ne 0 && $st -ne 6 ]]; then
+        # This branch is only reached when the recorded version is NOT the
+        # target, so neither route -- heal forward, or install normally -- has a
+        # legitimate 6. The deterministic observer is tests/test_install_reporting.cpp;
+        # this one fires only on runs where the kill lands after promotion.
+        if [[ $st -ne 0 ]]; then
             LC_COMPLETE_DETAIL="re-running \`lexe install\` failed (exit $st): $out"
             return 1
         fi
