@@ -804,7 +804,16 @@ lane_summary() {
     acceptance)
         grep -oE 'all [0-9]+ automated acceptance scripts passed' "$2" | tail -1 || true ;;
     *)
-        grep -oE '[0-9]+ passed, [0-9]+ failed(, [0-9]+ skipped)?(, [0-9]+ blocked)?' "$2" | tail -1 || true ;;
+        # The line with the MOST blocked, ties to the latest -- the same rule
+        # run_lane uses to decide BLOCKED. `tail -1` alone read the last
+        # sub-script's count, so the 09dbde0 run recorded
+        # `BLOCK workloads  21 passed, 0 failed, 0 skipped, 0 blocked`: a verdict
+        # of BLOCKED over a sentence saying nothing was, because the block was
+        # in the corpus half and the last line was the lifecycle half's.
+        grep -oE '[0-9]+ passed, [0-9]+ failed(, [0-9]+ skipped)?(, [0-9]+ blocked)?' "$2" |
+            awk '{ n = match($0, /[0-9]+ blocked/) ? substr($0, RSTART, RLENGTH) + 0 : 0
+                   print n "\t" NR "\t" $0 }' |
+            sort -t "$(printf '\t')" -k1,1nr -k2,2nr | head -1 | cut -f3- || true ;;
     esac
 }
 
