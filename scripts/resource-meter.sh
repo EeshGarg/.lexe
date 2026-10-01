@@ -75,7 +75,34 @@ NCPU="$(nproc 2>/dev/null || echo 1)"
 # build and test drivers, which wait on their children, that does not normally
 # happen; for a daemon that deliberately detaches, this tool will under-report
 # and should not be the only observer.
-"$@" &
+#
+# Launched so that measuring a command does not CHANGE it. A bare `"$@" &` in a
+# non-interactive shell does two things to the command besides backgrounding
+# it: bash sets SIGINT and SIGQUIT to ignored in the child, and points its
+# stdin at /dev/null. Measured: SigIgn 0x1000 run directly, 0x1006 under this
+# meter; and the corpus specimen linux-signal-death-sigquit, which dies by
+# SIGQUIT run directly, exited 0 under it -- so a metered corpus generation
+# recorded a baseline-mismatch that was this tool's, and every lane of a
+# metered `test.sh --all` ran with both signals ignored.
+#
+# So stdin is passed through explicitly, and SIGINT/SIGQUIT are put back to
+# their default with `env --default-signal` -- but only where THIS shell did not
+# itself inherit them ignored. A caller that deliberately ignores one (nohup,
+# a supervisor) must see that preserved, not overridden.
+#
+# What the caller handed us is read from a FOREGROUND CHILD's /proc/self, not
+# from /proc/$$: bash's own kernel mask is not what it inherited (a script
+# shell here shows SIGQUIT ignored in itself while its children receive it at
+# default), and a foreground child is given exactly the inherited dispositions.
+own_ign="$(awk '/^SigIgn:/ {print $2}' /proc/self/status 2>/dev/null || echo 0)"
+restore=()
+(( (16#${own_ign:-0} & 0x2) == 0 )) && restore+=(INT)
+(( (16#${own_ign:-0} & 0x4) == 0 )) && restore+=(QUIT)
+if [[ ${#restore[@]} -gt 0 ]]; then
+    env --default-signal="$(IFS=,; printf '%s' "${restore[*]}")" -- "$@" <&0 &
+else
+    "$@" <&0 &
+fi
 child=$!
 
 peak_rss_kb=0
