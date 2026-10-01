@@ -106,8 +106,40 @@ make_pkg 3.0.0 "$KEYS/A.json" "$WORK/a3net.lexe" network
 make_pkg 2.0.0 "$KEYS/B.json" "$WORK/b2.lexe"
 assert_file "$WORK/a1.lexe"; assert_file "$WORK/b2.lexe"
 
+# The interactive "yes", written down. A REGULAR FILE, not `printf 'y\n' |`.
+#
+# REFERENCE-POLICY.md §4: a confirmation prompt reads stdin only when it is a
+# terminal or a regular file, and refuses anything else -- a pipe included --
+# with exit 5, because an open pipe that nothing writes to held `lexe install`
+# in getline for 180 seconds. This file piped its "y" for the whole time that
+# rule has existed (2164dd9), so the install in step 2 was refused, and nothing
+# here looked at its exit status: the preview text it greps is printed BEFORE
+# the prompt, so step 2 stayed green while steps 3-9 failed eight times over on
+# an application that had never been installed -- the last of them as a
+# changed-key conflict that was really key B landing on an empty slot.
+ANSWER_YES="$WORK/answer-yes"; printf 'y\n' > "$ANSWER_YES"
+install_status() { # <expected status> <label> <package> -- stdin is the answer
+  "$LEXE" install "$3" >"$TX_OUT" 2>"$TX_ERR"; local got=$?
+  [[ "$got" == "$1" ]] && pass "$2 (exit $got)" \
+    || { fail "$2: exit $got, wanted $1"; sed 's/^/    ! /' "$TX_ERR"; }
+}
+
+step "a pipe cannot answer the prompt: refused with exit 5, nothing installed"
+# The old form of this step, kept as the negative it always secretly was. It
+# observes the §4 rule from this lane, and it is what makes the positive below
+# mean something: the same command and package, differing only in what stdin is.
+#
+# `< <(printf ...)`, not `printf ... |`: stdin is a pipe either way, but on the
+# right of a `|` this function would run in a subshell and its FAILED count would
+# die with it -- a negative that could never fail the script.
+install_status 5 "a piped answer is refused, not waited on" "$WORK/a1.lexe" \
+  < <(printf 'y\n')
+grep_out "not a file holding an answer"
+assert_absent "$LEXE_HOME/apps/$ID"
+
 step "install preview shows first-seen, not-verified, fingerprint"
-printf 'y\n' | "$LEXE" install "$WORK/a1.lexe" >"$TX_OUT" 2>"$TX_ERR"
+install_status 0 "an answer written in a file confirms the install" \
+  "$WORK/a1.lexe" < "$ANSWER_YES"
 grep_out "first seen"
 grep_out "not independently verified"
 grep_out "Signing key fingerprint"
@@ -122,7 +154,8 @@ grep_out '"localKeyState": *"known"'
 grep_out '"identityVerified": *false'
 
 step "same-key update reports a KNOWN key and installs"
-printf 'y\n' | "$LEXE" install "$WORK/a2.lexe" >"$TX_OUT" 2>"$TX_ERR"
+install_status 0 "the same-key update is confirmed and installs" \
+  "$WORK/a2.lexe" < "$ANSWER_YES"
 grep_out "known publisher key"
 expect_exit 0 run "$ID"
 
