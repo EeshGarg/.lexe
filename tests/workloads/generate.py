@@ -2602,6 +2602,12 @@ def main():
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "generator": {"file": os.path.basename(__file__),
                       "sha256": sha256_file(os.path.abspath(__file__)),
+                      # Every file besides this one that writes into a
+                      # baseline. against_lexe.py re-hashes each and refuses a
+                      # corpus whose baselines other code recorded: the GUI
+                      # baselines once held the wrapper's own job-control line.
+                      "baseline_harness": {
+                          os.path.relpath(PD_LIB, REPO): sha256_file(PD_LIB)},
                       "specs_dir": SPECS,
                       "wall_seconds": elapsed,
                       "jobs": args.jobs},

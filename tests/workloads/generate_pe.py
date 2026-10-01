@@ -3529,6 +3529,10 @@ def main():
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "generator": {"file": os.path.basename(__file__),
                       "sha256": sha256_file(os.path.abspath(__file__)),
+                      # See generate.py: every other file that writes into a
+                      # baseline, re-hashed by against_lexe.py before use.
+                      "baseline_harness": {
+                          os.path.relpath(PD_LIB, REPO): sha256_file(PD_LIB)},
                       "specs_dir": SPECS,
                       "wall_seconds": elapsed,
                       "setup_seconds": setup_seconds,

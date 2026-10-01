@@ -245,6 +245,17 @@ run_pass() {   # $1 corpus  $2 index  $3 half  $4 selector  rest: engine args
              "$(sed -n '/CORPUS AND EXPECTATIONS/,$p' "$log")"
         return
     fi
+    # Exit 4: the corpus was not made by this tree's generator and harness, so
+    # its baselines describe other code. Nothing ran and the missing thing is
+    # an input, which is BLOCKED -- not FAIL, which would blame the runtime for
+    # a baseline, and the exact mistake this guard exists to stop: a stale
+    # $HOME corpus once had .LEXE "losing" 138 bytes of the wrapper's own
+    # job-control message.
+    if [[ $rc -eq 4 ]]; then
+        blocked "$corpus ($half): the corpus is stale — its baselines were recorded by other code" \
+                "$(sed -n '/STALE CORPUS/,$p' "$log")"
+        return
+    fi
 
     local res="$out/results.json"
     if [[ ! -f "$res" ]]; then
