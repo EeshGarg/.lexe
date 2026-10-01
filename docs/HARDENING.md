@@ -49,8 +49,25 @@ Corpus packages are constructed in-test (raw miniz / raw bytes where the
 Installation MUST be transactional: extract + verify into a staging directory
 under `apps/<id>/.txn-staging/` (same filesystem), verify the staged tree,
 atomically rename to `versions/<v>/`, then atomically flip `current`
-(temp-name + rename for both symlink and `current.txt`). Any `lexe` command
-sweeps stale staging dirs on startup.
+(temp-name + rename for both symlink and `current.txt`).
+
+Interrupted work is finished by the **next `install` of the same application**,
+under its mutation lock: `recover_locked` rolls an unpromoted transaction back
+(sweeping its staging dir) or completes a promoted one forward, and deletes the
+tombstone an interrupted uninstall left in `apps/.removing/<id>` (case 9).
+Uninstall sweeps that tombstone too. This paragraph used to say "any `lexe`
+command sweeps stale staging dirs on startup"; nothing did — `recover_all`
+exists and is exercised by the tests, but no command calls it. What makes that
+acceptable is that the debris is **unreachable** in the meantime: staging lives
+under `.txn-staging/`, which nothing launches, and a tombstone lives where no
+enumeration of applications looks. FORMAT-0.1 §9.2 is about what is reachable
+and claimed, and that holds at every instant without a startup sweep.
+
+Uninstall is atomic by the same means as install: `apps/<id>` is **renamed** to
+`apps/.removing/<id>` and only then deleted. It used to be one `remove_all`,
+whose order is readdir's, and a SIGKILL between `versions/` and
+`installation.json` left an application listed as installed at a version with
+no directory — measured in 6 of 12 runs of `tests/lifecycle/02_interrupted.sh`.
 
 Fault injection: a test-only hook (`LEXE_TEST_FAULT=<site>` env var checked by a
 `maybe_fault(site)` helper compiled in tests/debug builds) aborts the process at

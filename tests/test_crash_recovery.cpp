@@ -182,4 +182,49 @@ TEST_CASE("recovery of a crash DURING rollback is still idempotent") {
     CHECK(Registry(paths).current_version(kId) == "1.0.0");
 }
 
+TEST_CASE("an uninstall killed partway leaves the application wholly absent") {
+    // HARDENING.md §C.9, FORMAT-0.1 §9.2. Uninstall used to delete apps/<id>
+    // with one remove_all, whose order is readdir's: half the time versions/
+    // went before installation.json, and a SIGKILL between them left an
+    // application `lexe list` reported as installed at a version whose
+    // directory was gone. The lifecycle lane saw it in 6 of 12 runs.
+    //
+    // The failpoint sits after the payload has left apps/<id> and before any
+    // of it is deleted -- the instant at which the old code could be holding
+    // the claim without the files.
+    test::TempLexeHome home;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path work = home.path() / "work";
+    fs::create_directories(work);
+    const fs::path pkg = build_pkg(work, key, kId, "1.0.0");
+    Installer(paths).install(pkg, InstallOptions{});
+    const Registry registry(paths);
+    REQUIRE(registry.is_installed(kId));
+
+    {
+        ScopedFault fault("uninstall-after-detach");
+        CHECK_THROWS(Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly));
+    }
+
+    // Not vacuous: the payload really is still on disk, just not where
+    // anything that enumerates applications looks.
+    const fs::path tomb = paths.apps_dir() / ".removing" / kId;
+    CHECK(fs::is_directory(tomb / "versions" / "1.0.0"));
+
+    // Wholly absent, by three readings that fail for different reasons: the
+    // id lookup, the enumeration `lexe list` uses, and the directory itself.
+    CHECK_FALSE(registry.is_installed(kId));
+    CHECK(registry.list_installed().empty());
+    CHECK_FALSE(fs::exists(registry.app_dir(kId)));
+    assert_consistent(paths);
+
+    // And it does not get in the way: the next operation on the id finishes
+    // the removal, and a reinstall lands whole.
+    Installer(paths).install(pkg, InstallOptions{});
+    CHECK_FALSE(fs::exists(tomb));
+    CHECK(registry.current_version(kId) == "1.0.0");
+    assert_consistent(paths);
+}
+
 } // TEST_SUITE("crash_recovery")

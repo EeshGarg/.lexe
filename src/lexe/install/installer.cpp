@@ -861,7 +861,25 @@ void Installer::recover(const std::string& id) {
     recover_locked(id);
 }
 
+fs::path Installer::removal_tomb(const std::string& id) const {
+    // app_dir validates the id, so the tombstone name is as safe as it is.
+    return Registry(paths_).app_dir(id).parent_path() / ".removing" / id;
+}
+
+void Installer::sweep_removed_locked(const std::string& id) {
+    // The remains of an uninstall that was killed after it detached the
+    // application. Unreachable already, so this is tidiness, not correctness --
+    // which is why a failure here is not allowed to fail the operation that
+    // happened to notice it.
+    std::error_code ec;
+    fs::remove_all(removal_tomb(id), ec);
+}
+
 std::optional<std::string> Installer::recover_locked(const std::string& id) {
+    // An interrupted UNINSTALL is finished here too: it is the other
+    // transaction that can be cut short, and this is where interrupted work is
+    // completed before a new operation on the same id begins.
+    sweep_removed_locked(id);
     const Registry registry(paths_);
     TransactionJournal journal;
     try {
@@ -1099,7 +1117,34 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
         }
         util::remove_recursive(path);
     }
-    util::remove_recursive(registry.app_dir(id));
+
+    // The application directory goes in ONE step: renamed out of `apps/`, and
+    // only then deleted.
+    //
+    // It used to be one `remove_recursive(app_dir)`, and that directory holds
+    // both the CLAIM (`installation.json`) and what the claim refers to
+    // (`versions/`). `remove_all` deletes them in whatever order readdir
+    // returns, so an uninstall killed partway could leave installation.json
+    // recording 3.0.0 as current with versions/3.0.0 already gone -- an
+    // application `lexe list` reports as installed, whose files are missing.
+    // FORMAT-0.1 §9.2 forbids exactly that state "at any instant at which a
+    // runtime could be terminated", and HARDENING.md §C.9 names the case. The
+    // lifecycle lane (02_interrupted, "killed during uninstall") hit it in 6
+    // of 12 runs, idle or loaded alike: which entry readdir yields first.
+    //
+    // A rename within `apps/` is atomic, so at every instant the application
+    // is either wholly present or wholly absent. The tombstone sits one level
+    // down, in `apps/.removing/`, where nothing that enumerates applications
+    // looks: `list_installed` wants `apps/<x>/installation.json` and
+    // `recover_all` wants `apps/<x>/txn.json`, and `.removing` holds neither.
+    // A kill after the rename leaves only unreachable bytes, swept by the next
+    // mutation of this id (`sweep_removed_locked`, under the same lock).
+    sweep_removed_locked(id);
+    const fs::path tomb = removal_tomb(id);
+    fs::create_directories(tomb.parent_path());
+    fs::rename(registry.app_dir(id), tomb);
+    fault::maybe("uninstall-after-detach");
+    util::remove_recursive(tomb);
 
     // The per-version LEASE files, which used to outlive the application.
     //

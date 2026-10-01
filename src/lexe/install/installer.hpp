@@ -260,6 +260,13 @@ private:
     /// changed anything.
     std::optional<std::string> recover_locked(const std::string& id);
 
+    /// Where `uninstall` moves `apps/<id>` before deleting it:
+    /// `apps/.removing/<id>`. The rename is what makes removal atomic.
+    std::filesystem::path removal_tomb(const std::string& id) const;
+    /// Deletes a tombstone a killed uninstall left behind. Best-effort;
+    /// assumes the per-app mutation lock is held.
+    void sweep_removed_locked(const std::string& id);
+
     Paths paths_;
     std::shared_ptr<OperationLockManager> locks_;
     WaitPolicy mutation_wait_ = WaitPolicy::bounded(std::chrono::seconds(10));
