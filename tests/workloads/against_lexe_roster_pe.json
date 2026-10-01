@@ -176,8 +176,7 @@
    "class": "classified-divergence"
   },
   "pe-gui-console-subsystem-window": {
-   "class": "no-defensible-expectation",
-   "why": "the corpus records this specimen's own verdict as 'baseline-mismatch' (proton-wine: exit code varied across repeats: [-9, 0]). There is no trustworthy direct-execution baseline to compare against, so nothing can be expected of it under .LEXE either. Fix it in the generator, not here."
+   "class": "baseline-identical"
   },
   "pe-gui-gdi-pixels": {
    "class": "baseline-identical"

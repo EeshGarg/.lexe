@@ -675,6 +675,21 @@ window, under Proton's own Wine, on the private display, with the GUI prefix
 serialised. `exit_code` was `-9` and `timed_out` true, so the harness killed it;
 the guest produced no further oracle lines.
 
+**Observations added 2026-10-01**, as asked above: 25 further `proton-wine`
+repeats, **all clean** — 5 in the regenerated corpus and 20 in a dedicated
+`--only … --repeats 20` probe (exit 0 every time, no unstable lines, ~1.1 s) —
+and 20 `wine` repeats, likewise clean. That is 1 hang in 35 observations, not 1
+in 10. It is **not** evidence the hang is gone: at one in ten, 25 clean in a row
+happens about 7% of the time. Still open.
+
+What changed is narrower. The workloads lane runs PE specimens through the
+`wine` chain and compares against the `wine` baseline, which has never shown
+the hang. With a baseline-ok corpus the roster's old reason for blocking this
+specimen ("the corpus records … baseline-mismatch") was no longer true, so it
+is now `baseline-identical` — and passed 3 of 3 under `.LEXE` before that was
+committed. If a regeneration catches the hang again, the corpus verdict drops it
+from that pass; record the observation here.
+
 ### `blocked` is a third verdict, and it exists because of a defect
 
 An evidence audit found `pe-io-stdin-under-proton-run` recorded as
