@@ -274,11 +274,15 @@ workloads_check() {
         return 1
     }
     local elf_index="${LEXE_WORKLOAD_ELF_INDEX:-/tmp/lexe-workloads/index.json}"
-    printf '  corpora: %s\n           %s\n' "$elf_index" "$pe_index"
+    # Both refusals BEFORE anything is printed. run_lane classifies a failed
+    # check by whether its output STARTS with "blocked:", and the corpora line
+    # used to come first -- so a missing ELF corpus beside a present PE one was
+    # recorded SKIP, "not applicable here", which is the opposite claim.
     [[ -f "$elf_index" ]] || {
         echo "blocked: the ELF workload corpus is not generated (python3 tests/workloads/generate.py); an unexecuted specimen is not coverage"
         return 1
     }
+    printf '  corpora: %s\n           %s\n' "$elf_index" "$pe_index"
 }
 
 explore_check() {
@@ -727,6 +731,12 @@ run_lane() {
         record "$lane" "$state" "$reason"
         return 0
     fi
+    # A check that passes may still have something to say -- workloads_check
+    # names the corpora it is about to judge, precisely so a stale copy in
+    # another directory is visible in the run's own output. This line used to
+    # be absent, so that output was captured and thrown away on every run in
+    # which it mattered.
+    [[ -n "$reason" ]] && say "${C_DIM}${reason}${C_OFF}"
 
     local log; log="$(mktemp)"
     local status=0
