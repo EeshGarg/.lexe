@@ -258,6 +258,26 @@ independent pass that hit it in 22 of 32 concurrent `install‖install` runs and
 every idempotent re-run — which is the ordinary shape of a provisioning script
 that installs whatever is missing, not an exotic case.
 
+**The same rule, applied to `remove`.** Removing an application this machine
+already removed exits **6**, not 4 ("nothing to remove: <id> is not installed
+(this machine removed it earlier)"); an App ID this machine never installed
+still exits **4**. They used to share both the code and the sentence, so a
+caller could not separate a typo from a removal that happened last week. Not 0
+either: `lexe remove app && rm -rf /srv/app-data` must not proceed on a removal
+this invocation did not perform. The runtime knows "installed here before" from
+two residues an install leaves on purpose — a local trust record carrying a
+bound publisher key, and retained application data (FORMAT-0.1 §9.5) — and a
+corrupt trust record is not evidence, so it answers 4. Introduced in dbbd625;
+recorded here because an independent lifecycle model that read only this
+document pinned 4 and reported 210 disagreements in 3000 sequences.
+
+One part is **not** decided by any document: whether `--purge-data` discards
+the local key binding. The runtime keeps it, so a remove after a purge answers
+6 from the trust record alone; the model leaves that cell open rather than
+pinning observed behaviour.
+
+`rollback` with nowhere to go is the same shape and also exits 6 (28e174d).
+
 It was recorded here as an open design decision rather than a defect, and that
 framing was right: whether a satisfied no-op should be success, a distinct
 failure code, or an explicit contract is a product question. The answer chosen is

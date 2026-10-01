@@ -843,7 +843,33 @@ class Model:
         # ---- uninstall
         if op in ("uninstall", "uninstall_purge"):
             if not s.present:
-                return PIN, {4}, n, "docs/ERRORS.md §1: NotFoundError is 4"
+                # Three different absences, and the runtime tells two of them
+                # apart on purpose (dbbd625). This used to pin 4 for all of
+                # them, which is the pre-dbbd625 answer: 210 divergences in 3000
+                # sequences at seed 20260929, every one install -> remove ->
+                # remove, every one the runtime saying "this machine removed it
+                # earlier" with 6. The model was stale; the runtime was right.
+                if s.bound_key is None and not s.data_retained:
+                    return PIN, {4}, n, ("docs/ERRORS.md §1: NotFoundError is 4 "
+                                         "-- this App ID was never installed here")
+                if s.data_retained:
+                    # FORMAT-0.1 §9.5 makes app-only removal keep the data, and
+                    # only an installed application can have written it: proof,
+                    # from a document, that this machine removed it.
+                    return PIN, {6}, n, (
+                        "docs/ERRORS.md §6: removing what this machine already "
+                        "removed is an operation conflict, 6 -- the requested "
+                        "state already holds; retained data (FORMAT-0.1 §9.5) "
+                        "is the evidence it was installed here")
+                # Purged. What remains is the local key binding, and whether a
+                # purge discards it is the question this model already leaves
+                # open for install (see the purged branch above). The runtime
+                # keeps it and answers 6; pinning that here would turn an
+                # undocumented behaviour into a passing test.
+                return (UNDERSPEC, {4, 6}, n,
+                        "after --purge-data, only the local key binding can show "
+                        "the App ID was installed here, and no document says "
+                        "whether a purge discards it")
             if s.running or s.service:
                 return (PIN, {6}, n,
                         "docs/CONCURRENCY.md: uninstall while launching is refused "
