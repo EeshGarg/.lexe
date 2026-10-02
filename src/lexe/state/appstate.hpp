@@ -61,6 +61,12 @@ std::vector<AppStateEntry> app_state_table(const Paths& paths,
 
 /// The purge journal: written before a purge changes anything and removed only
 /// after its post-check passes. While it exists the purge is unfinished.
+/// Where `uninstall` keeps the application's permission approval, with the
+/// publisher key that received it, for a reinstall by the SAME key
+/// (FORMAT-0.1 §9.5.1): `<home>/approvals/<id>.json`.
+std::filesystem::path permission_approvals_file(const Paths& paths,
+                                                const std::string& id);
+
 std::filesystem::path purge_journal(const Paths& paths, const std::string& id);
 bool purge_pending(const Paths& paths, const std::string& id);
 

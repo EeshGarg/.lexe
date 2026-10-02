@@ -108,6 +108,11 @@ child=$!
 peak_rss_kb=0
 peak_cpu_pct=0
 samples=0
+# Rolling-window state: per-sample timestamps (µs) and cumulative tree ticks.
+WINDOW_US=10000000
+ts=(); tk=(); w0=0
+peak_r10=0
+r10_windows=0
 
 while kill -0 "$child" 2>/dev/null; do
     # One ps per sample; awk computes the transitive closure of descendants of
@@ -146,8 +151,18 @@ while kill -0 "$child" 2>/dev/null; do
                         k = index(line, ")")
                         rest = substr(line, k + 2)
                         m = split(rest, fld, " ")
-                        # rest[1] is state, so utime is 12 and stime 13 here.
-                        if (m >= 13) j += fld[12] + fld[13]
+                        # rest[1] is state, so utime is 12 and stime 13 here,
+                        # and cutime/cstime 14 and 15: the time of children
+                        # this process has already REAPED. Without them the
+                        # counter only covers processes alive at the sample,
+                        # so a short-lived child CPU vanished when it
+                        # exited -- measured: this meter saw 48.7% while
+                        # /proc/stat saw a 90.9% second as the explore lane
+                        # forked its workers. With them, the time of a child moves
+                        # into its parent at reap instead of disappearing, and
+                        # the sum stays continuous. (An orphan reparented to
+                        # init still escapes -- the tree-walk limit above.)
+                        if (m >= 15) j += fld[12] + fld[13] + fld[14] + fld[15]
                     }
                     close(f)
                 }
@@ -169,6 +184,24 @@ while kill -0 "$child" 2>/dev/null; do
         (( sum_rss > peak_rss_kb )) && peak_rss_kb=$sum_rss
         (( sum_cpu > peak_cpu_pct )) && peak_cpu_pct=$sum_cpu
         samples=$((samples + 1))
+        # The POLICY metric (docs/TESTING.md §10): CPU averaged over a rolling
+        # 10-second window, from the cumulative counter and REAL timestamps
+        # (a sample takes longer than INTERVAL, so INTERVAL is not the elapsed
+        # time). Tenths of a percent of the whole host.
+        now_us=${EPOCHREALTIME/./}
+        ts+=("$now_us"); tk+=("$sum_jiffies")
+        while (( ${#ts[@]} - w0 > 1 && now_us - ts[w0 + 1] >= WINDOW_US )); do
+            w0=$((w0 + 1))
+        done
+        span_us=$(( now_us - ts[w0] ))
+        if (( span_us >= WINDOW_US )); then
+            dticks=$(( sum_jiffies - tk[w0] ))
+            (( dticks < 0 )) && dticks=0
+            # ticks / (seconds * hz * ncpu), as tenths of a percent
+            r10=$(( dticks * 1000 * 1000000 / (span_us * CLK_TCK * NCPU) ))
+            (( r10 > peak_r10 )) && peak_r10=$r10
+            r10_windows=$((r10_windows + 1))
+        fi
     fi
     sleep "$INTERVAL"
 done
@@ -187,21 +220,35 @@ printf '  exit            %d\n' "$rc" >&2
 printf '  samples         %d (every %ss)\n' "$samples" "$INTERVAL" >&2
 printf '  peak tree RSS   %d MiB   (budget %d MiB, %d%% used)\n' \
     "$peak_rss_mib" "$budget_mib" "$(( peak_rss_mib * 100 / budget_mib ))" >&2
-printf '  peak host CPU   %d.%d%% of %d logical CPUs\n' \
+printf '  peak host CPU   %d.%d%% of %d logical CPUs  (one sample; informational)\n' \
     "$(( host_cpu_tenths / 10 ))" "$(( host_cpu_tenths % 10 ))" "$NCPU" >&2
+if (( r10_windows > 0 )); then
+    printf '  rolling 10 s    %d.%d%% peak  (the policy metric, limit 50%%)\n' \
+        "$(( peak_r10 / 10 ))" "$(( peak_r10 % 10 ))" >&2
+else
+    printf '  rolling 10 s    n/a -- the command ran for under 10 s\n' >&2
+fi
 
+# The CPU verdict is on the ROLLING 10-SECOND AVERAGE, which is what
+# docs/TESTING.md §10 defines "sustained" to mean. It used to be on the single
+# highest sample, so a one-second burst read as OVER BUDGET ("exceeded at
+# peak") over a run whose worst 10 seconds averaged 24.6%; the policy and the
+# measurement disagreed about what was being limited. A run shorter than the
+# window gets no CPU verdict rather than a guessed one.
 if [[ "$samples" -eq 0 ]]; then
     printf '  NOTE: nothing was sampled -- this is not evidence of a cheap run\n' >&2
 elif [[ "$peak_rss_mib" -gt "$budget_mib" ]]; then
     printf '  OVER BUDGET: RSS exceeded the 4 GiB testing budget\n' >&2
-elif [[ "$host_cpu_tenths" -gt 500 ]]; then
-    printf '  OVER BUDGET: sustained-CPU target of 50%% was exceeded at peak\n' >&2
+elif (( r10_windows > 0 && peak_r10 > 500 )); then
+    printf '  OVER BUDGET: CPU averaged over 50%% across a 10-second window\n' >&2
 fi
 
 if [[ -n "$JSON_OUT" ]]; then
-    printf '{"label":"%s","exit":%d,"samples":%d,"interval_s":%s,"peak_rss_mib":%d,"peak_host_cpu_pct":%d.%d,"logical_cpus":%d,"budget_mib":%d}\n' \
+    printf '{"label":"%s","exit":%d,"samples":%d,"interval_s":%s,"peak_rss_mib":%d,"peak_host_cpu_pct":%d.%d,"peak_rolling10_cpu_pct":%s,"logical_cpus":%d,"budget_mib":%d}\n' \
         "${LABEL:-command}" "$rc" "$samples" "$INTERVAL" "$peak_rss_mib" \
-        "$(( host_cpu_tenths / 10 ))" "$(( host_cpu_tenths % 10 ))" "$NCPU" "$budget_mib" \
+        "$(( host_cpu_tenths / 10 ))" "$(( host_cpu_tenths % 10 ))" \
+        "$( (( r10_windows > 0 )) && printf '%d.%d' $(( peak_r10 / 10 )) $(( peak_r10 % 10 )) || printf 'null')" \
+        "$NCPU" "$budget_mib" \
         > "$JSON_OUT"
 fi
 

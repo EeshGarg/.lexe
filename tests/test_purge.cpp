@@ -30,6 +30,7 @@
 #include "lexe/base/util.hpp"
 #include "lexe/diagnostics/diagnostics.hpp"
 #include "lexe/install/installer.hpp"
+#include "lexe/package/package.hpp"
 #include "lexe/integration/integration.hpp"
 #include "lexe/runtime/launcher.hpp"
 #include "lexe/state/appconfig.hpp"
@@ -37,6 +38,8 @@
 #include "lexe/state/lock.hpp"
 #include "lexe/state/registry.hpp"
 #include "lexe/verify/trust.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <optional>
@@ -568,6 +571,145 @@ TEST_CASE("CASE 5: purge never guesses ownership of the user's files") {
     CHECK(util::slurp_text(exported) == "export");      // the user's: untouched
     CHECK(util::slurp_text(project) == "notes");
     CHECK(util::slurp_text(named_in_record) == "mine");
+}
+
+// ------------------------------------------------- permission approvals (§9.5.1)
+
+namespace {
+
+fs::path pack_with_perms(const fs::path& work, const crypto::KeyPair& key,
+                         const std::string& id,
+                         const std::vector<std::string>& perms,
+                         const std::string& version) {
+    test::TestAppSpec spec;
+    spec.id = id;
+    spec.version = version;
+    spec.public_key = test::encode_public_key_str(key.public_key);
+    // A counter, not a slice of the key: base64 may contain '/'.
+    static int n = 0;
+    const fs::path root = work / ("p-" + id + "-" + version + "-" +
+                                  std::to_string(++n));
+    test::TestAppTree tree = test::make_test_app_tree(root, spec);
+    nlohmann::json m = nlohmann::json::parse(util::slurp_text(tree.manifest_file));
+    m["permissions"] = perms;
+    util::spit(tree.manifest_file, std::string_view(m.dump(2) + "\n"));
+    PackageWriter::Inputs in;
+    in.payload_dir = tree.payload_dir;
+    in.manifest_file = tree.manifest_file;
+    const fs::path out = root.string() + ".lexe";
+    PackageWriter::write(in, key, out);
+    return out;
+}
+
+std::vector<std::string> approved(const Paths& paths, const std::string& id) {
+    return Registry(paths).read_record(id).approved_permissions;
+}
+
+const std::vector<std::string> kNet{"network"};
+const std::vector<std::string> kNone{};
+
+} // namespace
+
+TEST_CASE("CASE 6: approval survives uninstall for the SAME key only; purge ends it") {
+    // FORMAT-0.1 §9.5.1: approval "persists across update, rollback and
+    // reinstall by the same publisher key" and is discarded "when the
+    // application's persistent data is purged". The observable is the one
+    // §9.5.1's MUSTs are about: an update to a version requesting `network`,
+    // installed WITHOUT consent to an expansion, succeeds exactly when the
+    // approval is still in force -- and is refused with PermissionError (5)
+    // otherwise. The record's approved set is the second observer.
+    test::TempLexeHome home;
+    Work work;
+    const Paths paths = Paths::detect();
+    const Registry registry(paths);
+    const crypto::KeyPair k1 = test::make_keypair();
+    const crypto::KeyPair k2 = test::make_keypair();
+    const fs::path net_v1 = pack_with_perms(work.dir, k1, kA, kNet, "1.0.0");
+    const fs::path none_v1 = pack_with_perms(work.dir, k1, kA, kNone, "1.0.0");
+    const fs::path net_v2 = pack_with_perms(work.dir, k1, kA, kNet, "2.0.0");
+
+    // Approve `network` (a first install's consent covers what it requests).
+    Installer(paths).install(net_v1);
+    REQUIRE(approved(paths, kA) == kNet);
+    Installer(paths).uninstall(kA);
+    REQUIRE(fs::is_regular_file(permission_approvals_file(paths, kA)));
+
+    SUBCASE("reinstall signed by the SAME key: the approval survives") {
+        Installer(paths).install(none_v1); // a version that requests NOTHING
+        CHECK(approved(paths, kA) == kNet); // not narrowed by what it requests
+        CHECK_FALSE(fs::exists(permission_approvals_file(paths, kA))); // spent
+        CHECK_NOTHROW(Installer(paths).install(net_v2)); // no consent needed
+    }
+    SUBCASE("reinstall signed by a DIFFERENT key: the approval does not transfer") {
+        // A changed key meets two refusals first -- the trust binding (7) and
+        // the data owned by K1 (6) -- both kept by uninstall. Clear exactly
+        // those, and leave the saved approval in place: it is what must not
+        // transfer.
+        TrustStore(paths).forget(kA);
+        fs::remove_all(registry.app_data_dir(kA));
+        REQUIRE(fs::is_regular_file(permission_approvals_file(paths, kA)));
+        Installer(paths).install(pack_with_perms(work.dir, k2, kA, kNone, "1.0.0"));
+        CHECK(approved(paths, kA) == kNone);
+        CHECK_FALSE(fs::exists(permission_approvals_file(paths, kA)));
+        CHECK_THROWS_AS(
+            Installer(paths).install(pack_with_perms(work.dir, k2, kA, kNet, "2.0.0")),
+            PermissionError);
+    }
+    SUBCASE("approval re-established, then purged: it does not survive") {
+        Installer(paths).install(none_v1);
+        REQUIRE(approved(paths, kA) == kNet); // re-established (carried)
+        Installer(paths).purge(kA);
+        CHECK_FALSE(fs::exists(permission_approvals_file(paths, kA)));
+        Installer(paths).install(none_v1);
+        CHECK(approved(paths, kA) == kNone);
+        CHECK_THROWS_AS(Installer(paths).install(net_v2), PermissionError);
+    }
+}
+
+TEST_CASE("CASE 6b: no App ID inherits another's approval, however it is presented") {
+    test::TempLexeHome home;
+    Work work;
+    const Paths paths = Paths::detect();
+    const crypto::KeyPair k1 = test::make_keypair(); // ONE key signs A and B
+    // B holds `network`; A never did. Both uninstalled, so both have a saved
+    // approval: B's names `network`, A's names nothing.
+    Installer(paths).install(pack_with_perms(work.dir, k1, kB, kNet, "1.0.0"));
+    Installer(paths).install(pack_with_perms(work.dir, k1, kA, kNone, "1.0.0"));
+    Installer(paths).uninstall(kB);
+    Installer(paths).uninstall(kA);
+    const fs::path a_file = permission_approvals_file(paths, kA);
+    const fs::path b_file = permission_approvals_file(paths, kB);
+    const fs::path none_v1 = pack_with_perms(work.dir, k1, kA, kNone, "1.0.0");
+
+    SUBCASE("the same key does not make B's approval A's") {
+        Installer(paths).install(none_v1);
+        CHECK(approved(paths, kA) == kNone);
+    }
+    SUBCASE("B's record copied over A's is refused: it names App ID B") {
+        fs::copy_file(b_file, a_file, fs::copy_options::overwrite_existing);
+        Installer(paths).install(none_v1);
+        CHECK(approved(paths, kA) == kNone);
+    }
+#ifndef _WIN32
+    SUBCASE("A's record as a symlink to B's is not followed") {
+        fs::remove(a_file);
+        fs::create_symlink(b_file, a_file);
+        Installer(paths).install(none_v1);
+        CHECK(approved(paths, kA) == kNone);
+    }
+#endif
+    SUBCASE("a record that says two things (duplicate keys) grants nothing") {
+        util::spit(a_file,
+                   std::string_view("{\"schema\":1,\"appId\":\"" + std::string(kB) +
+                                    "\",\"appId\":\"" + std::string(kA) +
+                                    "\",\"publisherKey\":\"" +
+                                    test::encode_public_key_str(k1.public_key) +
+                                    "\",\"approvedPermissions\":[\"network\"]}"));
+        Installer(paths).install(none_v1);
+        CHECK(approved(paths, kA) == kNone);
+    }
+    // And B's own approval was never consumed by any of the above.
+    CHECK(fs::is_regular_file(b_file));
 }
 
 } // TEST_SUITE("purge")

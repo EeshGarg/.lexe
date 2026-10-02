@@ -398,7 +398,7 @@ machine past these limits:
 
 | Resource | Limit |
 |---|---|
-| CPU | **≤ 50%** sustained host utilization |
+| CPU | **≤ 50%** sustained host utilization — **averaged over any rolling 10-second window** (§10.2a); a shorter burst may exceed it |
 | RAM | **≤ 4 GiB** total for test/build infrastructure, excluding the editor and the agent harness themselves |
 | Storage | no sustained SSD saturation (≤ ~50% active time) |
 
@@ -463,6 +463,39 @@ Known limitation, stated rather than papered over: the meter walks the process
 tree, so a process that re-parents to `init` stops being counted. Build and test
 drivers wait on their children and are unaffected; a deliberately detaching
 daemon would under-report and needs a second observer.
+
+### 10.2a What "sustained" means: a rolling 10-second window
+
+**Definition.** The CPU limit is on aggregate CPU utilization of the
+build/test process tree **averaged over every rolling 10-second window** of a
+run. A burst shorter than that — a lane forking its workers, a linker — may
+exceed 50% for a moment; no 10-second window may average over 50%. RAM has no
+window: the 4 GiB limit applies at every sample.
+
+**Why it had to be written down.** The policy said "sustained" and the meter
+verdicted on its single highest 0.5-second sample. On 2026-10-01 one run of
+`91439b9` was flagged "OVER BUDGET … at peak" at 69.6%, and a rerun of the same
+commit read 48.7%. An external per-second `/proc/stat` timeline on the rerun
+found exactly one second above 50% in 3190 (90.9%, as the explore lane's first
+parallel engine starts) and a worst 10-second average of 24.6%. The policy and
+the measurement were not measuring the same thing.
+
+**What the meter does now.** `scripts/resource-meter.sh` keeps a timestamped
+cumulative CPU counter for the tree and reports the peak **rolling 10-second**
+average (`rolling 10 s`, JSON `peak_rolling10_cpu_pct`); its CPU verdict is on
+that. The single-sample peak is still printed, marked informational. The counter
+now includes `cutime`/`cstime` — time of children already reaped — because the
+old one summed only processes alive at a sample, and a short-lived child's CPU
+vanished when it exited. Validated against `/proc/stat` before use:
+
+| control | host `/proc/stat` | meter, rolling 10 s | verdict |
+|---|---|---|---|
+| 6 of 24 cores, 15 s | 24.7% | 24.9% | none |
+| 13 of 24 cores, 15 s | 52.9% | 54.3% | **OVER BUDGET** (the check fires) |
+| 22 cores for 1 s, then idle | 5.8% | 8.6% (one sample: 92.2%) | none |
+| a storm of short-lived CPU-burning children | 31.3% | 31.3% (previous meter: 9.9%) | none |
+
+A run shorter than the window gets no CPU verdict rather than a guessed one.
 
 ### 10.3 What counts as a failure
 

@@ -480,6 +480,55 @@ Installer::Installer(const Paths& paths,
                      std::shared_ptr<OperationLockManager> locks)
     : paths_(paths), locks_(std::move(locks)) {}
 
+namespace {
+
+// FORMAT-0.1 §9.5.1: a user's approval of an application's permissions
+// "persists across update, rollback and reinstall by the same publisher key",
+// and is discarded "when the application's persistent data is purged". The
+// approved set lives in the installation record, which uninstall removes, so
+// until this existed the approval did NOT survive an uninstall-then-reinstall
+// and the runtime fell short of the normative text. Uninstall now writes it
+// out, WITH the key that received it; purge removes it (appstate table).
+
+void save_carried_approval(const Paths& paths, const InstallationRecord& rec) {
+    nlohmann::json j;
+    j["schema"] = 1;
+    j["appId"] = rec.id;
+    j["publisherKey"] = rec.publisher_key;
+    j["approvedPermissions"] = rec.approved_permissions;
+    const fs::path file = permission_approvals_file(paths, rec.id);
+    fs::create_directories(file.parent_path());
+    util::write_atomic(file, j.dump(2) + "\n");
+}
+
+/// The approval a fresh install of `m` may inherit: the saved set when -- and
+/// only when -- it names this App ID and was granted under this package's key.
+/// Anything else yields NOTHING, which is the safe direction for authority: an
+/// unreadable, foreign, tampered, symlinked or differently-keyed record means
+/// the user is asked again, never that a permission is granted unasked.
+std::vector<std::string> carried_approval(const Paths& paths, const Manifest& m) {
+    const fs::path file = permission_approvals_file(paths, m.id);
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::symlink_status(file, ec))) return {};
+    try {
+        const nlohmann::json j = json_strict::parse(
+            util::slurp_text(file), "permission approvals", limits::kMaxRecordBytes);
+        if (j.at("schema").get<int>() != 1) return {};
+        if (j.at("appId").get<std::string>() != m.id) return {};
+        if (!crypto::same_public_key(j.at("publisherKey").get<std::string>(),
+                                     m.publisher_public_key)) {
+            return {}; // §9.5: a different publisher never inherits the approval
+        }
+        return normalized_from_ids(
+                   j.at("approvedPermissions").get<std::vector<std::string>>())
+            .ids;
+    } catch (...) {
+        return {};
+    }
+}
+
+} // namespace
+
 InstallResult Installer::install(const fs::path& lexe_file,
                                  const InstallOptions& opts) {
     // FORMAT-0.1 §6 stages 1–7 — nothing is trusted or written before this
@@ -691,6 +740,24 @@ InstallResult Installer::install(const fs::path& lexe_file,
     new_record.installed_at = util::now_utc_string();
     new_record.approved_permissions = requested_perms.ids;
     new_record.permissions_digest = requested_perms.digest;
+    // A FRESH install (nothing installed) of an App ID this machine uninstalled
+    // earlier inherits the approval saved then -- only for the same publisher
+    // key (carried_approval). Union, not replacement: the approval covers a set,
+    // and reinstalling a version that requests less must not narrow what was
+    // granted, exactly as a rollback must not (§9.5.1).
+    if (!registry.is_installed(manifest.id)) {
+        const std::vector<std::string> carried = carried_approval(paths_, manifest);
+        if (!carried.empty()) {
+            std::vector<std::string> both = carried;
+            both.insert(both.end(), requested_perms.ids.begin(),
+                        requested_perms.ids.end());
+            std::sort(both.begin(), both.end());
+            both.erase(std::unique(both.begin(), both.end()), both.end());
+            const NormalizedPermissions merged = normalized_from_ids(both);
+            new_record.approved_permissions = merged.ids;
+            new_record.permissions_digest = merged.digest;
+        }
+    }
 
     // Transactional staged install (HARDENING.md §A). Nothing becomes active
     // until the staged tree is validated and atomically promoted; a failure
@@ -851,6 +918,15 @@ InstallResult Installer::install(const fs::path& lexe_file,
         trust.record_accept(
             manifest.id, manifest.decoded_public_key(), opts.explicit_trust,
             opts.explicit_trust ? "install-trust" : "install-accept");
+    }
+
+    // A saved approval has now been merged into the committed record -- or was
+    // refused because it belonged to another key. Either way it is spent:
+    // left behind, a differently-keyed approval could never be honoured, and a
+    // same-keyed one would be a second copy of what the record now holds.
+    {
+        std::error_code ec;
+        fs::remove(permission_approvals_file(paths_, manifest.id), ec);
     }
 
     return InstallResult{manifest.id, manifest.version, app_dir};
@@ -1104,8 +1180,12 @@ void Installer::uninstall(const std::string& id) {
     // else's purge would break that promise on the one occasion it mattered.
     if (purge_pending(paths_, id)) throw purge_unfinished_error(id);
     const Registry registry(paths_);
-    (void)registry.read_record(id); // NotFoundError when not installed
+    const InstallationRecord record = registry.read_record(id); // NotFoundError
     const std::vector<LaunchLease> held = hold_versions_or_refuse(id);
+    // Before anything is removed: if the removal is interrupted, the approval
+    // is already safe, and while the app is still installed this file is
+    // never read.
+    save_carried_approval(paths_, record);
     remove_installation_locked(id);
 }
 

@@ -45,6 +45,13 @@ std::vector<AppStateEntry> app_state_table(const Paths& paths,
         {"local trust record: the App-ID/key binding, any explicit trust and "
          "any local block",
          registry.trust_record_file(id), F::SurvivesUninstall, true},
+        // FORMAT-0.1 §9.5.1: approval "persists across update, rollback and
+        // reinstall by the same publisher key" and is discarded "when the
+        // application's persistent data is purged". Its lifetime is the data's,
+        // so it survives uninstall -- with the key that received it, which is
+        // the only key it is ever honoured for.
+        {"permission approvals, bound to the publisher key that received them",
+         permission_approvals_file(paths, id), F::SurvivesUninstall, true},
         {"persistent application data, and the marker binding it to a "
          "publisher key",
          registry.app_data_dir(id), F::SurvivesUninstall, true},
@@ -59,6 +66,11 @@ std::vector<AppStateEntry> app_state_table(const Paths& paths,
         {"per-app mutation lock (an empty flock anchor)",
          registry.mutation_lock_file(id), F::Kept, false},
     };
+}
+
+fs::path permission_approvals_file(const Paths& paths, const std::string& id) {
+    (void)Registry(paths).app_dir(id); // validates id: a single safe component
+    return paths.home() / "approvals" / (id + ".json");
 }
 
 fs::path purge_journal(const Paths& paths, const std::string& id) {

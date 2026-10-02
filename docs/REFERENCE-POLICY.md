@@ -219,6 +219,7 @@ and walks LEXE_HOME to catch anything the table itself forgot.
 | `cache/launchref-work/<id>/` | launch-reference scratch | removed | removed |
 | desktop entry, icons, MIME, service unit | desktop integration (recorded in `integration.json`) | removed | removed |
 | `trust/<id>.json` | local trust record: the App-ID/key binding, any explicit trust and any local block | **kept** | removed |
+| `approvals/<id>.json` | permission approvals, bound to the publisher key that received them | **kept** | removed |
 | `data/<id>/` | persistent application data, and the marker binding it to a publisher key | **kept** | removed |
 | `config/apps/<id>.json` | compatibility preferences | **kept** | removed |
 | `state/errors/<id>/` | error history | **kept** | removed |
@@ -232,13 +233,19 @@ application's own directories and never by matching names, because the name
 `com.a.v.1.v.2.0.0.lease` is equally App `com.a` at version `1.v.2.0.0` and App
 `com.a.v.1` at `2.0.0`; a lease is an empty flock anchor that influences nothing.
 
-**Permission approval does not survive an uninstall.** It lives in the
-installation record, so the next install is a first install for permissions as
-for everything else. FORMAT-0.1 §9.5.1 says approval persists across "reinstall
-by the same publisher key"; this runtime meets that for a reinstall over an
-existing installation and does not carry it across an uninstall. If §9.5.1 is
-meant to cover reinstalling after an uninstall, that is an open question about
-this runtime, not something settled here by reading the sentence narrowly.
+**Permission approval survives an uninstall — for the same publisher key
+only.** FORMAT-0.1 §9.5.1: approval "persists across update, rollback and
+reinstall by the same publisher key" and is discarded "when the application's
+persistent data is purged". Its lifetime is therefore the data's. Uninstall
+writes the approved set to `approvals/<id>.json` together with the key that
+received it; a fresh install of that App ID inherits it only when the file names
+the same App ID AND the package is signed by that same key, and merges it with
+what the package requests (it never narrows the set). Anything else — another
+key, another App ID's record, a symlink, a malformed or ambiguous file — grants
+nothing, so the user is asked again: the safe direction for authority. Purge
+removes it. Until 2026-10-02 the approval lived only in the installation record
+and did not survive uninstall, which fell short of §9.5.1; the runtime was
+changed to meet the format, not the format to describe the runtime.
 
 **The purge invariant.**
 
