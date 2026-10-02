@@ -196,9 +196,13 @@ cmd_sync() {
     fi
 
     local bundle="$REPO/../lexe-sync.bundle"
-    git -C "$REPO" bundle create "$bundle" "$sha" --branches=HEAD >/dev/null 2>&1 \
-        || git -C "$REPO" bundle create "$bundle" "$sha" >/dev/null 2>&1 \
-        || { infra "git bundle create failed"; return 1; }
+    # A bundle must carry a ref -- given a bare SHA, git refuses ("empty
+    # bundle"). Pin the SHA under a private ref for the bundle's lifetime.
+    git -C "$REPO" update-ref refs/lexe-arm-sync "$sha" \
+        && git -C "$REPO" bundle create "$bundle" refs/lexe-arm-sync >/dev/null 2>&1
+    local brc=$?
+    git -C "$REPO" update-ref -d refs/lexe-arm-sync >/dev/null 2>&1
+    (( brc == 0 )) || { infra "git bundle create failed"; return 1; }
     ok "bundle: $(du -h "$bundle" | cut -f1)"
 
     adb push "$bundle" /sdcard/lexe-sync.bundle >/dev/null 2>&1 \
@@ -225,7 +229,7 @@ git config user.email arm@worker.local
 git config user.name  'ARM Worker'
 cp /data/data/com.termux/files/home/lexe-sync.bundle ./sync.bundle 2>/dev/null || cp \$HOME/../usr/../home/lexe-sync.bundle ./sync.bundle 2>/dev/null || true
 if [ ! -f ./sync.bundle ]; then echo NO_BUNDLE_IN_GUEST; exit 1; fi
-git fetch -q ./sync.bundle $sha 2>&1 | tail -2 || true
+git fetch -q ./sync.bundle refs/lexe-arm-sync 2>&1 | tail -2 || true
 git checkout -q --detach $sha
 echo CHECKED_OUT=\$(git rev-parse HEAD)")"
 
