@@ -20,6 +20,7 @@ AArch64; the claim is simply not shown there.
 | **ARM evidence** | **`b5c115f`** — synced as a git bundle, the worker read back `b5c115f1681692ef9bcca92ca434635a73c076ad` itself |
 | **Second-ISA evidence** | **`b5c115f`** on both hosts (each records its own `GIT_SHA`) |
 | **x86-64 evidence** | unit 777/777 (10100 assertions) at `b5c115f`; the last full 15-lane run is `e6129d3` — code since then: test fixtures and scripts only, plus the MSVC fix proven byte-identical on Linux (see `55ad1ab`) |
+| **GitHub CI on `cabc329`** | run 37020284311: linux ✅, portability ✅, windows ❌ — Test step 731/751, the same 20 pre-existing Windows failures as before this campaign (purge cases, hostbuild, config, repair, …); none of the tests changed here is among them |
 | **After `b5c115f`** | `b9bc710` harness-only (second-isa key reuse, claim wording, bundle location) and this docs commit. Neither changes product or test code. |
 
 ## The ARM worker
