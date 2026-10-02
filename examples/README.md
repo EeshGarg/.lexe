@@ -39,7 +39,8 @@ examples/
 | [portable/c-hello/](portable/c-hello/) | `applicationType: "portable"`: the payload is `payload/src/`, there is deliberately **no** entrypoint binary in the package, and installing it requires `--approve-compile`. The program reports the ISA from its own compiler's predefined macros, so the evidence that it was compiled here does not come from the runtime's own bookkeeping | [acceptance 05](../tests/acceptance/05_portable_compile.sh) |
 
 The claim this type exists for — *the same signed package compiles on x86_64 and
-on AArch64* — is implemented and unit-tested and has never run on a second ISA.
+on AArch64* — is implemented and tested on x86-64; a physical AArch64 worker
+exists, but the same-package test on both ISAs has not been run yet.
 See [../docs/ROADMAP.md](../docs/ROADMAP.md) §1 for the test that would settle it.
 
 ## windows/ — a PE, run on Linux

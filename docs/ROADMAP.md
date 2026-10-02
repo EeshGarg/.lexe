@@ -14,7 +14,9 @@ What proves a capability, rather than merely implementing it, is in
 ## 1. Portable code on a second ISA — the open hardware milestone
 
 Everything about the portable type is implemented, tested and demonstrated except
-the one thing it exists for: **every build so far has happened on x86_64.**
+the one thing it exists for: **no portable package has yet been materialized on
+both ISAs.** A physical AArch64 worker exists and an older commit was built and run
+natively on it; that is historical, and the same-package test below has not run.
 
 "The same `.lexe` compiles on ARM64 too" is the whole promise of the type, and no
 amount of code closes it. The decisive test is written down in
@@ -81,9 +83,10 @@ refused rather than silently killing it, that an update leaves the running
 version's files alone, that SIGTERM produces a distinguishable clean stop, that
 SIGKILL does not, and that the lease dies with its holder so nothing is stranded.
 
-What does **not** exist is any integration with a session manager, and the reason
-is worth stating precisely because it was previously recorded as an environment
-limitation:
+**Update:** opt-in supervision by `systemd --user` now exists — `lexe service
+enable|disable|status`, proven by the `session` lane and described in
+[SERVICES.md](SERVICES.md). What follows is the earlier record of why it was
+missing, kept because the reasoning about lifetime still applies:
 
 ```
 $ grep -rl systemd src/lexe/

@@ -780,8 +780,9 @@ Stated plainly, because an architecture document that hides its gaps is worse
 than useless.
 
 * **Portable code has not been exercised on a second ISA.** The path itself is
-  implemented and tested (§5A below), but every build so far has happened on
-  x86_64. "The same `.lexe` compiles on ARM64 too" is the architecture's claim
+  implemented and tested (§5A below), but no portable package has yet been
+  materialized on both ISAs (a physical AArch64 worker exists; an older commit
+  ran natively there, which is historical). "The same `.lexe` compiles on ARM64 too" is the architecture's claim
   and it remains unproven on hardware, exactly like the cross-ISA claims below.
   This is the largest open item in the whole document; the test that would settle
   it is written out in `docs/TESTING.md` §7, and emulation is explicitly not

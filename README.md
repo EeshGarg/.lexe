@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://github.com/EeshGarg/.lexe/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EeshGarg/.lexe/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599c" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-692%20%C2%B7%208924%20assertions-2d7d46" />
-  <img alt="suites" src="https://img.shields.io/badge/acceptance-10%20suites%20green-2d7d46" />
+  <img alt="tests" src="https://img.shields.io/badge/tests-777%20%C2%B7%2010094%20assertions-2d7d46" />
+  <img alt="suites" src="https://img.shields.io/badge/acceptance-12%20suites%20green-2d7d46" />
   <img alt="Status" src="https://img.shields.io/badge/status-Developer%20Alpha-b4622a" />
 </p>
 
@@ -92,6 +92,42 @@ cmake --build build -j"$(nproc)"
 `lexe inspect` is the interesting one. It runs the whole verification pipeline and
 tells you what each stage concluded, *before* anything is written anywhere.
 
+## Status today
+
+| | |
+|---|---|
+| **x86-64 Linux** | Green. All 15 test lanes pass in one run of the code with the tree held unchanged (unit: 777 cases / 10,094 assertions, and again under ASan+UBSan; 12 acceptance suites; Windows programs through Wine and Proton; 349 foreign programs against direct execution, where one Windows specimen has no usable baseline and is reported, not counted), inside the resource budget. GitHub CI builds and tests Linux and Windows on every push; the CI badge at the top shows its current result. |
+| **AArch64 (ARM64)** | A **physical** AArch64 test worker exists (a tablet running Debian arm64 under PRoot on Android, reached over USB), and an older commit was built and run natively on it. That is **historical** evidence: nothing has been run there against the current code yet, and the decisive test — the *same* signed portable package compiled natively on x86-64 **and** on AArch64 — has not been run. No ARM claim beyond that is made. |
+| **Developer Preview** | **Not ready.** It needs current-code AArch64 evidence, the same-package second-ISA run, and a final evidence audit. |
+
+[docs/HANDOFF.md](docs/HANDOFF.md) is the running record of what is proven and what is next.
+
+## Removing an application
+
+Two commands, and the difference is the point:
+
+```sh
+lexe uninstall com.example.app   # remove the program; keep what makes a reinstall a return
+lexe purge com.example.app       # make .LEXE forget the application entirely
+```
+
+| | `uninstall` | `purge` |
+|---|---|---|
+| program files, desktop entry, icons, cache | removed | removed |
+| your data in .LEXE's data folder | **kept** | removed |
+| your trust decision for this app (including a local block) | **kept** | removed |
+| permissions you approved (for the same publisher key only) | **kept** | removed |
+| compatibility preferences, error history | **kept** | removed |
+
+After `purge`, installing the app again is a **first** install: you are shown the
+publisher key as "first seen", and nothing it was granted before carries over.
+Purge only ever removes what .LEXE itself keeps for that application — files the
+app wrote anywhere else in your home folder (documents, exports, projects) are
+**yours, and are never touched**. Trust is per application: purging one app never
+changes your decisions about another, even one signed by the same key. The full
+contract is in [docs/REFERENCE-POLICY.md](docs/REFERENCE-POLICY.md), "Uninstall and
+purge". (`lexe remove` is retired; it names both replacements.)
+
 ## What you get
 
 | | |
@@ -114,8 +150,8 @@ test that demonstrates it.**
 
 | Lane | Proves |
 |---|---|
-| `--unit` | 692 test cases, 8924 assertions — every subsystem, both GUI view models, and the architecture's own dependency rules |
-| `--acceptance` | 10 end-to-end suites against a throwaway install root |
+| `--unit` | 777 test cases, 10094 assertions — every subsystem, both GUI view models, and the architecture's own dependency rules |
+| `--acceptance` | 12 end-to-end suites against a throwaway install root |
 | `--integration` | trust and lifecycle across process boundaries |
 | `--gui` | the frontends start, render and exit clean on a display created for the test |
 | `--lifecycle` | install → run → update → rollback → repair → uninstall, **and the same with every operation killed halfway** |
@@ -123,6 +159,8 @@ test that demonstrates it.**
 | `--windows` | a purpose-built Windows PE, cross-compiled here, actually executed through Wine |
 | `--proton` | the same payload through a real Proton installation |
 | `--sanitizers` | the whole unit suite again under ASan + UBSan |
+| `--workloads` · `--explore` | 349 foreign programs (201 Linux, 148 Windows) against direct execution; an independent lifecycle model over thousands of generated sequences. A specimen with no usable baseline is reported, never counted as a pass |
+| `--evidence` | the test machinery itself: does the guard that voids a run whose tree changed actually fire; do the published numbers match the suite |
 
 Four outcomes, not two. **SKIP** means "deliberately not applicable here".
 **BLOCKED** means "this applies, it is expected to work, and this machine cannot
@@ -131,9 +169,10 @@ prove, and what would settle each one, is written down in
 **[docs/TESTING.md](docs/TESTING.md) §6**.
 
 The most load-bearing example: the portable type's central claim is that *the same
-signed package compiles natively on x86_64 and on AArch64*. It is implemented,
-unit-tested, and **has never run on a second ISA.** So that is what the docs say.
-Emulation is explicitly not accepted as a substitute.
+signed package compiles natively on x86_64 and on AArch64*. It is implemented and
+tested on x86-64, a physical AArch64 worker is set up for it, and **the
+same-package test on both ISAs has not been run yet.** So that is what the docs
+say. Emulation is explicitly not accepted as a substitute.
 
 ## Why it is shaped like this
 
@@ -170,7 +209,9 @@ Applications
   run <id> [--chain <c>] [-- <args...>]    launch an installed application (sandboxed)
   compat <id> [--set <chain> | --auto]     show or change how an application is executed
   apps · list · info · inspect             what is installed, and what a package is
-  update · rollback · repair · remove      the rest of the lifecycle
+  update · rollback · repair               the rest of the lifecycle
+  uninstall <id> · purge <id>              remove the program · make .LEXE forget it
+  service [status|enable|disable] <id>     run a service under systemd --user (opt in)
   gc <id> [--keep <n>]                     reclaim old versions (keeps active + n)
 
 Developer
@@ -247,14 +288,14 @@ Only implemented, tested capabilities. The **Proof** column is what you run.
 | **Three payload kinds** | native ELF, portable source compiled on install, Windows PE through Wine or Proton | acceptance 01, 05, 06, 07, 09 |
 | **Verification** | Ed25519 over exact bytes; a hardened parser (zip-slip, decompression limits, duplicate and case-colliding entries, over-long components); the `payload-role` stage, which proves a native package's entrypoint really is a runnable ELF and a Windows package's really is a runnable PE | `--security`, `test_verify`, `test_hostile_packages` |
 | **Isolation** | bubblewrap; read-only image; private data/cache/temp; allowlisted environment; network denied unless granted; display access **only** for a declared GUI launch mode; fails closed | `test_isolation_linux`, `test_security_boundary`, acceptance 08 |
-| **Lifecycle** | transactional install with crash recovery, atomic version activation, update, rollback, repair, three uninstall modes, lease-aware GC, race-safe locking | `--lifecycle`, `--integration` |
+| **Lifecycle** | transactional install with crash recovery, atomic version activation, update, rollback, repair, uninstall and a transactional, fail-closed purge, lease-aware GC, race-safe locking | `--lifecycle`, `--integration` |
 | **Torture** | every operation killed halfway; corrupted, deleted and unreadable payloads; an update while the app runs; a lease whose holder was killed — all held to one invariant: **either the previous valid state or the new one, never an ambiguous half-applied one** | `--lifecycle` |
 | **Trust** | local trust-on-first-use, key pinning, changed-key refusal, block/unblock/forget; signer classes; language that never overstates | `test_trust*`, `--security` |
 | **Portable code** | explicit compile approval that `--yes` never implies; an unprivileged, network-denied build inside the sandbox; host-ISA verification of the output before promotion; a `build.json` attestation the launcher checks on every run; repair that **rebuilds** rather than copying an untrusted binary | acceptance 05, `test_hostbuild` |
 | **Desktop integration** | durable, hash-recorded registration that `lexe doctor --repair` re-establishes **from installed state with no package present**; `.desktop` entries, icons, MIME, and the persistent handler | acceptance 02, `--lifecycle` |
 | **Diagnostics** | structured `.lexe-error` records with the failure stage, chain, host facts, exit code **or signal**, and captured output | acceptance 03 |
 | **Portability** | the frozen **Tux32 Core 1** baseline; `lexe sdk verify` with typed verdicts, reusing the one dependency engine; a cross-distribution proof in CI | `test_tux32*`, CI |
-| **Services** | `launch.mode: "service"` detaches by declaration, is supervised, holds a version lease, and stops cleanly and distinguishably from being killed | `--lifecycle` (03) |
+| **Services** | `launch.mode: "service"` detaches by declaration, is supervised, holds a version lease, and stops cleanly and distinguishably from being killed; opt-in supervision by `systemd --user` (`lexe service enable`) | `--lifecycle` (03), `--session` |
 
 ## What does not work
 
@@ -262,15 +303,15 @@ Kept as prominent as the list above, on purpose.
 
 | | |
 |---|---|
-| **Portable code on a second ISA** | The central claim of the `portable` type. Implemented and unit-tested; **never run on AArch64.** The test that would settle it is written down in [docs/TESTING.md](docs/TESTING.md) §7. |
+| **Portable code on a second ISA** | The central claim of the `portable` type. Implemented and tested on x86-64; a physical AArch64 worker exists and ran an older commit natively, but **the same-package test on both ISAs has not been run against current code**. The test is in [docs/TESTING.md](docs/TESTING.md) §7. |
 | **ISA translation chains** | `fex`, `box64`, `qemu-user` and the layered forms are vocabulary the resolver understands and nothing has ever executed. Needs a host where the translation is real. |
 | **The reboot boundary** | That integration survives a reboot, and that double-clicking a `.lexe` in a file manager opens it, need a real desktop session. [tests/acceptance/REBOOT.md](tests/acceptance/REBOOT.md). |
-| **Session-manager integration** | A `.LEXE` service is not a systemd unit. This is a *missing feature*, not a missing machine — see [docs/ROADMAP.md](docs/ROADMAP.md) §4, which explains why it is a design question first. |
+| **Windows as a test host** | It builds again in CI (it had not since 2026-09-25, when a POSIX-only guard swallowed a portable function), but **20 of its 751 unit tests fail**: five weeks of changes never ran there. Not yet worked through; the Linux build and suite are unaffected. |
 | **Isolation on Windows** | Windows is a build and unit-test host. There is no containment there, and the runtime says so rather than pretending. |
 | **Trust beyond your own machine** | Local trust-on-first-use only. No global revocation, no authenticated key rotation, no publisher identity. |
 
-Not production-ready. The **[Alpha support contract](docs/ALPHA.md)** states
-exactly what is and is not claimed.
+Not production-ready, and not yet a Developer Preview. The **[Alpha support
+contract](docs/ALPHA.md)** states exactly what is and is not claimed.
 
 ## Install the runtime
 

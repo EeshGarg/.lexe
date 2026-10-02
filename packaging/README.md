@@ -89,6 +89,11 @@ Removes the runtime. It does **not** remove applications you installed, their
 data, their launch references, your trust records, diagnostics or compatibility
 preferences — those are yours. To remove an application, do it through the
 runtime *before* uninstalling:
+
+```sh
+lexe uninstall <app-id>   # the program; its data, trust and preferences stay
+lexe purge <app-id>       # .LEXE forgets it: data, trust and preferences too
+```
 Removes the three binaries, both `.desktop` files and the MIME XML, clears the
 default-handler association, and refreshes the databases. Installed application
 data under `~/.local/share/lexe` is intentionally left in place. It reports what
@@ -119,8 +124,4 @@ registration made without it is correct for your custom install too:
 ```sh
 ./packaging/install.sh          # writes to $XDG_DATA_HOME regardless
 env -u LEXE_HOME lexe integrate # same two files, same two destinations
-```
-
-```sh
-lexe remove <app-id> --purge-data
 ```

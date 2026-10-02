@@ -277,7 +277,7 @@ as BLOCKED with the same reason, so the list cannot rot silently.
 
 | Claim | Why it is not proven here | What would settle it |
 |---|---|---|
-| **The same portable `.lexe` compiles on ARM64** | every build so far has happened on x86_64 | real AArch64 hardware; see §7 |
+| **The same portable `.lexe` compiles on ARM64** | the same-package test has not run; a physical AArch64 worker exists (an older commit ran natively there — historical, not current) | that worker, connected; see §7 |
 | **Integration survives a reboot** | WSL has no session to reboot and no login sequence to re-run | a standalone Linux desktop; checklist in `tests/acceptance/REBOOT.md` |
 | **Double-clicking a `.lexe` in a file manager opens it** | no file manager and no desktop session | same |
 | **`service` mode under a real user session manager** | no systemd user session under WSL | a systemd-enabled Linux host |

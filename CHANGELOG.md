@@ -5,6 +5,29 @@ Versioning follows [docs/ALPHA.md](docs/ALPHA.md): the **runtime** version is a
 distinct axis from the **package format** (`0.1`, FORMAT-0.1) and the **Tux32**
 baseline (`tux32-core-1`). Dates are UTC.
 
+## [Unreleased] — Uninstall and purge, and evidence that can reject itself
+
+### Changed
+- **`lexe remove` is replaced by `lexe uninstall` and `lexe purge`** and retired
+  (exit 2, naming both). Uninstall keeps data, the trust decision, permission
+  approvals (same key only), preferences and error history; purge makes .LEXE
+  forget the application, is transactional and fails closed, and never touches
+  files outside .LEXE's own storage. Contract: REFERENCE-POLICY "Uninstall and
+  purge".
+- **Permission approvals now survive uninstall for the same publisher key**, as
+  FORMAT-0.1 §9.5.1 requires; they never transfer to another key or App ID.
+- **CPU budget defined as a rolling 10-second average** (TESTING.md §10.2a); the
+  resource meter verdicts on it and no longer loses short-lived children's CPU.
+
+### Fixed
+- An uninstall killed partway could leave an application listed as installed with
+  its files gone (now an atomic detach).
+- The Windows build (MSVC C3861): a portable function sat inside a POSIX-only
+  block by accident.
+- Test machinery: a stale corpus baseline, a resource meter that changed what it
+  measured, a SKIP that should have been BLOCKED, and a model that pinned a
+  superseded exit code.
+
 ## [Unreleased] — One engine, and claims that survive being checked
 
 A consolidation-and-validation wave. Nothing here adds a payload kind or a format

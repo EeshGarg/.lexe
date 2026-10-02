@@ -629,7 +629,8 @@ lexe install ExampleApplication.lexe
 lexe run com.example.application
 lexe update com.example.application
 lexe update --all
-lexe remove com.example.application
+lexe uninstall com.example.application
+lexe purge com.example.application
 lexe repair com.example.application
 lexe info ExampleApplication.lexe
 lexe verify ExampleApplication.lexe
