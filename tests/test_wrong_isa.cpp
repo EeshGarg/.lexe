@@ -41,6 +41,7 @@
 #include "lexe/base/util.hpp"
 #include "lexe/install/installer.hpp"
 #include "lexe/package/package.hpp"
+#include "lexe/sandbox/isolation.hpp"
 #include "lexe/state/registry.hpp"
 
 #include <cstdint>
@@ -91,6 +92,16 @@ TEST_CASE("a build product for another ISA is refused, and a host one is not") {
     if (!test::have_native_compiler()) {
         MESSAGE("SKIP: no host C compiler, so there is no real binary to "
                 "mutate and nothing to compare against");
+        return;
+    }
+    // The ISA check runs on a build PRODUCT, and a build runs only inside the
+    // sandbox (hostbuild fails closed without one). With no working isolation
+    // backend both subcases would be refused for that reason instead -- the
+    // control would fail and the negative would "pass" for the wrong one.
+    if (make_isolation_backend(paths)->capabilities().status !=
+        CapabilityStatus::Available) {
+        MESSAGE("BLOCKED: no working isolation backend on this host, so no "
+                "build runs and the ISA check on its product cannot be reached");
         return;
     }
     const fs::path work = home.path() / "work";

@@ -121,8 +121,12 @@ TEST_CASE("--json is a structured superset") {
     CHECK(j.at("verification").at("ok") == true);
     CHECK(j.at("package").at("sha256").get<std::string>().size() == 64);
     CHECK(j.at("publisher").at("identityVerified") == false);
-    // The conforming ELF payload verifies against Tux32 Core 1.
-    CHECK(j.at("report").at("tux32").at("verdict") == "conformant");
+    // The conforming ELF payload verifies against Tux32 Core 1 -- which is
+    // defined for x86_64 only (docs/TUX32.md); the same host-shaped payload on
+    // any other host is, by that spec, an unsupported architecture.
+    CHECK(j.at("report").at("tux32").at("verdict") ==
+          (host_architecture() == "x86_64" ? "conformant"
+                                           : "unsupported-architecture"));
     // Local trust is stated even when there is no conflict, so a script reads a
     // field rather than having to treat an absent one as consent. It is a
     // SIBLING of "verification", never a stage inside it.
