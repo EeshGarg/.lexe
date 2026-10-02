@@ -131,6 +131,50 @@ TEST_CASE("container-level defects fail at the structure stage") {
                              for (int i = 0; i < 64; ++i) b.push_back(0x5a);
                          }),
                  false, "structure");
+
+    // Bytes INSIDE the central directory that its end record does not count.
+    // The CD still "ends at the EOCD" (its size grows with the insertion), so
+    // the whole-file check alone accepted both of these.
+    const auto grow_cd = [](std::vector<std::uint8_t>& b,
+                            const std::vector<std::uint8_t>& extra) {
+        const std::size_t eocd = b.size() - 22;
+        const auto rd32 = [&](std::size_t o) {
+            return static_cast<std::uint32_t>(b[o]) | (b[o + 1] << 8) |
+                   (b[o + 2] << 16) | (static_cast<std::uint32_t>(b[o + 3]) << 24);
+        };
+        const std::uint32_t cd_size =
+            rd32(eocd + 12) + static_cast<std::uint32_t>(extra.size());
+        b.insert(b.begin() + static_cast<std::ptrdiff_t>(eocd), extra.begin(),
+                 extra.end());
+        for (int i = 0; i < 4; ++i) {
+            b[eocd + extra.size() + 12 + i] =
+                static_cast<std::uint8_t>(cd_size >> (8 * i));
+        }
+    };
+    // (a) slack: 12 junk bytes after the last counted record.
+    expect_stage(corrupt(good, w / "cd-slack.lexe",
+                         [&](auto& b) {
+                             grow_cd(b, std::vector<std::uint8_t>(12, 0x00));
+                         }),
+                 false, "structure");
+    // (b) a whole extra record the EOCD does not count -- a byte-copy of the
+    // first central record, which another ZIP reader would list.
+    expect_stage(corrupt(good, w / "cd-hidden-record.lexe",
+                         [&](auto& b) {
+                             const std::size_t eocd = b.size() - 22;
+                             const std::size_t cd =
+                                 b[eocd + 16] | (b[eocd + 17] << 8) |
+                                 (b[eocd + 18] << 16) |
+                                 (static_cast<std::size_t>(b[eocd + 19]) << 24);
+                             const std::size_t len =
+                                 46 + (b[cd + 28] | (b[cd + 29] << 8)) +
+                                 (b[cd + 30] | (b[cd + 31] << 8)) +
+                                 (b[cd + 32] | (b[cd + 33] << 8));
+                             grow_cd(b, std::vector<std::uint8_t>(
+                                            b.begin() + static_cast<std::ptrdiff_t>(cd),
+                                            b.begin() + static_cast<std::ptrdiff_t>(cd + len)));
+                         }),
+                 false, "structure");
 }
 
 TEST_CASE("a decompression bomb is refused by VERIFY, not only by install") {

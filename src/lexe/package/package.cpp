@@ -216,6 +216,47 @@ bool archive_spans_whole_file(const std::vector<std::uint8_t>& b) {
     return cd_offset + cd_size == eocd; // CD ends exactly at the EOCD
 }
 
+/// The central directory must be EXACTLY the EOCD's count of records, laid end
+/// to end, filling [cd_offset, EOCD). "Ends at the EOCD" alone left room
+/// inside it: slack bytes after the last counted record, or a whole extra
+/// record the EOCD does not count -- one that miniz never reads but Python's
+/// zipfile lists and extracts. Two readers, two archives (§2.2), and the
+/// uncounted one is outside every signature. Called after
+/// archive_spans_whole_file(), so the EOCD is at the tail.
+std::optional<std::string> central_directory_problem(
+    const std::vector<std::uint8_t>& b) {
+    const std::size_t eocd = b.size() - 22;
+    auto rd16 = [&](std::size_t o) -> std::uint32_t {
+        return static_cast<std::uint32_t>(b[o]) |
+               (static_cast<std::uint32_t>(b[o + 1]) << 8);
+    };
+    auto rd32 = [&](std::size_t o) -> std::uint32_t {
+        return rd16(o) | (rd16(o + 2) << 16);
+    };
+    const std::uint32_t count = rd16(eocd + 10);
+    if (rd16(eocd + 8) != count) {
+        return "the end record's entry counts disagree with each other";
+    }
+    std::size_t pos = rd32(eocd + 16);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (pos + 46 > eocd || rd32(pos) != 0x02014b50) {
+            return "central directory record " + std::to_string(i) +
+                   " is not where the previous one ends";
+        }
+        pos += 46 + static_cast<std::size_t>(rd16(pos + 28)) + rd16(pos + 30) +
+               rd16(pos + 32);
+    }
+    if (pos > eocd) {
+        return "the central directory's counted records overrun its end record";
+    }
+    if (pos != eocd) {
+        return std::to_string(eocd - pos) +
+               " byte(s) in the central directory follow the last record its "
+               "end record counts";
+    }
+    return std::nullopt;
+}
+
 /// Exact raw entry name bytes (embedded NUL preserved — m_filename would
 /// truncate at the first NUL, hiding a FORMAT §2 violation).
 std::string raw_entry_name(mz_zip_archive& zip, mz_uint index) {
@@ -492,6 +533,14 @@ PackageReader::PackageReader(const fs::path& lexe_file)
         throw VerificationError(
             "package: archive does not span the whole file (trailing/prepended "
             "data or an archive comment)");
+    }
+    if (const std::optional<std::string> problem =
+            central_directory_problem(impl_->bytes)) {
+        throw VerificationError(
+            "package: " + *problem,
+            "Bytes inside the central directory that its end record does not "
+            "account for can be read as a different archive by another ZIP "
+            "reader, and nothing signs them.");
     }
 
     // Bound the entry count before walking the central directory (§F).
