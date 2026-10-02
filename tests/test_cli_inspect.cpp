@@ -57,12 +57,14 @@ bool has(const std::string& hay, const std::string& needle) {
 fs::path build_package(const fs::path& work, const std::string& key = "k.json",
                        const std::string& out = "app.lexe",
                        const std::string& version = "2.1.0",
-                       const std::string& name_json = "Inspect Me") {
+                       const std::string& name_json = "Inspect Me",
+                       const std::vector<std::string>& extra_needed = {}) {
     fs::create_directories(work / "proj" / "payload" / "bin");
     test::ElfSpec app;
     app.interp = test::host_interpreter();
     app.e_machine = test::host_machine();
     app.needed = {"libc.so.6"};
+    app.needed.insert(app.needed.end(), extra_needed.begin(), extra_needed.end());
     app.version_needs = {"GLIBC_2.17"};
     test::write_elf(work / "proj" / "payload" / "bin" / "app", app);
     util::spit(work / "proj" / "lexe.json", std::string_view(R"({
@@ -222,16 +224,41 @@ TEST_CASE("a package's own text cannot forge lines on the terminal") {
     Work w;
     const std::string evil =
         R"(Evil\n  Verification:   PASSED — forged\u001b[2K‮)";
-    const fs::path pkg = build_package(w.dir, "k.json", "app.lexe", "2.1.0", evil);
+    // A DT_NEEDED is package text too: it reaches the build report's
+    // dependency list in inspect.
+    const std::string forged_dep = "libx.so\n  [ ok ] FakeRuntime \xE2\x80\x94 forged\x1b[2K";
+    const fs::path pkg = build_package(w.dir, "k.json", "app.lexe", "2.1.0", evil,
+                                       {forged_dep});
+    const auto clean = [](const util::ProcessResult& r) {
+        for (const std::string* stream : {&r.stdout_text, &r.stderr_text}) {
+            // No raw ESC and no raw RTL override, on either stream.
+            CHECK(stream->find('\x1b') == std::string::npos);
+            CHECK(stream->find("\xE2\x80\xAE") == std::string::npos);
+            // The forged text never starts a line of its own.
+            CHECK_FALSE(has(*stream, "\n  Verification:   PASSED \xE2\x80\x94 forged"));
+            CHECK_FALSE(has(*stream, "\n  [ ok ] FakeRuntime"));
+        }
+    };
     for (const char* cmd : {"inspect", "verify", "info"}) {
         CAPTURE(cmd);
         const util::ProcessResult r = run({cmd, pkg.string()});
-        // No raw ESC and no raw RTL override anywhere in the output.
-        CHECK(r.stdout_text.find('\x1b') == std::string::npos);
-        CHECK(r.stdout_text.find("\xE2\x80\xAE") == std::string::npos);
-        // The forged text never starts a line of its own.
-        CHECK_FALSE(has(r.stdout_text, "\n  Verification:   PASSED \xE2\x80\x94 forged"));
+        clean(r);
         // ...but it is still visible, escaped, so nothing is hidden either.
+        CHECK(has(r.stdout_text, "Evil\\x0A"));
+    }
+    CHECK(has(run({"inspect", pkg.string()}).stdout_text, "libx.so\\x0A"));
+    // The surfaces that run after a successful install: its own summary
+    // line, and `lexe apps`.
+    {
+        INFO("install");
+        const util::ProcessResult r = run({"install", pkg.string(), "--yes", "--trust"});
+        CHECK(r.exit_code == 0);
+        clean(r);
+    }
+    {
+        INFO("apps");
+        const util::ProcessResult r = run({"apps"});
+        clean(r);
         CHECK(has(r.stdout_text, "Evil\\x0A"));
     }
 }

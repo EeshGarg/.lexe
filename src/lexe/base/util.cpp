@@ -546,6 +546,9 @@ std::string display_safe(std::string_view text) {
         const bool hidden = (cp >= 0x80 && cp <= 0x9F) ||
                             (cp >= 0x200B && cp <= 0x200F) ||
                             (cp >= 0x202A && cp <= 0x202E) ||
+                            cp == 0x061C ||                    // Arabic letter mark
+                            cp == 0x2028 || cp == 0x2029 ||    // line/para separator
+                            (cp >= 0xFFF9 && cp <= 0xFFFB) ||  // interlinear annotation
                             (cp >= 0x2060 && cp <= 0x2069) || cp == 0xFEFF;
         if (hidden) code_point(cp); else out.append(text.substr(i, len));
         i += len;

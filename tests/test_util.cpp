@@ -284,4 +284,36 @@ TEST_CASE("slurp reads an unseekable regular file whose size reads as zero") {
 }
 #endif
 
+TEST_CASE("display_safe: one input per branch, so each branch's removal is caught") {
+    using lexe::util::display_safe;
+    struct Row {
+        std::string in;
+        std::string out;
+    };
+    const std::vector<Row> rows = {
+        {"plain ascii", "plain ascii"},
+        {"caf\xC3\xA9 \xE6\x97\xA5", "caf\xC3\xA9 \xE6\x97\xA5"}, // ordinary UTF-8 passes
+        {"a\nb", "a\\x0Ab"},                    // C0 (newline)
+        {"\x1B[2K", "\\x1B[2K"},                // C0 (ESC)
+        {"x\x7Fy", "x\\x7Fy"},                  // DEL
+        {"\xC2\x9B", "\\u{009B}"},              // C1 (single-character CSI)
+        {"\xE2\x80\xAE", "\\u{202E}"},          // RTL override
+        {"\xE2\x80\x8B", "\\u{200B}"},          // zero-width space
+        {"\xE2\x81\xA6", "\\u{2066}"},          // LRI
+        {"\xEF\xBB\xBF", "\\u{FEFF}"},          // BOM / ZWNBSP
+        {"\xD8\x9C", "\\u{061C}"},              // Arabic letter mark
+        {"\xE2\x80\xA8", "\\u{2028}"},          // line separator
+        {"\xEF\xBF\xB9", "\\u{FFF9}"},          // interlinear annotation
+        {"\xFF", "\\xFF"},                      // invalid byte
+        {std::string("\xC0\x80", 2), "\\xC0\\x80"},           // overlong NUL
+        {"\xED\xA0\x80", "\\xED\\xA0\\x80"},    // UTF-16 surrogate
+        {"\xF5\x80\x80\x80", "\\xF5\\x80\\x80\\x80"}, // above U+10FFFF
+        {"\xE2\x80", "\\xE2\\x80"},             // truncated sequence
+    };
+    for (const Row& r : rows) {
+        CAPTURE(r.out);
+        CHECK(display_safe(r.in) == r.out);
+    }
+}
+
 } // TEST_SUITE("util")

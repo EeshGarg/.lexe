@@ -71,7 +71,7 @@ void list_kind(std::ostringstream& os, const DependencyReport& deps,
         // their binary is carrying a dead search path at all.
         if (!d->out_of_package_search_path.empty()) {
             os << "\n        its DT_RPATH/DT_RUNPATH points at "
-               << d->out_of_package_search_path.string()
+               << util::display_safe(d->out_of_package_search_path.string())
                << ", outside the package — disregarded, as a sandboxed launch "
                   "will not have it";
         }
@@ -87,7 +87,7 @@ std::string render_build_report_text(const BuildReport& r) {
     const RuntimeProfileInfo& pinfo = runtime_profile_info(r.profile);
 
     if (!r.app_name.empty()) {
-        os << "Application:     " << r.app_name;
+        os << "Application:     " << util::display_safe(r.app_name);
         if (!r.app_version.empty()) os << " " << r.app_version;
         if (!r.app_id.empty()) os << " (" << r.app_id << ")";
         os << "\n";
@@ -115,9 +115,10 @@ std::string render_build_report_text(const BuildReport& r) {
             os << " (needs glibc " << c.required_glibc << ", ceiling "
                << c.glibc_ceiling << ")";
         }
-        os << "\n                 " << c.detail << "\n";
+        os << "\n                 " << util::display_safe(c.detail) << "\n";
         for (const Core1Offender& o : c.symbol_offenders) {
-            os << "    ! " << o.object << " requires " << o.version << "\n";
+            os << "    ! " << util::display_safe(o.object) << " requires "
+               << util::display_safe(o.version) << "\n";
         }
     }
 
@@ -170,12 +171,13 @@ std::string render_build_report_text(const BuildReport& r) {
     os << "Compatibility:\n";
     for (const TargetCompat& t : r.compatibility.targets) {
         os << "  " << compat_marker(t.level) << " " << t.target.name << " — "
-           << t.detail << "\n";
+           << util::display_safe(t.detail) << "\n";
     }
     if (!r.compatibility.warnings.empty()) {
         os << "  Warnings:\n";
         for (const CompatWarning& w : r.compatibility.warnings) {
-            os << "    ! " << w.title << ": " << w.explanation << "\n";
+            os << "    ! " << util::display_safe(w.title) << ": "
+               << util::display_safe(w.explanation) << "\n";
         }
     }
 

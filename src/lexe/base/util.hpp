@@ -90,7 +90,8 @@ void unset_env(const std::string& name);
 /// dropped, so what the package really says stays visible:
 ///   C0 controls, DEL       -> \xNN       (newline and tab included)
 ///   C1 controls             -> \u{NNNN}
-///   bidi / invisible format -> \u{NNNN}  (U+200B-200F, 202A-202E, 2060-2069, FEFF)
+///   bidi / invisible format -> \u{NNNN}  (U+061C, 200B-200F, 2028-2029,
+///                              202A-202E, 2060-2069, FEFF, FFF9-FFFB)
 ///   invalid UTF-8 bytes     -> \xNN
 /// Everything else, including all other non-ASCII text, passes unchanged.
 std::string display_safe(std::string_view text);

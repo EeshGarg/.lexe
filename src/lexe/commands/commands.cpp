@@ -705,7 +705,7 @@ int cmd_install(const std::vector<std::string>& args) {
         if (registry.is_installed(manifest.id)) {
             const std::string installed = registry.current_version(manifest.id);
             if (installed == manifest.version) {
-                std::cout << "Reinstalling " << manifest.name << " " << installed
+                std::cout << "Reinstalling " << util::display_safe(manifest.name) << " " << installed
                           << " over the same version.\n";
             } else if (version_less(manifest.version, installed)) {
                 std::cout << "Downgrade: this replaces the installed version "
@@ -790,7 +790,7 @@ int cmd_install(const std::vector<std::string>& args) {
 
     const InstallResult result = installer.install(package, opts);
 
-    std::cout << "Installed " << manifest.name << " " << result.version << " ("
+    std::cout << "Installed " << util::display_safe(manifest.name) << " " << result.version << " ("
               << result.id << ")\n"
               << "Location: " << result.app_dir.string() << "\n";
     if (manifest.application_kind == ApplicationType::Portable) {
@@ -2736,14 +2736,14 @@ int cmd_apps(const std::vector<std::string>& args) {
     }
 
     const auto row = [](const char* label, const std::string& value) {
-        std::cout << "    " << std::left << std::setw(11) << label << value
+        std::cout << "    " << std::left << std::setw(11) << label << util::display_safe(value)
                   << "\n";
     };
     std::cout << apps.size()
               << (apps.size() == 1 ? " application installed:\n\n"
                                    : " applications installed:\n\n");
     for (const App& a : apps) {
-        std::cout << "  " << (a.name.empty() ? a.id : a.name) << "  "
+        std::cout << "  " << util::display_safe(a.name.empty() ? a.id : a.name) << "  "
                   << a.version << "\n";
         if (!a.name.empty()) row("id", a.id);
         if (!a.publisher.empty()) row("publisher", a.publisher);
@@ -2949,7 +2949,7 @@ int cmd_build(const std::vector<std::string>& args) {
     std::cout << "Built " << out.string() << " ("
               << format_size(static_cast<std::uint64_t>(fs::file_size(out)))
               << ")\n"
-              << "  application:   " << manifest.name << " "
+              << "  application:   " << util::display_safe(manifest.name) << " "
               << manifest.version << " (" << manifest.id << ")\n"
               << "  publisher key: " << pubkey << "\n"
               << "  verification:  " << (report.ok() ? "OK" : "FAILED");
@@ -4094,7 +4094,7 @@ int cmd_launch_ref(const std::vector<std::string>& args) {
 
     const fs::path written =
         write_launch_reference(paths, manifest, destination);
-    std::cout << "Wrote a .LEXE launch reference for " << manifest.name
+    std::cout << "Wrote a .LEXE launch reference for " << util::display_safe(manifest.name)
               << ":\n  " << written.string() << "\n\n"
               << "Double-clicking it launches the installed application "
                  "through .LEXE.\nIt contains no payload — only the "

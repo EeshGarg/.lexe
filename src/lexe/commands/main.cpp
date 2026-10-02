@@ -7,6 +7,7 @@
 #include "lexe/commands/style.hpp"
 
 #include "lexe/base/error.hpp"
+#include "lexe/base/util.hpp"
 
 #include <exception>
 #include <iostream>
@@ -63,7 +64,23 @@ int main(int argc, char** argv) {
         return lexe::cli::dispatch(args);
     } catch (const std::exception& e) {
         namespace s = lexe::cli::style;
-        std::cerr << s::red(color, s::bold(color, "lexe:")) << " " << e.what()
+        // Messages quote package content (a manifest value, an entry name), so
+        // each line is escaped: no ESC sequence, bidi override or invalid
+        // UTF-8 reaches the terminal. The message's own line breaks are kept;
+        // a newline INSIDE a quoted value cannot be told apart from them here.
+        std::string message;
+        const std::string what = e.what();
+        for (std::size_t start = 0;;) {
+            const std::size_t nl = what.find('\n', start);
+            message += lexe::util::display_safe(
+                std::string_view(what).substr(start, nl == std::string::npos
+                                                         ? std::string::npos
+                                                         : nl - start));
+            if (nl == std::string::npos) break;
+            message += '\n';
+            start = nl + 1;
+        }
+        std::cerr << s::red(color, s::bold(color, "lexe:")) << " " << message
                   << "\n";
         if (const std::string hint = hint_for(e); !hint.empty()) {
             std::cerr << s::dim(color, "  hint:") << " " << hint << "\n";
