@@ -568,6 +568,33 @@ it.
 
 * **Sandboxing** is bubblewrap on Linux. The format requires isolation between
   applications (§9.6); it does not name a mechanism.
+* **`lexe verify` and `lexe inspect` read an untrusted file; they never act on
+  it.** Neither installs, executes package content, or changes trust or
+  approvals (an execution observer covers both, human and `--json`:
+  `tests/test_no_execution.cpp`). Policy choices on top of FORMAT §6:
+  * `inspect` **analyses a binary only when there is a verified native one.**
+    A package that failed verification, a portable package (source only) and a
+    windows package (a PE) get `Analysis: not performed — <why>` and
+    `"analysis": {"performed": false}` — never a compatibility or Tux32 verdict
+    computed from nothing.
+  * `inspect --json` begins with `"authenticated": true|false`; the human view
+    puts `NOT AUTHENTIC` above the manifest's claims when verification failed.
+  * The runtime profile assessed is the one the package **declares**; none
+    declared is "none declared (not assessed)" (FORMAT §5.7).
+  * Extraction for analysis goes to a **private** temporary directory
+    (`mkdtemp`, 0700), never a name derived from package content: the package
+    hash is known to whoever made the package, so a hash-derived name is one
+    another local user can plant as a link.
+  * Dependency analysis never looks up a `DT_NEEDED` that contains `/`: it names
+    a path, not a library, and resolving it would let a package make `inspect`
+    open and hash host files of its choosing. It is reported unresolved.
+  * **Package text is escaped on display.** FORMAT puts no character
+    restriction on `name` or `publisher.name` (Appendix A.7), so human output
+    escapes control characters (`\x0A`), C1 controls and bidi/invisible format
+    characters (`\u{202E}`) and invalid UTF-8 — escaped rather than dropped, so
+    nothing the package says is hidden. JSON output is valid UTF-8 always:
+    invalid bytes in a diagnostic become U+FFFD instead of aborting the
+    document.
 * **A confirmation prompt needs an input that can answer it.** `lexe install` and
   `lexe uninstall` and `lexe purge` prompt only when stdin is a **terminal** (a person is there) or a
   **regular file** (the answer is already written down, all of it, so the read is

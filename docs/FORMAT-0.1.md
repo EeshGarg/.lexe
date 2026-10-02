@@ -103,17 +103,32 @@ Writers (i.e. `lexe pack`) MUST produce **deterministic** archives:
   setgid and sticky bits are never recorded. On filesystems without Unix
   permission bits (e.g. Windows) every collected file is recorded as 0644, so
   helper executables must be packed on a POSIX filesystem;
-* no ZIP64 unless the archive requires it — and under §10.1's limits it never
-  can be, since 2 GiB and 65535 entries both sit inside the classic format, so a
-  conforming 0.1 writer emits no ZIP64 structures at all. A **reader** MAY reject
-  an archive carrying a ZIP64 end-of-central-directory record, and the reference
-  implementation does: it requires the classic 22-byte EOCD as the final bytes of
-  the file (§2.2), which a ZIP64 archive does not have. This is stated because the
-  asymmetry was previously implicit — a writer obligation with no reader
-  consequence written down;
+* no ZIP64 structures. A writer MUST NOT emit them, and a **reader** MUST reject
+  an archive carrying a ZIP64 end-of-central-directory record or locator: the
+  end record MUST be the classic 22-byte EOCD and the final bytes of the file
+  (§2.2). (This previously said a reader MAY reject ZIP64, justified by "§10.1's
+  limits" — but §10.1 sets no archive-size or entry-count limit; those are
+  reference policy. A MAY made the verdict reader-defined, which is exactly what
+  a format rule must not be.) A package that genuinely needs more than 65535
+  entries or 4 GiB cannot be expressed in 0.1;
 * no encryption; no archive comment;
   no per-entry extra fields or comments beyond what the amalgamated miniz writer
   emits with the settings above.
+
+A **reader** MUST reject an archive that does not occupy exactly the whole
+file: the classic end-of-central-directory record MUST be the file's final 22
+bytes, with a zero comment length, and the central
+directory MUST end exactly where it begins (§2.2 says what must fill the space
+before). Bytes before the first local record or after the end record are
+covered by no signature. (Appendix A.4 #28 cited this section for that rule; the
+section previously stated only the writer's half.)
+
+Compression: a reader MUST accept method 0 (STORE) and method 8 (DEFLATE) for
+any entry, whatever its size, and MUST reject every other method. The writer's
+"under 64 bytes → STORE" choice is a writer rule only; a reader MUST NOT check it
+(Appendix A.5 #33). For a STORE entry the compressed and uncompressed sizes
+MUST be equal, and for every entry the decompressed length MUST equal the
+declared uncompressed size.
 
 Packing the same input tree twice MUST produce byte-identical `.lexe` files.
 
@@ -151,7 +166,8 @@ archive when any entry path:
   here compares bytes;
 * contains a backslash (`\`);
 * contains a segment equal to `..` or `.`;
-* contains an empty segment (`a//b`, or a trailing `/` on a non-directory);
+* contains an empty segment (`a//b`, or a trailing `/` — §2.2 rejects every
+  directory entry, so there is no case where a trailing `/` is allowed);
 * contains a segment beginning with an ASCII letter followed by `:`
   (a Windows drive designator, `C:`);
 * exceeds 1024 bytes in total, or has any segment exceeding 255 bytes, or has
@@ -171,10 +187,19 @@ A reader MUST also reject an archive when:
   host filesystem, because whether a package is valid MUST NOT depend on where
   it is read;
 * an entry is a symbolic link (ZIP external attributes: Unix mode `S_IFLNK`);
-* an entry is encrypted (general-purpose bit 0 set), or uses a compression
-  method the reader does not support;
+* an entry is encrypted (general-purpose bit 0 or 6 set), or uses a compression
+  method other than STORE or DEFLATE (§1);
 * a required entry is missing;
 * `payload/` entries are absent and the manifest's `role` is not `"launch"`.
+
+**Paths are compared as bytes.** Every comparison in this document between
+entry paths, or between an entry path and a manifest value, is an exact
+byte comparison of UTF-8. No Unicode normalization is applied and no case
+folding beyond the ASCII rule above: `é` precomposed (U+00E9) and `e` + U+0301
+are two different, individually valid paths, and an archive carrying both is
+**valid** under 0.1. Whether 0.2 should reject normalization-equivalent pairs
+(they alias on normalizing filesystems, as ASCII case pairs do on folding ones)
+is recorded in Appendix A.7; a 0.1 reader MUST NOT reject for it.
 
 ### 2.2 One archive, not two
 
@@ -198,6 +223,14 @@ A reader MUST further require that the bytes before the central directory are
 * no bytes before the first local record;
 * no gap or overlap between records;
 * no gap between the last record's data and the start of the central directory.
+
+The central directory itself MUST be **exactly** the records its end record
+counts: the end record's two entry counts MUST be equal, and that many central
+records, each beginning where the previous one ends, MUST fill the space from
+the central directory's offset to the end record — no slack bytes, and no
+further record the count does not include. (An uncounted record is invisible
+to a reader that walks the count and listed by one that scans; it was used to
+show `signatures/evil.bin` to one reader and not the other.)
 
 Without this, a complete extra local record can be spliced into the gap and the
 central directory's offset advanced past it. Checking only that the archive ends
@@ -483,6 +516,19 @@ binary (not hex, not base64).
 Signing raw entry bytes, not parsed structures, means no JSON canonicalization is
 required anywhere.
 
+**Verification is strict.** RFC 8032 leaves implementations room to disagree on
+edge-case signatures, and two readers that disagree on whether a signature is
+valid disagree on whether a package is authentic. A reader MUST reject:
+
+* a signature whose scalar `S` is not less than the group order `L`;
+* a non-canonical encoding of the signature's `R` or of the public key `A`;
+* a public key `A` of small order — including the identity point, for which a
+  "signature" verifies over **every** message without anyone holding a key.
+
+(These were enforced by the reference implementation and recorded only in
+Appendix A.4 #30; an independent reader built from this section accepted the
+identity-point key. They are format rules.)
+
 ### Publisher key encoding
 
 `publisher.publicKey` in the manifest is the string
@@ -493,6 +539,13 @@ required anywhere.
 
 Base64 is the standard RFC 4648 alphabet **with** padding. Readers MUST reject any
 other prefix or a decoded length ≠ 32.
+
+The encoding MUST be **canonical**: the prefix is exactly `ed25519:` (case
+sensitive), followed by exactly 44 characters of the standard alphabet ending in
+one `=`, with no whitespace, and with the unused low bits of the final character
+zero — equivalently, re-encoding the decoded 32 bytes MUST reproduce the string.
+Base64 otherwise allows several spellings of one key, and a key must have exactly
+one (Appendix A.3 #10).
 
 ### Key files (developer tooling)
 
@@ -526,6 +579,17 @@ a document that does not.
   and two implementations — or a verifier and the human reviewing it — could
   read it differently. A signature over ambiguous bytes proves less than it
   appears to.
+* **RFC 8259 syntax**, nothing laxer: no comments, no trailing commas, no
+  single quotes, no `NaN`/`Infinity`, no leading zeros, no raw control
+  characters inside strings, and a number whose magnitude exceeds an IEEE-754
+  double (`1e999`) is rejected rather than rounded to infinity.
+* **No raw NUL byte anywhere** in the document. RFC 8259 already excludes it
+  (it is neither whitespace nor permitted unescaped in a string); it is stated
+  because common parsers treat it as end-of-input, which turns
+  `{…}` + NUL + *anything* into a document that "ends cleanly" and silently
+  discards signed bytes. `\u0000` (escaped) is ordinary JSON and allowed.
+* **No unpaired surrogate escape** (`"\ud800"` alone): it denotes no character,
+  and implementations disagree about what to do with it.
 * **No trailing data** after the top-level value.
 * **A JSON object** at the top level.
 * Within the applicable size budget (§10.1).
@@ -606,7 +670,7 @@ labelled.
 |---|---|
 | `applicationType` | `"native"`, `"portable"` or `"windows"` |
 | `architectures` | non-empty array; recognised values: `x86_64`, `aarch64` |
-| `entrypoint.executable` | relative path inside `payload/` (no leading `/`, no `..`, no backslash) |
+| `entrypoint.executable` | relative path inside `payload/`, under the **same grammar as an entry path (§2.1)**: no leading `/`, no `..` **or `.`** segment, no empty segment or trailing `/`, no backslash, no NUL, no drive designator. It is compared to archive entries as the exact bytes of `payload/` + value |
 | `install.mode` | MUST be `"bundled"` in 0.1 (`network`/`launcher` → "unsupported in 0.1") |
 | `build` | REQUIRED for `"portable"`, FORBIDDEN otherwise (§5.8) |
 
@@ -1612,7 +1676,7 @@ accepted packages this runtime does not.
 | 18 | `execution.allowedChains`: an absent **or empty** list means `["native"]`; chain ids match `[A-Za-z0-9+_-]+` and are ≤ 1024 bytes |
 | 19 | `build.command` elements reject NUL and are ≤ 1024 bytes; `build.toolchain` entries reject `\` as well as `/` |
 | 20 | `build.command` is "forbidden" in the sense of absent, `null`, **or empty** for `make`/`cmake` |
-| 21 | Payload path rules also reject NUL, a drive designator, and empty segments |
+| 21 | Payload path rules also reject NUL, a drive designator, empty segments, and `.` segments — now stated in §5.3 itself |
 | 22 | `applicationType: "windows"` requires an `execution` block naming a foreign-OS chain |
 | 23 | `missionCritical: true` forbids any chain but `native`; a `windows` package cannot be mission-critical |
 | 24 | Digests in `hashes.json` must be **lowercase** hex — an uppercase digest is malformed, not merely mismatched, because a case-sensitive comparison is conforming |
@@ -1690,6 +1754,12 @@ package.
 | Question | Why it is open |
 |---|---|
 | Is execution-chain layer **order** normative? §5.5 says `fex+proton` "is not a chain", and nothing checks it. Order is a naming convention today | Resolving it toward "normative" would change which packages are valid, so it needs the compatibility work first |
-| Should the manifest's payload-path grammar and the archive's entry-path grammar be the same grammar? They differ on `.` segments today | They are enforced in different places for different reasons; unifying them is a code change, not a format decision |
+| **`updates.manifest` scheme at verification time.** §7 says "an https:// URL (also accepts file:// and paths)"; §7.0.1 says MUST be https and then exempts file/path. Whether an `http://` value fails §6 verification or only fails at update time is not stated | Either reading is defensible; the safer one (verify rejects anything but `https://` in a PACKAGE, local paths only from local configuration) changes which packages are valid |
+| **Launch references and a stateless validator.** §9.8.1 requires refusing a reference not signed by this machine's launch key; a validator with no such key cannot decide it | Likely answer: report "unverifiable here", never OK — needs wording |
+| **`integration` members.** §5.7 points at §9 for `integration`, which defines only `desktopEntry`. Other members are presumably ignored as unknown (§5.0), but this is not said | Text-only, but it fixes what an `integration` block may mean |
+| **Unicode normalization.** §2.1 compares bytes, so NFC/NFD-equivalent paths are distinct and both valid in 0.1. They alias on a normalizing filesystem exactly as ASCII case pairs alias on a folding one | Rejecting them changes which packages are valid; 0.2 question |
+| **File/directory prefix conflicts.** An entry `payload/bin` beside `payload/bin/app`, or a bare file named `payload`/`metadata`/`signatures`, satisfies every §2.1 rule but cannot be extracted to any filesystem. Both implementations accept it today | Deterministic rejection is the likely answer; it is a validity change for both implementations, not made in this campaign |
+| **Unsigned bytes inside records.** Per-entry comments, local extra fields and bytes after a DEFLATE stream's end are covered by no signature. They cannot change what is extracted, but they make the package's SHA-256 malleable and are a covert channel | Rejecting them needs a check of what real writers emit first |
+| **Text in `name`/`publisher.name`.** No character restriction: a newline or bidi override is valid manifest text. The reference implementation escapes it on display (REFERENCE-POLICY) | Whether FORMAT should forbid control characters is a validity change |
 | **A session-managed service whose program is replaced underneath it.** `ExecStart` is version-independent (`lexe run <id> --wait`), so after an update the unit keeps executing the OLD version until something unrelated restarts it, at which point it silently switches — and `service status` reports it healthy throughout | §9.4 permits this (it forbids disturbing a running version) and §5.6 says detaching is not supervision, but neither covers the case where the runtime IS the supervisor and the program changed. The likely answer is a REPORT rather than a restart — `service status` saying "running 1.0.0, installed version is 2.0.0" — because restarting a service because a file changed is a policy decision that belongs to the user. Recorded as open rather than decided quietly |
 | `build.json` vocabularies: legal values of `hostIsa`, `approval.authority`, and a timestamp grammar | All three are free strings today. Tightening them is POLICY work, not format work |
