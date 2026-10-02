@@ -284,8 +284,8 @@ done")"
 # dropped -- a mapping that silently drifts is the "a check cannot detect what
 # it holds constant" failure wearing a config file.
 L1_SUITES="crypto,ed25519_strict,json_strict,manifest,elf,pe,package,limits,tux32,depengine,compat,paths,architecture,envelope-seams,payload_role,presentation,runtime-profile,launch-cost,execution-architecture,buildreport,permissions,settings,http,tux32-verify,ui,util,verify,version,versioncmp"
-L2_SUITES="installer,transaction,registry,storage,crash_recovery,repair-after-rollback,trust,trust-adversarial,trust-lifecycle,hostile_packages,invariants,install_reporting,no_execution,health_check,lock,concurrent-state,cli,cli_apps,cli_inspect,cli_e2e,cli_sdk_verify,cli_ux,builder,security-boundary,integration-durability,uninstall_paths,updater"
-L3_SUITES="launcher,hostbuild,race"
+L2_SUITES="purge,installer,transaction,registry,storage,crash_recovery,repair-after-rollback,trust,trust-adversarial,trust-lifecycle,hostile_packages,invariants,install_reporting,no_execution,health_check,lock,concurrent-state,cli,cli_apps,cli_inspect,cli_e2e,cli_sdk_verify,cli_ux,builder,security-boundary,integration-durability,uninstall_paths,updater"
+L3_SUITES="launcher,hostbuild,race,wrong_isa"
 L4_SUITES="isolation,isolation_linux,etc_surface,desktop,session-units,gui"
 L5_SUITES="proton"
 
@@ -330,7 +330,20 @@ audit_level_mapping() {
 run_level_suites() {  # <level> <comma-list>
     local level="$1" suites="$2"
     local out
-    out="$(arm_guest "cd $ARM_WORK/repo && ./build-arm64/lexe_tests --no-colors -ts=$suites 2>&1 | tail -4")"
+    # --no-breaks: PRoot ptraces the guest, so TracerPid is non-zero, doctest
+    # believes a debugger is attached, and every failed assertion became a
+    # SIGTRAP that killed the whole level with no summary. Failures must be
+    # reported as failures.
+    #
+    # The failing test cases are listed, and each failure that carries the
+    # launcher's fail-closed isolation refusal is counted: on a host with no
+    # working isolation backend that refusal is the specified behaviour, and
+    # the count lets the evidence separate it from everything else. It is not
+    # used to turn a failure into a pass.
+    out="$(arm_guest "cd $ARM_WORK/repo && ./build-arm64/lexe_tests --no-colors --no-breaks -ts=$suites > /tmp/level-$level.log 2>&1
+grep '^TEST CASE:' /tmp/level-$level.log | sort | uniq -c | sed 's/^/FAILED_CASE /'
+echo ISOLATION_REFUSALS=\$(grep -c 'isolation backend is unavailable' /tmp/level-$level.log)
+tail -4 /tmp/level-$level.log")"
     printf '%s\n' "$out" | sed 's/^/      /'
     printf '%s\n' "$out" >> "$EVIDENCE/arm-levels.txt"
     if [[ "$out" == *"Status: SUCCESS!"* ]]; then ok "LEVEL $level"; return 0
@@ -379,12 +392,18 @@ echo READELF=\$(readelf -h build-arm64/lexe 2>/dev/null | awk '/Machine:/{print 
 
     # LEVEL 4 -- expected BLOCKED under PRoot, but MEASURED rather than assumed.
     say "  -- LEVEL 4: sandbox / namespace / desktop integration"
+    # MEASURED, by .LEXE's own capability probe (which executes the backend),
+    # not by whether a bwrap binary exists. Under PRoot `unshare --user` exits
+    # 0 without creating a namespace, so an existence or exit-status check
+    # would be fooled; the probe is what decides whether a launch is allowed,
+    # so it is the thing whose verdict counts.
     local ns
     ns="$(arm_guest "command -v bwrap >/dev/null 2>&1 && echo BWRAP=yes || echo BWRAP=no
-unshare --user --pid true 2>&1 | head -1 | sed 's/^/USERNS=/'")"
+cd $ARM_WORK/repo && ./build-arm64/lexe sandbox 2>/dev/null | sed -n '1p;/^Probe/,/Bind mounts/p'")"
     printf '%s\n' "$ns" | sed 's/^/      /'
-    if [[ "$ns" == *"BWRAP=no"* ]]; then
-        block "LEVEL 4: bubblewrap is absent in the guest. PRoot emulates chroot via ptrace and provides no user namespaces, which bwrap requires. This is an environment limit of the worker, not a .LEXE result -- the sandbox levels are untested here, NOT passing."
+    printf '%s\n' "$ns" >> "$EVIDENCE/arm-levels.txt"
+    if [[ "$ns" == *"Isolation is unavailable"* ]]; then
+        block "LEVEL 4: .LEXE's probe reports no working isolation backend on this worker (see Probe above), and launch fails closed. The sandbox levels are untested here, NOT passing."
     else
         run_level_suites 4 "$L4_SUITES"
     fi
