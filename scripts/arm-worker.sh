@@ -341,8 +341,10 @@ run_level_suites() {  # <level> <comma-list>
     # the count lets the evidence separate it from everything else. It is not
     # used to turn a failure into a pass.
     out="$(arm_guest "cd $ARM_WORK/repo && ./build-arm64/lexe_tests --no-colors --no-breaks -ts=$suites > /tmp/level-$level.log 2>&1
-grep '^TEST CASE:' /tmp/level-$level.log | sort | uniq -c | sed 's/^/FAILED_CASE /'
+awk '/^TEST CASE:/{tc=\$0} /ERROR/ && tc!=\"\"{print \"FAILED_CASE \" tc; tc=\"\"}' /tmp/level-$level.log
 echo ISOLATION_REFUSALS=\$(grep -c 'isolation backend is unavailable' /tmp/level-$level.log)
+echo SANDBOX_REFUSED_BUILDS=\$(grep -c 'needs an isolated build environment' /tmp/level-$level.log)
+grep -E 'MESSAGE: (SKIP|BLOCKED)' /tmp/level-$level.log | sed 's/^ *MESSAGE: //' | sort | uniq -c | sed 's/^/SELF_SKIPPED /'
 tail -4 /tmp/level-$level.log")"
     printf '%s\n' "$out" | sed 's/^/      /'
     printf '%s\n' "$out" >> "$EVIDENCE/arm-levels.txt"
