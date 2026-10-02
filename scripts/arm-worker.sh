@@ -205,7 +205,7 @@ cmd_sync() {
     (( brc == 0 )) || { infra "git bundle create failed"; return 1; }
     ok "bundle: $(du -h "$bundle" | cut -f1)"
 
-    adb push "$bundle" /sdcard/lexe-sync.bundle >/dev/null 2>&1 \
+    MSYS2_ARG_CONV_EXCL=/sdcard adb push "$bundle" /sdcard/lexe-sync.bundle >/dev/null 2>&1 \
         || { infra "adb push to /sdcard failed"; return 1; }
     ok "pushed to /sdcard"
 

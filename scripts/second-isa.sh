@@ -190,7 +190,7 @@ cmd_remote() {
     # difference here invalidates the whole experiment, so it is checked rather
     # than assumed.
     local local_sha; local_sha="$(sha256sum "$PKG" | awk '{print $1}')"
-    adb push "$(cygpath -w "$PKG" 2>/dev/null || printf '%s' "$PKG")" \
+    MSYS2_ARG_CONV_EXCL=/sdcard adb push "$(cygpath -w "$PKG" 2>/dev/null || printf '%s' "$PKG")" \
         /sdcard/second-isa.lexe >/dev/null 2>&1 || { bad "adb push"; return 1; }
     $ARM_SSH "cp /sdcard/second-isa.lexe \$HOME/second-isa.lexe" >/dev/null 2>&1 || {
         bad "Termux could not read /sdcard (termux-setup-storage?)"; return 1; }
