@@ -156,7 +156,7 @@ lane_desc() {
     lifecycle)  echo "install -> run -> update -> rollback -> repair -> uninstall, and the same interrupted" ;;
     concurrency) echo "the same operations SIMULTANEOUSLY: contended locks, lease races, deadlock detection" ;;
     session) echo "the session-manager boundary, against the real systemd --user of this session" ;;
-    conformance) echo "lexe verify vs the independent validator: a 182-case corpus derived from the SPEC, plus verify/install gate agreement" ;;
+    conformance) echo "lexe verify vs the independent validator: a corpus derived from the SPEC (tests/conformance/corpus.py), plus verify/install gate agreement" ;;
     security)   echo "hostile packages: traversal, escape, tampering, architecture lies, injection" ;;
     windows)    echo "a purpose-built Windows PE, actually run through Wine" ;;
     proton)     echo "the same Windows payload through the Proton chain" ;;

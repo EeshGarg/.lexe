@@ -1,133 +1,112 @@
-# Handoff — 2026-10-02, ARM campaign
+# Handoff — 2026-10-02, FORMAT-0.1 foundation hardening
 
-Where .LEXE stands after the first current-code run on physical AArch64.
-Written to be read cold. Earlier handoffs: `55ad1ab`, `5bccec3`, `29d230b`.
+Where .LEXE stands after the hardening campaign. Written to be read cold.
+Earlier handoffs: `2c0a675` (ARM campaign), `55ad1ab`, `5bccec3`.
 
-## Verdict: Developer Preview — NOT READY
+## Status in one paragraph
 
-The Preview claim is *".LEXE portable source materializes and executes native
-products on x86-64 Linux and physical AArch64 hardware"*. The x86-64 half is
-demonstrated. The AArch64 half is **BLOCKED: ENVIRONMENT** — the only AArch64
-worker cannot run .LEXE's sandbox, and .LEXE (correctly, by design) refuses to
-build or launch without it. Nothing was found that is wrong with the product on
-AArch64; the claim is simply not shown there.
+**Developer Preview: NOT READY** — unchanged, and not affected by this
+campaign: the second-ISA gate needs conventional AArch64 Linux with working
+user namespaces (the tablet is BLOCKED: ENVIRONMENT; see `2c0a675`'s
+handoff). This campaign moved **FORMAT-0.1 Conformance** forward: two local
+security bugs and five verification bugs fixed, `verify`/`inspect`/`info` now
+claim only what they observed, the spec states rules that previously lived only
+in code or the appendix, and the independent validator agrees with the
+reference implementation on a 198-case spec-derived corpus.
 
 ## Commits
 
 | | |
 |---|---|
-| **Final HEAD** | the commit that adds this file (docs only); `git log -1` |
-| **ARM evidence** | **`b5c115f`** — synced as a git bundle, the worker read back `b5c115f1681692ef9bcca92ca434635a73c076ad` itself |
-| **Second-ISA evidence** | **`b5c115f`** on both hosts (each records its own `GIT_SHA`) |
-| **x86-64 evidence** | unit 777/777 (10100 assertions) at `b5c115f`; the last full 15-lane run is `e6129d3` — code since then: test fixtures and scripts only, plus the MSVC fix proven byte-identical on Linux (see `55ad1ab`) |
-| **GitHub CI on `cabc329`** | run 37020284311: linux ✅, portability ✅, windows ❌ — Test step 731/751, the same 20 pre-existing Windows failures as before this campaign (purge cases, hostbuild, config, repair, …); none of the tests changed here is among them |
-| **After `b5c115f`** | `b9bc710` harness-only (second-isa key reuse, claim wording, bundle location) and this docs commit. Neither changes product or test code. |
+| **Starting HEAD** | `2c0a675` |
+| **Evidence run** | `scripts/test.sh --unit --acceptance --conformance --security` from a clean tree (porcelain 0 before and after): **unit 784/784, acceptance 12/12, conformance 4/4, security 27/27**. Log: `../lexe-run-evidence/hardening-run-699a2fa.log` — the run is at **`699a2fa`**, which differs from `d5837c8` only by two test-file fixes the first two attempts exposed (a raw bidi byte in a test source, which `-Wbidi-chars` + warnings-as-failure stopped; and the launcher test below) |
+| **Final HEAD** | the commit that adds this file (docs only) |
+| **GitHub** | pushed; `origin/main` verified with `git ls-remote` after the push |
 
-## The ARM worker
+## Bugs found and fixed (each: regression test proven to fail first)
 
-Samsung SM-X610, Android 16, kernel `aarch64`; Debian 13.7 arm64 under PRoot
-(proot-distro); g++ 14.2.0, git 2.47.3, 8 cores, ~7.7 GB RAM. Reached by USB:
-`adb forward tcp:8022` → Termux sshd, key-only (`IdentitiesOnly`, `BatchMode`,
-password and keyboard-interactive off). `ARM_KEY_AUTH_OK` verified. Build at
-`-j2`.
+| # | Class | Severity | What | Fix | Regression |
+|---|---|---|---|---|---|
+| 1 | product security | **high** (local) | `lexe inspect` extracted into `/tmp/lexe-inspect-<sha16>`, a name the package author can compute; in sticky /tmp another user plants it as a link and the payload lands in the victim's directory | private `mkdtemp` dir — `7d276f6` | test_cli_inspect: planted link, writable and non-removable cases; old code wrote `bin/app` into the victim dir |
+| 2 | product security | medium | an ELF `DT_NEEDED` of `/etc/passwd` or `../x` made `inspect` open and hash host files (existence/content oracle) | path-like sonames never looked up — `3e53c8a` | test_depengine: 6 assertions failed on old code |
+| 3 | verification | high | `lexe.json`/`hashes.json` + NUL + garbage verified OK (nlohmann stops at NUL) | json_strict rejects raw NUL — `3680b42` | test_json_strict |
+| 4 | verification | high | central-directory slack / an uncounted CD record verified OK (two ZIP readers, two archives) | CD must be exactly its counted records — `df0c4fd` | test_hostile_packages + corpus |
+| 5 | verification | high | portable entrypoint `bin/./built` shipped a prebuilt ELF past §6.7 and verify said "no prebuilt entrypoint" | `.` segments rejected — `6cda4cc` | test_hostile_packages (entrypoint and sourceDir) + corpus |
+| 6 | misleading output | high | package text forged terminal lines (`Verification: PASSED` under Name; ESC/bidi) in inspect, verify, info, install, apps, stderr, build report | `util::display_safe` — `a7895a1`, `0b25cab` | forge test on both streams; display_safe branch table |
+| 7 | misleading output | medium | `inspect` gave Tux32/compatibility verdicts for packages with no analysed binary; assumed Core Portable for every package (§5.7 violation); showed a failing package's claims before the verdict | `7123511` | test_cli_inspect, 7 assertions failed on old code |
+| 8 | misleading output | medium | `lexe info <file>` showed a failing package's key and claims with no verdict | `566a9b1` | negative and positive subcases |
+| 9 | automation | medium | `verify --json` printed nothing (exit 1) when a detail held invalid UTF-8 | replace handler on every CLI dump — `a7895a1` | 0xFF file-name case |
+| 10 | independent validator | — | accepted NaN, 1e999, `\x0b`, STORE size mismatch, truncated ELF, EOCD count mismatch, identity-point Ed25519 key, non-canonical key base64; crashed on deep JSON and lone surrogates | `0e3a1d4` | 16 corpus cases; 4 mutation proofs |
 
-**Measured limits** (not assumed):
+Also: `inspect --json` carries an `inventory` (every entry, size, digest
+computed from stored bytes, covering mechanism) — `5956f24`. The CLI execution
+observer now covers `verify`/`inspect`, human and `--json` (`7d276f6`; a
+mutant that ran the entrypoint was caught).
 
-* Native Termux: `unshare --user` → `EINVAL`. The kernel offers no user
-  namespaces.
-* In the PRoot guest, `unshare --user` **exits 0 without creating anything**
-  (no `/proc/self/ns`, the "new PID namespace" child is PID 2676, not 1).
-* With bubblewrap 0.12 installed in the guest, bwrap gets past the faked
-  namespace calls and fails at `sethostname` (`ENOSYS`).
-* **.LEXE is not fooled**: `lexe sandbox` → *"Isolation is unavailable — launch
-  will be refused"*, user namespaces: no. Its probe executes the backend.
-* doctest under PRoot: `TracerPid` ≠ 0, so doctest thinks a debugger is
-  attached and traps on any failed assertion. Run with `--no-breaks`.
+## FORMAT / policy (`967ec7e`)
 
-## ARM levels at `b5c115f` (`../lexe-arm-evidence/arm-run-b5c115f.log`)
+**FORMAT, now normative in the body:** whole-file archive and STORE/DEFLATE-only
+for readers (§1); ZIP64 rejected (was MAY); byte comparison, no Unicode
+normalization, NFC/NFD pair valid (§2.1); CD exactness (§2.2); Ed25519
+strictness and canonical key text (§4, were appendix-only); RFC 8259 spelled
+out, raw NUL, lone surrogates, 1e999 (§5.0); payload paths use the §2.1
+grammar incl. `.` (§5.3; closes an A.7 item).
 
-| Level | Result |
-|---|---|
-| 0 environment, ELF, CLI | **PASS** — `file`: ARM aarch64; `readelf`: AArch64; CLI starts |
-| mapping self-audit | **PASS** (it caught `purge` and `wrong_isa` in no level on the first run) |
-| 1 unit logic | **PASS** 341/341, 6436 assertions |
-| 2 install lifecycle | 285/289. The 4 failures are all launches: refused fail-closed (ENVIRONMENT) |
-| 3 launcher/process | 33/39. The 6 failures are all launches (ENVIRONMENT). 7 hostbuild cases and `wrong_isa` report SKIP/BLOCKED: no sandbox, so no build |
-| 4 sandbox/namespaces | **BLOCKED: ENVIRONMENT** — measured by .LEXE's own probe |
-| 5 Wine/Proton | not applicable on AArch64 |
+**REFERENCE POLICY §4:** what verify/inspect promise: no execution, analysis
+only of a verified native binary, authenticated-first output, declared
+profile, private temp dir, DT_NEEDED paths unresolved, display escaping,
+always-valid JSON.
 
-The CLI-run failures do not print their reason inside doctest, so it was shown
-directly (`arm-run-probe.txt`): a native AArch64 package builds and installs
-(rc 0); `lexe run` exits 1 with *"refusing to launch … unconfined"*; the
-installed AArch64 entrypoint, executed directly, runs (rc 7, as written).
+**OPEN (Appendix A.7), deliberately not decided:** Unicode-normalization
+aliasing; file/directory prefix conflicts (`payload/bin` + `payload/bin/app`,
+accepted by both implementations, unextractable); unsigned bytes inside
+records (comments, extra fields, post-DEFLATE slack — SHA-256 malleable,
+covert channel); control characters in `name`; `updates.manifest` scheme at
+verify time; launch references for a stateless validator; `integration`
+members. Also: the execution-chain layer-order question already there.
 
-## Second ISA at `b5c115f` (`../lexe-isa-evidence/`)
+## Evidence
 
-| | x86-64 (WSL Ubuntu 24.04) | AArch64 (tablet) |
-|---|---|---|
-| package sha256 | `ea0ffa80…3fc23f` | `ea0ffa80…3fc23f` (re-hashed on arrival, and again by the guest) |
-| signer | Ed25519 `85B8 352D 4D50 1D06 8757 85AC 90FF B25D D5EC 52A6 4C3C D22F 0292 57FD 59C5 514A` | identical verify report |
-| compiler | gcc 13.3.0 | gcc 14.2.0 |
-| install | rc 0, product `5b82a8a6…`, ELF64 x86-64, `build.json` hostIsa x86_64 | **rc 1: "needs an isolated build environment and this host has none … refusing to build unconfined"** |
-| run | rc 0, `COMPILED_FOR=x86_64` | no product |
+* Evidence run at `699a2fa` (above): 784 unit cases, 12 acceptance scripts, 4 conformance scripts (01 differential, 02 gate agreement, 03 corpus, 04 update corpus), 27 security checks — all PASS, 0 skipped, 0 blocked.
+* The first evidence attempt (`d5837c8`) failed at build (raw U+202E in a test source); the second (`6f2e5cf`) found unit 783/784: a launcher test whose premise — "`.` passes every §5 lexical rule" — this campaign's `.`-segment rule had made false. It now asserts the refusal at the manifest (`699a2fa`). Consequence: on a host without symlink support nothing reaches the launcher's containment branch any more.
 
-`compare`: identical bytes PASS, identical signer PASS, x86 product PASS;
-AArch64 product **absent** — the experiment is not void (the inputs matched),
-it is **BLOCKED** on the AArch64 side.
+Conformance lane 03 (validator agent, and again in the evidence run above): 198 cases — 40 accept, 158 reject, 0 unspecified —
+C++ and the independent validator agree on every case and match the spec.
 
-Wrong-ISA negative: kept on x86-64 (real host ELF with `e_machine` patched,
-plus its positive control) and now ISA-symmetric — on AArch64 it would patch to
-`EM_X86_64` — but on this worker it reports BLOCKED, because the check sits on a
-build product and no build runs without a sandbox.
+**Proven to fire** (mutant or old code made the test fail): every row 1–9
+above; validator: identity-point, EOCD-count, NaN, STORE-size checks.
 
-## Failures found and how they were classified
+**Stated but not yet proven by a dedicated case** (an evidence audit found
+them): general-purpose bit 6 (corpus case also rejected by zipfile for an
+unrelated reason), bit 13 (no case), ZIP64 (the corpus case is rejected by
+the CD-ends-at-EOCD rule, not ZIP64 detection), S ≥ L and non-canonical R
+(validator implements, no corpus case), decompressed length = declared size.
 
-* **TEST/HARNESS (fixed):** arm-worker ssh options word-split the key path;
-  `git bundle` refuses a bare SHA; Git Bash rewrote `/sdcard`; Termux storage
-  needed a tap (bytes now go over ssh, hashed both ends); doctest traps under
-  PRoot; suites in no level; FAILED_CASE listed SKIP messages; second-isa had
-  the wrong key, path, transport and an incomplete record; six tests assumed
-  the host is x86-64 (`wrong_isa`, `cli_apps`, `cli_inspect` ×2, `cli` ×2).
-* **SPEC (by design, not a bug):** launch and portable-source builds fail
-  closed without isolation; Tux32 Core 1 is x86_64-only.
-* **ENVIRONMENT:** no user namespaces on the worker (see measurements).
-* **PRODUCT PORTABILITY BUG:** none found.
-* Minor, not acted on: bwrap's own `Can't open source /usr` line reaches the
-  user's stderr above .LEXE's refusal message.
+**Residual, known:** a newline INSIDE a package value quoted in an error
+message on stderr is kept (the message's own line breaks cannot be told
+apart there); everything else in it is escaped. `inspect --manifest` prints
+raw manifest JSON with no authenticated marker (exit code 3 still says it).
+The sticky-/tmp subcase reports a passing MESSAGE when run as root.
+
+## Independent-implementation readiness
+
+A spec-only reader (no source) found 27 gaps; the security-relevant ones that
+both implementations already agreed on are now FORMAT text, the rest are in
+A.7. What still requires the reference implementation to answer: the A.7
+items above; the ELF/PE machine-to-architecture table and "valid ELF" header
+requirements (§6.7 names fields, not a complete table); `build.toolchain` and
+`build.command` limits (A.4 #19 only); and REFERENCE-POLICY cites "§14.4",
+which is another document's numbering.
 
 ## Resources
 
-Tablet build `-j2`; the full first build and each level ran without the
-device or adb dropping once the tablet was unlocked and Termux held a wake
-lock (before that, adb shell hung and sshd stalled at the banner). Tablet
-thermal zones are not readable from Termux; no throttling was measured either
-way. Desktop work was builds at the existing `-j6` and unit runs; it was not
-metered this session.
-
-## What would make it READY — a decision for you
-
-The tablet cannot do it as it is. Two ways forward:
-
-1. **Run the same second-ISA script on real AArch64 Linux with unprivileged
-   user namespaces** (a Raspberry Pi 4/5 or any arm64 SBC on Debian/Ubuntu, a
-   cloud arm64 VM such as Graviton/Ampere, an arm64 Mac running a Linux VM).
-   `scripts/second-isa.sh` needs only `LEXE_ARM_*` pointing at it. Recommended.
-2. **A product change**: an explicit, consented "unconfined" mode for hosts
-   without isolation. That is a security-design decision, contrary to the
-   current fail-closed contract, and was **not** made here.
+Evidence run, metered (`scripts/resource-meter.sh`, `../lexe-resource-evidence/hardening-run-20261002.json`): peak tree RSS **1548 MiB** of 4096; rolling 10-second CPU **4.7%** peak of 50%. Builds at the existing `-j6`. Two of the subagents were run on Sonnet and one at a time against the WSL build; one lane run hit "Text file busy" during a rebuild and was re-run.
 
 ## First actions next time
 
-1. Get an AArch64 Linux host with user namespaces (option 1), or decide (2).
-2. `bash scripts/arm-worker.sh probe | sync | build | levels 4`, then
-   `bash scripts/second-isa.sh build && … local` (in WSL) and `… remote` and
-   `… compare` (from Git Bash). Both must show the same `GIT_SHA`.
-3. Tablet only: unlock it, open Termux, `termux-wake-lock`, `sshd`; then
-   `adb forward tcp:8022 tcp:8022`.
-
-## Evidence — do not delete
-
-* `../lexe-arm-evidence/` — `arm-run-b5c115f.log`, `arm-run-probe.txt`, levels.
-* `../lexe-isa-evidence/` — both records, `compare-b5c115f.txt`, the package.
-  `../lexe-isa-evidence.trial-f64572f/` is the x86-only trial, not evidence.
-* `../lexe-run-evidence/`, `../lexe-resource-evidence/` — x86-64 runs.
+1. ARM: unchanged — a conventional AArch64 Linux host with user namespaces,
+   then `scripts/arm-worker.sh` + `scripts/second-isa.sh` (see `2c0a675`).
+2. Decide the A.7 items, starting with file/directory prefix conflicts and
+   unsigned in-record bytes (both: deterministic rejection, after checking
+   what writers emit).
+3. Add corpus cases for the "stated but not proven" list.
