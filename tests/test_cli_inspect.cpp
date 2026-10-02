@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <map>
 #include <optional>
 
 #ifndef _WIN32
@@ -125,6 +126,26 @@ TEST_CASE("--json is a structured superset") {
     const util::ProcessResult r = run({"inspect", pkg.string(), "--json"});
     CHECK(r.exit_code == 0);
     const json j = json::parse(r.stdout_text);
+    CHECK(j.at("authenticated") == true);
+    // The inventory is the archive's structure. Observed independently: the
+    // entry set is fixed by FORMAT §2 for this package, and the payload digest
+    // must equal the SHA-256 of the file this test wrote to disk.
+    {
+        std::map<std::string, json> by_path;
+        for (const json& e : j.at("inventory")) by_path[e.at("path")] = e;
+        CHECK(by_path.size() == 5);
+        for (const char* p : {"lexe.json", "metadata/hashes.json", "payload/bin/app",
+                              "signatures/manifest.sig", "signatures/payload.sig"}) {
+            CAPTURE(p);
+            CHECK(by_path.count(p) == 1);
+        }
+        CHECK(by_path.at("payload/bin/app").at("sha256") ==
+              crypto::sha256_file_hex(w.dir / "proj" / "payload" / "bin" / "app"));
+        CHECK(by_path.at("payload/bin/app").at("coveredBy") == "metadata/hashes.json");
+        CHECK(by_path.at("lexe.json").at("coveredBy") == "signatures/manifest.sig");
+        CHECK(by_path.at("metadata/hashes.json").at("coveredBy") ==
+              "signatures/payload.sig");
+    }
     CHECK(j.at("application").at("id") == "com.example.inspectme");
     CHECK(j.at("verification").at("ok") == true);
     CHECK(j.at("package").at("sha256").get<std::string>().size() == 64);

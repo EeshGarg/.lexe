@@ -1989,6 +1989,29 @@ int cmd_inspect(const std::vector<std::string>& args) {
                 {{"name", s.name}, {"ok", s.ok}, {"detail", s.detail}});
         }
         j["verification"] = {{"ok", vr.ok()}, {"stages", std::move(stages)}};
+        // The package's contents as STRUCTURE, not prose: every entry, its
+        // size and digest (computed here, from the stored bytes), and which
+        // FORMAT §3 mechanism covers it. "coveredBy" is what the format says
+        // covers the entry; whether that coverage HELD is "authenticated"
+        // above (the hashes stage proves coverage is exact in both
+        // directions). Nothing here is taken from metadata/hashes.json.
+        ordered_json inventory = ordered_json::array();
+        for (const PackageEntry& e : reader.entries()) {
+            std::string covered_by = "metadata/hashes.json";
+            if (e.path == "lexe.json") {
+                covered_by = "signatures/manifest.sig";
+            } else if (e.path == "metadata/hashes.json") {
+                covered_by = "signatures/payload.sig";
+            } else if (e.path.rfind("signatures/", 0) == 0) {
+                covered_by = "(is a signature)";
+            }
+            inventory.push_back(
+                {{"path", e.path},
+                 {"size", e.uncompressed_size},
+                 {"sha256", crypto::sha256_hex(reader.read_entry(e.path))},
+                 {"coveredBy", covered_by}});
+        }
+        j["inventory"] = std::move(inventory);
         // Kept OUT of j["verification"]: this is local state, not a §6 stage,
         // and a script must not be able to mistake it for one.
         if (conflict.has_value()) {
