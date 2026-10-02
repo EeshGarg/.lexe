@@ -175,6 +175,15 @@ TEST_CASE("container-level defects fail at the structure stage") {
                                             b.begin() + static_cast<std::ptrdiff_t>(cd + len)));
                          }),
                  false, "structure");
+    // "structure" alone would also be satisfied by some EARLIER structural
+    // check firing on these inputs; the message names the rule that fired.
+    for (const char* name : {"cd-slack.lexe", "cd-hidden-record.lexe"}) {
+        CAPTURE(name);
+        const VerificationReport rep = verify_package(w / name, false);
+        REQUIRE(rep.first_failure() != nullptr);
+        CHECK(rep.first_failure()->detail.find("central directory") !=
+              std::string::npos);
+    }
 }
 
 TEST_CASE("a decompression bomb is refused by VERIFY, not only by install") {
@@ -282,6 +291,25 @@ TEST_CASE("manifest §5 violations fail at the manifest stage") {
         expect_stage(pack([&](json& m) { m["entrypoint"]["executable"] = dotted; },
                           "entrypoint-dot-" + std::to_string(dot_case++)),
                      false, "manifest");
+    }
+    // build.sourceDir goes through the same path check (§5.8 "same path
+    // rules as entrypoint.executable"); a fix applied to the entrypoint
+    // field alone would pass the cases above.
+    const fs::path sourcedir_dot = pack(
+        [](json& m) {
+            m["applicationType"] = "portable";
+            m["build"] = {{"system", "command"},
+                          {"sourceDir", "./src"},
+                          {"command", json::array({"cc"})},
+                          {"toolchain", json::array({"cc"})}};
+        },
+        "sourcedir-dot");
+    expect_stage(sourcedir_dot, false, "manifest");
+    {
+        const VerificationReport rep = verify_package(sourcedir_dot, false);
+        REQUIRE(rep.first_failure() != nullptr);
+        CHECK(rep.first_failure()->detail.find("sourceDir") != std::string::npos);
+        CHECK(rep.first_failure()->detail.find("\".\" segments") != std::string::npos);
     }
     expect_stage(pack([](json& m) { m["architectures"] =
                                         json::array({"sparc"}); },

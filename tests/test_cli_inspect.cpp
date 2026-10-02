@@ -343,6 +343,18 @@ TEST_CASE("inspect describes only what it examined, and says so") {
         CHECK(json::parse(run({"info", pkg.string(), "--json"}).stdout_text)
                   .at("authenticated") == false);
     }
+
+    SUBCASE("info on an AUTHENTIC package: PASSED, no banner, exit 0") {
+        // The positive half: a fix that printed the banner unconditionally
+        // would pass the subcase above.
+        const fs::path pkg = test::make_test_package(w.dir, key);
+        const util::ProcessResult i = run({"info", pkg.string()});
+        CHECK(i.exit_code == 0);
+        CHECK(has(i.stdout_text, "Verification:   PASSED"));
+        CHECK_FALSE(has(i.stdout_text, "NOT AUTHENTIC"));
+        CHECK(json::parse(run({"info", pkg.string(), "--json"}).stdout_text)
+                  .at("authenticated") == true);
+    }
 }
 
 #ifndef _WIN32
