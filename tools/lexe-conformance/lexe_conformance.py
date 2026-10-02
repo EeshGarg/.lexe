@@ -16,6 +16,7 @@ Exit codes:
     0  conformant (no error-severity violations)
     1  violations found
     2  the package could not be read at all
+    3  a processing limit was hit (FORMAT-0.1 §10.2): NOT a format verdict
 """
 
 from __future__ import annotations
@@ -165,6 +166,7 @@ class Report:
 # non-UTF-8 bytes), and it exposes neither the raw name nor the flag bits we
 # need. zipfile is used ONLY to inflate entry data.
 # ==========================================================================
+STORE_METHOD = 0
 EOCD_SIG = b"PK\x05\x06"
 CD_SIG = b"PK\x01\x02"
 
@@ -200,6 +202,9 @@ class Container:
         self.eocd_off = None
         self.cd_off = None
         self.cd_size = None
+        self.cd_walk_end = None
+        self.count_this_disk = None
+        self.count_total = None
 
         if not self.oversized:
             try:
@@ -211,11 +216,19 @@ class Container:
         else:
             self.blob = b""
 
+        self.zip_error = None
+        self.zf = None
+        self._infolist = []
         try:
             self.zf = zipfile.ZipFile(str(path))
+            self._infolist = self.zf.infolist()
         except Exception as exc:  # noqa: BLE001 -- any failure means unreadable
-            raise Unreadable("not a readable ZIP archive: %s" % exc) from exc
-        self._infolist = self.zf.infolist()
+            # Our own raw parse of the archive has already run. When it found
+            # structural violations (slack, uncounted records ...) they are the
+            # precise answer; the library's refusal is only reported besides.
+            if self.oversized or not self.entries:
+                raise Unreadable("not a readable ZIP archive: %s" % exc) from exc
+            self.zip_error = str(exc)
 
     # -- §1: the archive must span the whole file ---------------------------
     def _parse_eocd(self):
@@ -235,8 +248,18 @@ class Container:
                 raise Unreadable("no ZIP end-of-central-directory record found")
         (self.archive_comment_len,) = struct.unpack_from("<H", b, eocd + 20)
         cd_size, cd_offset = struct.unpack_from("<II", b, eocd + 12)
+        self.count_this_disk, self.count_total = struct.unpack_from(
+            "<HH", b, eocd + 8)
+        # §1: a ZIP64 end-of-central-directory locator sits immediately before
+        # the classic EOCD; the sentinel field values are the other spelling.
+        if (eocd >= 20 and b[eocd - 20:eocd - 16] == b"PK\x06\x07"):
+            self.zip64 = True
+        if (self.count_this_disk == 0xFFFF or self.count_total == 0xFFFF):
+            self.zip64 = True
         if cd_offset == 0xFFFFFFFF or cd_size == 0xFFFFFFFF:
             self.zip64 = True
+            self.cd_ends_at_eocd = None
+        elif self.zip64:
             self.cd_ends_at_eocd = None
         else:
             self.cd_ends_at_eocd = (cd_offset + cd_size == eocd)
@@ -259,7 +282,10 @@ class Container:
             return
         b = self.blob
         off = self.cd_off
-        end = min(len(b), self.cd_off + self.cd_size)
+        # §2.2: walk every record that really is there, up to the end record --
+        # not merely as many as the counts or cd_size admit -- so that an
+        # uncounted record or slack bytes are SEEN rather than skipped.
+        end = min(len(b), self.eocd_off)
         index = 0
         while off + 46 <= end and b[off:off + 4] == CD_SIG:
             flags, method = struct.unpack_from("<HH", b, off + 8)
@@ -294,6 +320,7 @@ class Container:
             self.entries.append(e)
             off += 46 + name_len + extra_len + comment_len
             index += 1
+        self.cd_walk_end = off
         if not self.entries and self.cd_size:
             raise Unreadable("central directory could not be parsed")
 
@@ -569,11 +596,31 @@ def check_container(c, rep):
                 "no archive comment (comment length 0)",
                 "comment length %d" % c.archive_comment_len, "§1")
     if c.zip64:
-        rep.skip("zip64",
-                 "the archive uses ZIP64 central-directory sentinels; this "
-                 "validator parses only the 32-bit EOCD, so the whole-file-span "
-                 "check and the raw central-directory checks were not performed",
-                 "§1")
+        # §1: a reader MUST reject ZIP64 structures. (This was a SKIP while the
+        # spec said MAY; the 32-bit parser still cannot see past it, so the
+        # remaining raw checks are not performed.)
+        rep.add("CONTAINER_ZIP64", "ZIP end-of-central-directory",
+                "the classic 22-byte EOCD only: no ZIP64 end record, locator or "
+                "0xFFFF/0xFFFFFFFF sentinel field",
+                "a ZIP64 locator or sentinel value is present", "§1")
+    else:
+        # §2.2: the central directory is EXACTLY the counted records.
+        if c.count_this_disk != c.count_total:
+            rep.add("CONTAINER_EOCD_COUNT_MISMATCH", "ZIP end-of-central-directory",
+                    "the end record's two entry counts are equal",
+                    "%d entries on this disk vs %d in total"
+                    % (c.count_this_disk, c.count_total), "§2.2")
+        if len(c.entries) != c.count_total:
+            rep.add("CONTAINER_EOCD_COUNT_MISMATCH", "central directory",
+                    "exactly the %d records the end record counts"
+                    % c.count_total,
+                    "%d central records are present" % len(c.entries), "§2.2")
+        if c.cd_walk_end is not None and c.cd_walk_end != c.eocd_off:
+            rep.add("CONTAINER_CD_SLACK", "central directory",
+                    "the counted records, each beginning where the previous one "
+                    "ends, fill [cd_offset, EOCD) with no slack bytes",
+                    "the records end at offset %d but the end record begins at "
+                    "%d" % (c.cd_walk_end, c.eocd_off), "§2.2")
 
     check_local_headers(c, rep)
 
@@ -631,6 +678,20 @@ def check_container(c, rep):
             rep.add("CONTAINER_ENCRYPTED_ENTRY", e.name,
                     "no encryption (§1)",
                     "general-purpose flag bit 0 (encrypted) is set", "§1")
+        # Bit 6 (strong encryption) and bit 13 (central directory encryption /
+        # masked local header values) are also encryption features: §1 says no
+        # encryption.
+        if e.flags & 0x2040:
+            rep.add("CONTAINER_ENCRYPTED_ENTRY", e.name,
+                    "no encryption (§1)",
+                    "general-purpose flag bit 6 or 13 (strong / central-"
+                    "directory encryption) is set", "§1")
+        # §1: STORE is the entry's bytes verbatim, so its two sizes are equal.
+        if e.method == STORE_METHOD and e.comp_size != e.uncomp_size:
+            rep.add("CONTAINER_STORE_SIZE_MISMATCH", e.name,
+                    "a STORE entry's compressed and uncompressed sizes are equal",
+                    "compressed %d vs uncompressed %d"
+                    % (e.comp_size, e.uncomp_size), "§1/§2.2")
         # Unix S_IFLNK in the external-attributes high word.
         if (e.external_attr >> 16) & 0xF000 == 0xA000:
             rep.add("CONTAINER_SYMLINK_ENTRY", e.name,
@@ -684,6 +745,10 @@ def strict_json(text):
 
     Raises ValueError on a syntax error or on trailing data after the value.
     """
+    # §5.0: no raw NUL anywhere. Checked on the text first, because a parser that
+    # treats NUL as end-of-input would "end cleanly" and discard what follows.
+    if "\x00" in text:
+        raise ValueError("raw NUL byte at offset %d (§5.0)" % text.index("\x00"))
     duplicates = []
 
     def hook(pairs):
@@ -694,11 +759,161 @@ def strict_json(text):
             seen.add(key)
         return dict(pairs)
 
-    decoder = json.JSONDecoder(object_pairs_hook=hook)
-    value, end = decoder.raw_decode(text)
-    if text[end:].strip():
+    def reject_constant(name):
+        # §5.0: no NaN / Infinity / -Infinity (RFC 8259 has no such literals).
+        raise ValueError("%s is not an RFC 8259 value (§5.0)" % name)
+
+    decoder = json.JSONDecoder(object_pairs_hook=hook,
+                               parse_constant=reject_constant,
+                               parse_int=_parse_int_token,
+                               parse_float=_parse_float_token)
+    start = _skip_ws(text, 0)
+    try:
+        value, end = decoder.raw_decode(text, start)
+    except RecursionError:
+        # Valid-but-deep documents have no format depth limit, so they must
+        # not crash and must not be refused. Re-parse without recursion.
+        duplicates = []
+        value, end = _iterative_parse(text, start, duplicates)
+    # RFC 8259 whitespace is exactly space, tab, LF, CR -- NOT str.strip()'s set
+    # (which includes \x0b, \x0c, U+0085, U+00A0 ...).
+    if _skip_ws(text, end) != len(text):
         raise ValueError("trailing data after the JSON value at offset %d" % end)
+    bad = _lone_surrogate(value)
+    if bad is not None:
+        raise ValueError("unpaired surrogate escape %r in a string (§5.0)" % bad)
     return value, duplicates
+
+
+_RFC_WS = " \t\n\r"
+_JSON_STR = re.compile(r'"(?:[^"\\\x00-\x1f]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"')
+_JSON_NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?")
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _skip_ws(text, i):
+    n = len(text)
+    while i < n and text[i] in _RFC_WS:
+        i += 1
+    return i
+
+
+def _parse_float_token(token):
+    value = float(token)
+    if value in (float("inf"), float("-inf")):
+        raise ValueError("number %s exceeds an IEEE-754 double (§5.0)" % token[:40])
+    return value
+
+
+def _parse_int_token(token):
+    if len(token) > 300:
+        _parse_float_token(token)  # an integer token can overflow a double too
+    return int(token)
+
+
+def _lone_surrogate(value):
+    """Iteratively find a string/key holding an unpaired surrogate.
+
+    Python's json combines a correctly paired \\ud83d\\ude00 into one astral
+    character; whatever surrogate code point is left over was unpaired.
+    """
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            m = _SURROGATE.search(v)
+            if m:
+                return m.group()
+        elif isinstance(v, dict):
+            for k, item in v.items():
+                stack.append(k)
+                stack.append(item)
+        elif isinstance(v, list):
+            stack.extend(v)
+    return None
+
+
+def _iterative_parse(text, i, duplicates):
+    """A strict RFC 8259 parser with an explicit stack (no recursion limit)."""
+    def number(token_match):
+        tok = token_match.group()
+        if token_match.group(1) or token_match.group(2):
+            return _parse_float_token(tok)
+        return _parse_int_token(tok)
+
+    def read_key(i):
+        m = _JSON_STR.match(text, i)
+        if not m:
+            raise ValueError("expected an object key at offset %d" % i)
+        key = json.loads(m.group())
+        i = _skip_ws(text, m.end())
+        if text[i:i + 1] != ":":
+            raise ValueError("expected ':' at offset %d" % i)
+        return key, i + 1
+
+    stack = []  # ["a", list] or ["o", dict, pending_key]
+    while True:
+        i = _skip_ws(text, i)
+        ch = text[i:i + 1]
+        if ch == "{":
+            i = _skip_ws(text, i + 1)
+            if text[i:i + 1] == "}":
+                value, i = {}, i + 1
+            else:
+                key, i = read_key(i)
+                stack.append(["o", {}, key])
+                continue
+        elif ch == "[":
+            i = _skip_ws(text, i + 1)
+            if text[i:i + 1] == "]":
+                value, i = [], i + 1
+            else:
+                stack.append(["a", []])
+                continue
+        elif ch == '"':
+            m = _JSON_STR.match(text, i)
+            if not m:
+                raise ValueError("bad string at offset %d" % i)
+            value, i = json.loads(m.group()), m.end()
+        elif text.startswith("true", i):
+            value, i = True, i + 4
+        elif text.startswith("false", i):
+            value, i = False, i + 5
+        elif text.startswith("null", i):
+            value, i = None, i + 4
+        else:
+            m = _JSON_NUM.match(text, i)
+            if not m:
+                raise ValueError("Expecting value at offset %d" % i)
+            value, i = number(m), m.end()
+        # a value is complete: attach it to its container(s)
+        while True:
+            if not stack:
+                return value, i
+            frame = stack[-1]
+            i = _skip_ws(text, i)
+            ch = text[i:i + 1]
+            if frame[0] == "a":
+                frame[1].append(value)
+                if ch == ",":
+                    i += 1
+                    break
+                if ch == "]":
+                    value, i = frame[1], i + 1
+                    stack.pop()
+                    continue
+                raise ValueError("expected ',' or ']' at offset %d" % i)
+            if frame[2] in frame[1]:
+                duplicates.append(frame[2])
+            frame[1][frame[2]] = value
+            if ch == ",":
+                frame[2], i = read_key(_skip_ws(text, i + 1))
+                break
+            if ch == "}":
+                value, i = frame[1], i + 1
+                stack.pop()
+                continue
+            raise ValueError("expected ',' or '}' at offset %d" % i)
 
 
 _JSON_CODES = {
@@ -1406,7 +1621,97 @@ def decode_publisher_key(field, rep):
                 "a decoded length of exactly %d bytes" % ED25519_PUBLIC_KEY_BYTES,
                 "%d bytes" % len(raw), "§4")
         return None
+    # §4: the encoding MUST be canonical -- re-encoding reproduces the string.
+    # (Rejects non-zero unused bits in the final base64 character.)
+    if base64.b64encode(raw).decode("ascii") != b64:
+        rep.add("SIGNATURE_KEY_NONCANONICAL_BASE64", "publisher.publicKey",
+                "canonical base64: re-encoding the 32 decoded bytes reproduces "
+                "the string",
+                "%r re-encodes as %r" % (b64, base64.b64encode(raw).decode()),
+                "§4")
+        return None
     return raw
+
+
+# --- §4 strict Ed25519 pre-checks (pure arithmetic, no backend) --------------
+_P = 2 ** 255 - 19
+_L = 2 ** 252 + 27742317777372353535851937790883648493
+_D = (-121665 * pow(121666, _P - 2, _P)) % _P
+_SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+
+
+def _decode_point(enc):
+    """Return ((x, y), canonical) or (None, canonical) when not on the curve."""
+    n = int.from_bytes(enc, "little")
+    sign = n >> 255
+    y = n & ((1 << 255) - 1)
+    canonical = y < _P
+    y %= _P
+    u = (y * y - 1) % _P
+    v = (_D * y * y + 1) % _P
+    x = (u * pow(v, _P - 2, _P)) % _P
+    x = pow(x, (_P + 3) // 8, _P)
+    if (x * x * v - u) % _P != 0:
+        x = (x * _SQRT_M1) % _P
+    if (x * x * v - u) % _P != 0:
+        return None, canonical
+    if x == 0 and sign:
+        canonical = False  # "negative zero" is a second spelling of x = 0
+    if x & 1 != sign:
+        x = (_P - x) % _P
+    return (x, y), canonical
+
+
+def _point_add(a, b):
+    (x1, y1), (x2, y2) = a, b
+    t = _D * x1 * x2 * y1 * y2 % _P
+    x3 = (x1 * y2 + x2 * y1) * pow(1 + t, _P - 2, _P) % _P
+    y3 = (y1 * y2 + x1 * x2) * pow(1 - t, _P - 2, _P) % _P
+    return x3, y3
+
+
+def _small_order(point):
+    q = point
+    for _ in range(3):  # q = 8 * point
+        q = _point_add(q, q)
+    return q == (0, 1)
+
+
+def strict_ed25519_problems(key, sigs):
+    """FORMAT-0.1 §4: (code, where, expected, observed) for each strict-rule break.
+
+    `sigs` maps a signature entry name to its raw bytes (64 long, or skipped).
+    """
+    out = []
+    if key is not None:
+        point, canonical = _decode_point(key)
+        if not canonical:
+            out.append(("SIGNATURE_KEY_NONCANONICAL", "publisher.publicKey",
+                        "a canonical point encoding of A",
+                        "a non-canonical encoding of the public key"))
+        if point is None:
+            out.append(("SIGNATURE_KEY_NOT_A_POINT", "publisher.publicKey",
+                        "a public key that decodes to a curve point",
+                        "does not decode"))
+        elif _small_order(point):
+            out.append(("SIGNATURE_KEY_SMALL_ORDER", "publisher.publicKey",
+                        "a public key of large order (not small-order, not the "
+                        "identity point)",
+                        "A has small order: signatures under it can verify "
+                        "over every message"))
+    for name, sig in sigs.items():
+        if sig is None or len(sig) != ED25519_SIGNATURE_BYTES:
+            continue
+        r_point, r_canonical = _decode_point(sig[:32])
+        if not r_canonical:
+            out.append(("SIGNATURE_R_NONCANONICAL", name,
+                        "a canonical encoding of R",
+                        "R is a non-canonical point encoding"))
+        if int.from_bytes(sig[32:], "little") >= _L:
+            out.append(("SIGNATURE_S_NOT_REDUCED", name,
+                        "scalar S less than the group order L",
+                        "S >= L"))
+    return out
 
 
 def load_ed25519_verifier():
@@ -1470,6 +1775,8 @@ def check_signatures(c, rep, facts, manifest_raw, hashes_raw):
                     "%d bytes" % len(data), "§4")
 
     key = decode_publisher_key(facts.public_key_field if facts else None, rep)
+    for code, where, expected, observed in strict_ed25519_problems(key, sigs):
+        rep.add(code, where, expected, observed, "§4")
     verify, backend = load_ed25519_verifier()
 
     if verify is None:
@@ -1521,6 +1828,12 @@ def parse_elf(data):
         return None
     ei_class = data[4]
     ei_data = data[5]
+    # §6.7 needs "a valid ELF object": a complete ELF header, not just enough
+    # bytes to reach e_machine. 64 bytes for ELF64, 52 for ELF32.
+    if ei_class not in (1, 2) or ei_data not in (1, 2):
+        return None
+    if len(data) < (64 if ei_class == 2 else 52):
+        return None
     endian = "<" if ei_data != 2 else ">"
     e_type, e_machine = struct.unpack_from(endian + "HH", data, 16)
     return {
@@ -1681,6 +1994,11 @@ def validate(path):
     rep = Report(str(path))
     c = Container(path)
     check_container(c, rep)
+    if c.zip_error is not None:
+        # Entry data cannot be inflated, so nothing past the raw checks can run.
+        rep.add("CONTAINER_UNREADABLE", str(path),
+                "an archive the ZIP library can open (§1)", c.zip_error, "§1")
+        return rep
 
     by_name = files_by_name(c)
 
@@ -1746,7 +2064,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        rep = validate(args.package)
+        try:
+            rep = validate(args.package)
+        except RecursionError:
+            # Defensive: JSON parsing is iterative past the recursion limit, so
+            # this should be unreachable. If it is ever reached it is a
+            # PROCESSING-LIMIT refusal (§10.2), not a format verdict: exit 3,
+            # distinct from 1 (violations) and 2 (unreadable).
+            msg = "processing limit reached (recursion); not a format verdict"
+            if args.json:
+                json.dump({"package": str(args.package), "conformant": False,
+                           "processingLimit": msg, "violations": [],
+                           "skipped": []}, sys.stdout, indent=2)
+                sys.stdout.write("\n")
+            else:
+                print("lexe-conformance: %s" % msg, file=sys.stderr)
+            return 3
     except Unreadable as exc:
         if args.json:
             json.dump(

@@ -130,7 +130,8 @@ class Entry:
     def __init__(self, name, data, *, mode=0o644, method=None, gpflag=0,
                  extattr=None, dos_dir=False, central_name=None,
                  data_descriptor=None, extra_local=b"", extra_central=b"",
-                 local_name=None, force_sizes=None, force_method_central=None):
+                 local_name=None, force_sizes=None, force_method_central=None,
+                 comp_override=None):
         self.name = name if isinstance(name, bytes) else name.encode()
         self.local_name = (local_name.encode()
                            if isinstance(local_name, str) else local_name)
@@ -156,6 +157,10 @@ class Entry:
             self.comp = co.compress(data) + co.flush()
         else:
             self.comp = data
+        if comp_override is not None:
+            # The stored bytes, whatever the method: both records then carry
+            # len(comp_override) as the compressed size.
+            self.comp = comp_override
 
     @property
     def crc(self):
@@ -163,7 +168,8 @@ class Entry:
 
 
 def build_zip(entries, *, comment=b"", prepend=b"", append=b"",
-              cd_offset_delta=0, insert_before_cd=b"", zip64_eocd=False):
+              cd_offset_delta=0, insert_before_cd=b"", zip64_eocd=False,
+              cd_slack=b"", uncounted_cd_names=(), eocd_this_disk_delta=0):
     out = bytearray(prepend)
     offsets = []
     for e in entries:
@@ -201,6 +207,19 @@ def build_zip(entries, *, comment=b"", prepend=b"", append=b"",
                                len(cname), len(e.extra_central), 0, 0, 0,
                                ext, off)
         central += cname + e.extra_central
+    # §2.2 shapes: an extra central record (a clone of the first entry under
+    # another name) that the EOCD count does NOT include, and slack bytes after
+    # the last record. Either way cd_size below covers them, so the end record
+    # still sits exactly where the central directory stops.
+    first = entries[0]
+    for uname in uncounted_cd_names:
+        uname = uname if isinstance(uname, bytes) else uname.encode()
+        central += struct.pack("<IHHHHHHIIIHHHHHII", CDH, (3 << 8) | 20, 20,
+                               first.gpflag, first.method, 0, 0, first.crc,
+                               len(first.comp), len(first.data), len(uname),
+                               0, 0, 0, 0, first.mode << 16, offsets[0])
+        central += uname
+    central += cd_slack
     out += central
     cd_size = len(central)
     if zip64_eocd:
@@ -209,7 +228,8 @@ def build_zip(entries, *, comment=b"", prepend=b"", append=b"",
                           len(entries), len(entries), cd_size, cd_start)
         loc = struct.pack("<IIQI", 0x07064B50, 0, len(out), 1)
         out += z64 + loc
-    out += struct.pack("<IHHHHIIH", EOCD, 0, 0, len(entries), len(entries),
+    out += struct.pack("<IHHHHIIH", EOCD, 0, 0,
+                       len(entries) + eocd_this_disk_delta, len(entries),
                        cd_size, cd_start + cd_offset_delta, len(comment))
     out += comment + append
     return bytes(out)
@@ -456,6 +476,12 @@ case("path-at-depth-bound", "§2.1", "accept",
 case("path-non-ascii-name", "§2.1", "accept",
      "entry names are UTF-8; a non-ASCII name is legal and must be accepted",
      _rename("payload/data.txt", "payload/documentación-ünïcode-日本語.txt"))
+case("path-nfc-nfd-pair", "§2.1", "accept",
+     "paths are compared as bytes with no normalization: `café` precomposed "
+     "(U+00E9) and `cafe` + U+0301 are two different, individually valid paths, "
+     "and an archive carrying both is valid under 0.1",
+     lambda p: [p.members.__setitem__("payload/café", b"nfc\n"),
+                p.members.__setitem__("payload/café", b"nfd\n")])
 case("path-id-hyphen-segments", "§2.1", "accept",
      "`scripts/` is an allowed top-level name and is inside the envelope",
      lambda p: p.members.__setitem__("scripts/hook.sh", b"# reserved, not run\n"))
@@ -490,6 +516,43 @@ case("zip-directory-entry-dos-bit", "§2.2", "reject",
      "the DOS directory attribute bit is the second spelling of the same thing, "
      "and the one with an ordinary-looking name",
      lambda p: p.entry_opts.update({"payload/data.txt": {"dos_dir": True}}))
+
+case("container-cd-slack", "§2.2", "reject",
+     "the central directory must be EXACTLY the counted records: 12 junk bytes "
+     "after the last record (with the end record's cd_size grown to match) are "
+     "slack no record names",
+     lambda p: p.zip_opts.update(cd_slack=b"SLACKSLACK!!"))
+case("container-eocd-counts-disagree", "§2.2", "reject",
+     "the end record's two entry counts MUST be equal: 'entries on this disk' "
+     "is one more than 'total entries', so a reader taking either sees a "
+     "different archive",
+     lambda p: p.zip_opts.update(eocd_this_disk_delta=1))
+case("container-store-size-mismatch", "§1", "reject",
+     "a STORE entry's bytes are its content verbatim, so its compressed and "
+     "uncompressed sizes are equal; here 4 pad bytes follow the 20 content "
+     "bytes (the digest of the real content still matches, which is what lets "
+     "a lenient reader accept it)",
+     lambda p: p.entry_opts.update(
+         {"payload/data.txt": {"method": STORE, "comp_override":
+                               p.members["payload/data.txt"] + b"PAD!"}}))
+case("container-gpflag-bit6", "§2.1", "reject",
+     "general-purpose bit 6 is strong encryption, and 0.1 forbids encryption",
+     lambda p: p.entry_opts.update({"payload/data.txt": {"gpflag": 0x40}}))
+case("container-store-large-entry", "§1", "accept",
+     "the writer STOREs entries under 64 bytes and DEFLATEs the rest, but the "
+     "choice is a writer heuristic: a reader MUST NOT reject a 200-byte entry "
+     "that is STORED",
+     lambda p: [p.members.__setitem__("payload/data.txt", b"S" * 200),
+                p.entry_opts.update({"payload/data.txt": {"method": STORE}})])
+case("container-deflate-tiny-entry", "§1", "accept",
+     "likewise a 20-byte entry compressed with DEFLATE is conformant output "
+     "from another writer and MUST be accepted",
+     lambda p: p.entry_opts.update({"payload/data.txt": {"method": DEFLATE}}))
+case("container-cd-uncounted-record", "§2.2", "reject",
+     "an extra central record the end record's count does not include is "
+     "invisible to a reader that walks the count and listed by one that scans; "
+     "it was used to show `signatures/evil.bin` to one reader and not the other",
+     lambda p: p.zip_opts.update(uncounted_cd_names=["signatures/evil.bin"]))
 
 # Data descriptors are TOLERATED, in both encodings: APPNOTE 4.3.9.3 makes the
 # 0x08074b50 signature word optional, so both are legitimate and both must be
@@ -700,6 +763,42 @@ case("key-not-base64", "§4", "reject",
      lambda p: p.manifest["publisher"].__setitem__(
          "publicKey", "ed25519:!!!not base64!!!"))
 
+
+def _noncanonical_b64_key():
+    s = public_key_str()
+    alphabet = ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                "0123456789+/")
+    body = s[:-1]                                  # drop the '='
+    last = alphabet[alphabet.index(body[-1]) | 1]  # set an unused low bit
+    out = body[:-1] + last + "="
+    assert out != s and (base64.b64decode(out.split(":")[1])
+                         == base64.b64decode(s.split(":")[1]))
+    return out
+
+
+def _identity_point_key(p):
+    # The adversary's package: A = the identity point (y = 1), R = identity,
+    # S = 0. Under cofactored/lax verification that "signature" verifies over
+    # EVERY message with no key held. Everything else is authentic.
+    ident = b"\x01" + b"\x00" * 31
+    p.manifest["publisher"]["publicKey"] = (
+        "ed25519:" + base64.b64encode(ident).decode())
+    p.sig_manifest = ident + b"\x00" * 32
+    p.sig_payload = ident + b"\x00" * 32
+
+
+case("key-identity-point", "§4", "reject",
+     "a public key of small order, the identity point above all, makes "
+     "`01 00..00 || 00*32` verify over every message without anyone holding a "
+     "key; §4 requires rejecting small-order A",
+     _identity_point_key)
+case("key-noncanonical-base64", "§4", "reject",
+     "the final base64 character carries non-zero unused bits: the same 32 "
+     "bytes with a second spelling. The encoding MUST be canonical (re-encoding "
+     "reproduces the string)",
+     lambda p: p.manifest["publisher"].__setitem__(
+         "publicKey", _noncanonical_b64_key()))
+
 # ============================ §5.0 Strict JSON ==============================
 
 case("json-manifest-bom", "§5.0", "reject",
@@ -754,6 +853,38 @@ case("json-null-is-absent-optional", "§5.0", "accept",
 case("json-null-is-absent-required", "§5.0", "reject",
      "`null` is absent for required fields too, so a null `name` is missing",
      lambda p: p.manifest.update({"name": None}))
+case("json-manifest-trailing-nul", "§5.0", "reject",
+     "no raw NUL byte anywhere: a parser treating NUL as end-of-input would "
+     "see a clean document and silently discard the signed bytes after it",
+     lambda p: setattr(p, "manifest_raw",
+                       p.manifest_bytes() + b"\x00" + b"garbage"))
+case("json-hashes-trailing-nul", "§5.0", "reject",
+     "the no-NUL rule applies to `metadata/hashes.json` as well",
+     lambda p: setattr(p, "hashes_raw",
+                       p.hashes_bytes() + b"\x00" + b"garbage"))
+
+
+def _manifest_with_member(member_json):
+    """The base manifest as bytes, plus one extra top-level member whose JSON
+    text is given verbatim (for tokens json.dumps cannot emit)."""
+    def m(p):
+        text = json.dumps(p.manifest)
+        assert text.endswith("}")
+        p.manifest_raw = (text[:-1] + ", " + member_json + "}").encode()
+    return m
+
+
+case("json-nan", "§5.0", "reject",
+     "RFC 8259 has no NaN literal; many parsers accept it, so it is named",
+     _manifest_with_member('"futureNum": NaN'))
+case("json-1e999", "§5.0", "reject",
+     "a number whose magnitude exceeds an IEEE-754 double is rejected rather "
+     "than rounded to infinity",
+     _manifest_with_member('"futureNum": 1e999'))
+case("json-lone-surrogate", "§5.0", "reject",
+     "an unpaired surrogate escape denotes no character and implementations "
+     "disagree about it",
+     _manifest_with_member('"futureStr": "\\ud800"'))
 case("json-integer-as-float-token", "§5.0", "reject",
      # Was `unspecified`, and the case is why: §5.0 required integer TOKENS while
      # 0.1 declared no field as an integer, so the rule had no subject. §5.0 and
@@ -866,6 +997,10 @@ case("app-entrypoint-dotdot", "§5.3", "reject",
      "the entrypoint must not contain `..`",
      lambda p: p.manifest["entrypoint"].__setitem__("executable",
                                                     "../bin/app"))
+case("manifest-entrypoint-dot-segment", "§5.3", "reject",
+     "the entrypoint follows the entry-path rules: a `.` segment is a second "
+     "spelling of `bin/app` (the payload ships payload/bin/app)",
+     lambda p: p.manifest["entrypoint"].__setitem__("executable", "bin/./app"))
 case("app-entrypoint-backslash", "§5.3", "reject",
      "the entrypoint must not contain a backslash",
      lambda p: p.manifest["entrypoint"].__setitem__("executable",
@@ -1022,6 +1157,12 @@ case("role-portable-ships-entrypoint", "§6.7", "reject",
      "a portable package shipping its entrypoint is a native payload wearing a "
      "portable label: the binary installed is one this host never compiled",
      _portable(ship_entrypoint=True))
+case("portable-entrypoint-dot-ships-binary", "§5.3", "reject",
+     "a `.` segment must not let a portable package hide that it ships its "
+     "entrypoint: `bin/./built` is `bin/built`, which the payload carries",
+     lambda p: [_portable(ship_entrypoint=True)(p),
+                p.manifest["entrypoint"].__setitem__("executable",
+                                                     "bin/./built")])
 case("role-portable-no-source", "§6.7", "reject",
      "a portable package must carry the source it is compiled from",
      _portable(omit_source=True))
