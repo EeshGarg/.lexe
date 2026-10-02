@@ -74,7 +74,14 @@ ARM_KEY="${LEXE_ARM_KEY:-$HOME/.ssh/lexe_arm_worker}"
 # Key-only, and deliberately so: BatchMode plus PasswordAuthentication=no means
 # an unattended run FAILS instead of blocking on a prompt nobody will answer,
 # and no password can be typed, logged, or captured into an evidence file.
-ARM_SSH="${LEXE_ARM_SSH:-ssh -p $ARM_PORT -i $ARM_KEY -o IdentitiesOnly=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $ARM_USER@127.0.0.1}"
+# A FUNCTION, not a string: the key path on the development host contains a
+# space ("Bennyt 2"), and an unquoted string of options word-split it into
+# "/c/Users/Bennyt" and a "hostname" -- the probe then reported the worker
+# unreachable while the device and the forward were both fine.
+arm_ssh() {
+    if [[ -n "${LEXE_ARM_SSH:-}" ]]; then $LEXE_ARM_SSH "$@"; return; fi
+    ssh -p "$ARM_PORT" -i "$ARM_KEY" -o IdentitiesOnly=yes         -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no         -o BatchMode=yes -o StrictHostKeyChecking=accept-new         -o ConnectTimeout=10 "$ARM_USER@127.0.0.1" "$@"
+}
 ARM_JOBS="${LEXE_ARM_JOBS:-2}"           # tablet: start low, thermal headroom
 ARM_WORK="${LEXE_ARM_WORK:-\$HOME/lexe-arm}"   # expanded ON the worker
 ARM_DISTRO="${LEXE_ARM_DISTRO:-debian}"  # proot-distro name
@@ -94,11 +101,11 @@ infra() { printf '  %sINFRASTRUCTURE%s  %s\n' "$C_BAD" "$C_OFF" "$*"; }
 # proot-distro login runs the guest; --shared-tmp keeps /tmp usable. The
 # command is passed to `sh -c`, so the CALLER must quote for the guest shell.
 arm_guest() {
-    $ARM_SSH "proot-distro login $ARM_DISTRO --shared-tmp -- /bin/sh -c $(printf '%q' "$1")" 2>&1
+    arm_ssh "proot-distro login $ARM_DISTRO --shared-tmp -- /bin/sh -c $(printf '%q' "$1")" 2>&1
 }
 
 # Run a command in Termux itself (outside the guest).
-arm_termux() { $ARM_SSH "$1" 2>&1; }
+arm_termux() { arm_ssh "$1" 2>&1; }
 
 # ------------------------------------------------------------------ preflight
 #
@@ -145,7 +152,7 @@ cmd_probe() {
     fi
 
     local hello
-    hello="$($ARM_SSH 'echo TERMUX_OK; uname -m' 2>&1)"
+    hello="$(arm_ssh 'echo TERMUX_OK; uname -m' 2>&1)"
     if [[ "$hello" != *TERMUX_OK* ]]; then
         infra "ssh to Termux failed. In Termux: pkg install openssh && passwd && sshd"
         printf '        transport said: %s\n' "$(printf '%s' "$hello" | head -2 | tr '\n' ' ')"
