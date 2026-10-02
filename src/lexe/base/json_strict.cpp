@@ -97,6 +97,18 @@ void reject_bom(std::string_view text, std::string_view context) {
     }
 }
 
+/// A raw NUL byte is never valid JSON (RFC 8259: not whitespace, and a string
+/// must escape it). It must be rejected BEFORE nlohmann sees the text: its
+/// lexer treats 0x00 as end-of-input, so "{...}\0anything" parsed as "{...}"
+/// and signed bytes after the NUL were silently ignored (§5.0 trailing data).
+void reject_nul(std::string_view text, std::string_view context) {
+    if (text.find('\0') != std::string_view::npos) {
+        throw VerificationError(std::string(context) +
+                                ": contains a NUL byte (not valid JSON; "
+                                "nothing after it may be ignored)");
+    }
+}
+
 void reject_duplicates(std::string_view text, std::string_view context) {
     DuplicateKeyDetector detector;
     // strict=true validates trailing data and UTF-8; the DETECTOR aborts on the
@@ -118,6 +130,7 @@ nlohmann::json parse(std::string_view text, std::string_view context,
                      std::size_t max_bytes) {
     check_budget(text, context, max_bytes);
     reject_bom(text, context);
+    reject_nul(text, context);
     reject_duplicates(text, context);
     // The SAX pass already proved the text is well-formed, duplicate-free UTF-8
     // JSON; this DOM parse cannot fail, but stay defensive.
@@ -134,6 +147,7 @@ nlohmann::ordered_json parse_ordered(std::string_view text,
                                      std::size_t max_bytes) {
     check_budget(text, context, max_bytes);
     reject_bom(text, context);
+    reject_nul(text, context);
     reject_duplicates(text, context);
     nlohmann::ordered_json doc = nlohmann::ordered_json::parse(
         text, nullptr, /*allow_exceptions=*/false);

@@ -78,6 +78,28 @@ TEST_CASE("rejects malformed JSON and invalid UTF-8") {
     CHECK_THROWS_AS(parse(bad, "t", kBig), lexe::VerificationError);
 }
 
+TEST_CASE("a raw NUL byte is invalid anywhere -- it does not end the document") {
+    // nlohmann's lexer treats a raw 0x00 as end-of-input, so "{...}\0garbage"
+    // parsed as "{...}" and the signed bytes after the NUL were silently
+    // ignored: verify accepted a lexe.json / hashes.json with trailing data,
+    // which §5.0 forbids. RFC 8259 admits no raw NUL at all -- not as
+    // whitespace, not unescaped inside a string -- so rejecting it is exact.
+    using namespace std::string_literals;
+    const std::string ok = R"({"a":1})";
+    CHECK_NOTHROW(lexe::json_strict::parse(ok, "doc", 1024));
+    for (const std::string& bad :
+         {ok + "\0"s, ok + "\0garbage"s, ok + "\0{\"b\":2}"s,
+          "{\"a\":\0 1}"s, "\0"s + ok}) {
+        INFO("bytes: " << bad.size());
+        CHECK_THROWS_AS(lexe::json_strict::parse(bad, "doc", 1024),
+                        lexe::VerificationError);
+        CHECK_THROWS_AS(lexe::json_strict::parse_ordered(bad, "doc", 1024),
+                        lexe::VerificationError);
+    }
+    // An ESCAPED NUL is ordinary JSON and stays accepted.
+    CHECK_NOTHROW(lexe::json_strict::parse(R"({"a":"x\u0000y"})", "doc", 1024));
+}
+
 TEST_CASE("enforces the byte budget: limit-1 / limit / limit+1") {
     lexe::test::TempLexeHome home;
     // Build "{"k":"<pad>"}" documents of exact sizes around a small limit.
