@@ -42,10 +42,20 @@ EV="${LEXE_ISA_EVIDENCE:-$REPO/../lexe-isa-evidence}"
 LEXE="${LEXE_BIN:-$REPO/build/lexe}"
 ARM_PORT="${LEXE_ARM_PORT:-8022}"
 ARM_USER="${LEXE_ARM_USER:-u0_a248}"
-ARM_KEY="${LEXE_ARM_KEY:-$HOME/.ssh/lexe_arm_ed25519}"
-ARM_SSH="ssh -p $ARM_PORT -i $ARM_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $ARM_USER@127.0.0.1"
+ARM_KEY="${LEXE_ARM_KEY:-$HOME/.ssh/lexe_arm_worker}"
+# A function, not a string, for the same reason as in arm-worker.sh: the key
+# path can contain a space. Key-only and batch, so an unattended run fails
+# instead of waiting for a password.
+arm_ssh() {
+    ssh -p "$ARM_PORT" -i "$ARM_KEY" -o IdentitiesOnly=yes \
+        -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+        -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=10 "$ARM_USER@127.0.0.1" "$@"
+}
 ARM_WORK="\$HOME/lexe-isa"
 ARM_DISTRO="${LEXE_ARM_DISTRO:-debian}"
+# The runtime that scripts/arm-worker.sh synced and built (expanded ON the worker).
+ARM_LEXE="${LEXE_ARM_LEXE:-\$HOME/lexe-arm/repo/build-arm64/lexe}"
 
 PKG="$EV/second-isa.lexe"
 KEY="$EV/second-isa-key.json"
@@ -55,7 +65,7 @@ ok()   { printf '  PASS  %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; }
 info() { printf '        %s\n' "$*"; }
 
-arm_guest() { $ARM_SSH "proot-distro login $ARM_DISTRO --shared-tmp -- /bin/sh -c $(printf '%q' "$1")" 2>&1; }
+arm_guest() { arm_ssh "proot-distro login $ARM_DISTRO --shared-tmp -- /bin/sh -c $(printf '%q' "$1")" 2>&1; }
 
 # ------------------------------------------------------------------ the package
 #
@@ -138,10 +148,22 @@ record_here() {  # record_here <lexe-binary> <package> <out-file>
         printf 'PACKAGE_BYTES=%s\n' "$(stat -c%s "$pkg")"
         printf 'CC_VERSION=%s\n' "$(cc --version 2>/dev/null | head -1)"
         printf 'LEXE_VERSION=%s\n' "$("$lexe" version 2>/dev/null | head -1)"
+        printf 'LEXE_BIN_SHA256=%s\n' "$(sha256sum "$lexe" | awk '{print $1}')"
+        printf 'LEXE_BIN_FILE=%s\n' "$(file -b "$lexe" | cut -c1-70)"
+        # The commit the runtime was built from, as the host's own git sees it.
+        printf 'GIT_SHA=%s\n' "$(git -C "$(dirname "$lexe")/.." rev-parse HEAD 2>/dev/null)"
+        printf 'GIT_DIRTY_FILES=%s\n' "$(git -C "$(dirname "$lexe")/.." status --porcelain 2>/dev/null | wc -l)"
+        printf 'BUILD_RECIPE=cc -O2 -o bin/app src/main.c (from the signed manifest)\n'
     } >> "$out"
 
-    "$lexe" install "$pkg" --yes --trust --approve-compile >/dev/null 2>&1
+    # Signature identity, read by this host's runtime from these bytes.
+    "$lexe" verify "$pkg" > "$out.verify" 2>&1
+    printf 'VERIFY_RC=%s\n' "$?" >> "$out"
+    sed 's/^/VERIFY_OUT /' "$out.verify" >> "$out"
+
+    "$lexe" install "$pkg" --yes --trust --approve-compile > "$out.install" 2> "$out.install.err"
     printf 'INSTALL_RC=%s\n' "$?" >> "$out"
+    sed 's/^/INSTALL_STDERR /' "$out.install.err" >> "$out"
 
     # The product: where the runtime put it, what it is, and whether it runs.
     local prod
@@ -159,11 +181,16 @@ record_here() {  # record_here <lexe-binary> <package> <out-file>
         printf 'PRODUCT_READELF_CLASS=%s\n' \
             "$(readelf -h "$prod" 2>/dev/null | awk -F: '/Class:/{gsub(/^ +/,"",$2); print $2}')"
     } >> "$out"
+    readelf -h "$prod" 2>&1 | sed 's/^/READELF_H /' >> "$out"
+    local bj
+    bj="$(find "${LEXE_HOME:-$HOME/.local/share/lexe}" -name build.json 2>/dev/null | head -1)"
+    printf 'BUILD_JSON_PATH=%s\n' "${bj:-ABSENT}" >> "$out"
+    [ -n "$bj" ] && sed 's/^/BUILD_JSON /' "$bj" >> "$out"
 
-    local run_out
-    run_out="$("$lexe" run "$id" 2>/dev/null)"
+    "$lexe" run "$id" > "$out.run" 2> "$out.run.err"
     printf 'RUN_RC=%s\n' "$?" >> "$out"
-    printf '%s\n' "$run_out" | sed 's/^/RUN_OUT /' >> "$out"
+    sed 's/^/RUN_OUT /' "$out.run" >> "$out"
+    sed 's/^/RUN_STDERR /' "$out.run.err" >> "$out"
     return 0
 }
 
@@ -180,23 +207,20 @@ cmd_remote() {
     say "== materializing on the ARM worker =="
     [ -f "$PKG" ] || { bad "no package; run 'build' first"; return 1; }
 
-    if ! $ARM_SSH 'echo ok' >/dev/null 2>&1; then
+    if ! arm_ssh 'echo ok' >/dev/null 2>&1; then
         bad "INFRASTRUCTURE: no key-based ssh to the worker"
         info "adb forward tcp:$ARM_PORT tcp:$ARM_PORT, and install the dev public key"
         return 1
     fi
 
-    # The package travels as BYTES and is hashed again on arrival. Any
-    # difference here invalidates the whole experiment, so it is checked rather
-    # than assumed.
+    # The package travels as BYTES over the ssh channel and is hashed again on
+    # arrival, by the worker's own sha256sum. Any difference invalidates the
+    # whole experiment, so it is checked rather than assumed.
     local local_sha; local_sha="$(sha256sum "$PKG" | awk '{print $1}')"
-    MSYS2_ARG_CONV_EXCL=/sdcard adb push "$(cygpath -w "$PKG" 2>/dev/null || printf '%s' "$PKG")" \
-        /sdcard/second-isa.lexe >/dev/null 2>&1 || { bad "adb push"; return 1; }
-    $ARM_SSH "cp /sdcard/second-isa.lexe \$HOME/second-isa.lexe" >/dev/null 2>&1 || {
-        bad "Termux could not read /sdcard (termux-setup-storage?)"; return 1; }
+    arm_ssh 'cat > "$HOME/second-isa.lexe"' < "$PKG" || { bad "INFRASTRUCTURE: transfer"; return 1; }
 
     local remote_sha
-    remote_sha="$($ARM_SSH 'sha256sum $HOME/second-isa.lexe' 2>/dev/null | awk '{print $1}')"
+    remote_sha="$(arm_ssh 'sha256sum $HOME/second-isa.lexe' 2>/dev/null | awk '{print $1}')"
     if [ "$remote_sha" != "$local_sha" ]; then
         bad "the package changed in transit -- the experiment is void"
         info "local  $local_sha"
@@ -211,7 +235,7 @@ cmd_remote() {
 export LEXE_HOME=$ARM_WORK/home
 mkdir -p \$LEXE_HOME
 cp /data/data/com.termux/files/home/second-isa.lexe $ARM_WORK/pkg.lexe 2>/dev/null || cp \$HOME/second-isa.lexe $ARM_WORK/pkg.lexe
-record_here $ARM_WORK/repo/build-arm64/lexe $ARM_WORK/pkg.lexe $ARM_WORK/record.txt
+record_here $ARM_LEXE $ARM_WORK/pkg.lexe $ARM_WORK/record.txt
 cat $ARM_WORK/record.txt"
     arm_guest "mkdir -p $ARM_WORK" >/dev/null 2>&1
     arm_guest "$script" | tee "$EV/record-aarch64.txt" | sed 's/^/    /'
@@ -232,6 +256,16 @@ cmd_compare() {
     # 1. Same authenticated input.
     if [ -n "$xp" ] && [ "$xp" = "$ap" ]; then ok "identical package sha256 on both hosts: $xp"
     else bad "package hashes differ ($xp vs $ap) -- not the same input"; fi
+
+    # 1b. Same signer, as each host's own runtime reports it from the bytes.
+    local xv av
+    # The 'Verifying <path>' line names a host-local path; everything after it must match.
+    xv="$(sed -n 's/^VERIFY_OUT //p' "$x" | grep -v '^Verifying ')"; av="$(sed -n 's/^VERIFY_OUT //p' "$a" | grep -v '^Verifying ')"
+    if [ "$(get "$x" VERIFY_RC)" = 0 ] && [ "$(get "$a" VERIFY_RC)" = 0 ] && [ -n "$xv" ] && [ "$xv" = "$av" ]; then
+        ok "signature verified on both hosts, identical verify report"
+    else
+        bad "signature report differs or failed (rc $(get "$x" VERIFY_RC) vs $(get "$a" VERIFY_RC))"
+    fi
 
     # 2. Different products, and different in the ISA.
     if [ -n "$xm" ] && [ -n "$am" ] && [ "$xm" != "$am" ]; then
