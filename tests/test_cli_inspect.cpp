@@ -304,6 +304,17 @@ TEST_CASE("inspect describes only what it examined, and says so") {
         CHECK(doc.at("authenticated") == false);
         CHECK(doc.at("analysis").at("performed") == false);
         CHECK_FALSE(doc.contains("report"));
+
+        // `lexe info <file>` shows the same claims. It printed them, and the
+        // key under "(a valid signature proves consistency with this key)",
+        // with no verdict at all.
+        const util::ProcessResult i = run({"info", pkg.string()});
+        const std::size_t ibanner = i.stdout_text.find("NOT AUTHENTIC");
+        REQUIRE(ibanner != std::string::npos);
+        CHECK(ibanner < i.stdout_text.find("Publisher:"));
+        CHECK(has(i.stdout_text, "Verification:   FAILED"));
+        CHECK(json::parse(run({"info", pkg.string(), "--json"}).stdout_text)
+                  .at("authenticated") == false);
     }
 }
 

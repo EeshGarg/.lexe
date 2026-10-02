@@ -1701,8 +1701,16 @@ int cmd_info(const std::vector<std::string>& args) {
         const std::uint64_t size = display_size(manifest, reader);
 
         const Fingerprint fp = key_fingerprint(manifest.decoded_public_key());
+        // info shows the manifest's facts, so it must say whether they are
+        // authentic: it used to print a FAILING package's name, publisher and
+        // key -- under "(a valid signature proves consistency with this key)"
+        // -- with no verdict at all. The exit code stays 0 (info describes;
+        // verify and inspect are the commands whose exit code is a verdict).
+        const VerificationReport vr =
+            verify_package(target, /*check_architecture=*/false);
         if (as_json) {
             ordered_json j;
+            j["authenticated"] = vr.ok();
             j["source"] = "package";
             j["package"] = {
                 {"path", fs::path(target).string()},
@@ -1720,7 +1728,14 @@ int cmd_info(const std::vector<std::string>& args) {
                       << format_size(
                              static_cast<std::uint64_t>(fs::file_size(target)))
                       << ")\n";
+            if (!vr.ok()) {
+                std::cout << "  NOT AUTHENTIC — this package failed verification. "
+                             "Everything below is what the file CLAIMS, not what "
+                             "was verified.\n";
+            }
             print_manifest_info(manifest, size);
+            print_kv("Verification:",
+                     vr.ok() ? "PASSED" : "FAILED — run `lexe verify` for details");
             print_kv("Signing key:", fp.grouped);
             std::cout << "  (a valid signature proves consistency with this key, "
                          "not the publisher's real-world identity)\n";
