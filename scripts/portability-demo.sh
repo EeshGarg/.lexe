@@ -124,11 +124,16 @@ else
     sh -eu -c '
       export DEBIAN_FRONTEND=noninteractive
       # Debian 11 left LTS in 2026 and its bullseye-security pool now answers
-      # 404 for every package the index still lists (measured in CI run
-      # 36964916861: apt exit 100 before anything of .LEXE ran). The glibc 2.31
-      # this sysroot exists for comes from the main suite, so the security
-      # suite is dropped HERE ONLY; the other images are still supported.
-      sed -i "/debian-security/d" /etc/apt/sources.list
+      # 404 for every package the index still lists (CI run 36964916861: apt
+      # exit 100 before anything of .LEXE ran), and archive.debian.org does not
+      # carry them yet. Dropping the suite is NOT enough -- the image already
+      # ships security builds (libc6 2.31-13+deb11u14), so main-only resolution
+      # fails with held broken packages (CI run 36968497688). The security suite
+      # is served from a time-pinned snapshot instead: the same versions, and a
+      # sysroot that no longer depends on a moving mirror. HERE ONLY; the other
+      # images are still supported. check-valid-until=no because the snapshot
+      # Release file is, by design, past its Valid-Until.
+      sed -i "s|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260901T000000Z |" /etc/apt/sources.list
       apt-get update -qq >/dev/null
       apt-get install -y -qq --no-install-recommends g++ make python3-pip >/dev/null
       pip3 install --quiet "cmake>=3.22,<4" ninja 2>/dev/null || pip3 install --quiet cmake ninja
