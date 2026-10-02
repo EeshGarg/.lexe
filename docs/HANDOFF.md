@@ -22,6 +22,7 @@ reference implementation on a 198-case spec-derived corpus.
 | **Evidence run** | `scripts/test.sh --unit --acceptance --conformance --security` from a clean tree (porcelain 0 before and after): **unit 784/784, acceptance 12/12, conformance 4/4, security 27/27**. Log: `../lexe-run-evidence/hardening-run-699a2fa.log` — the run is at **`699a2fa`**, which differs from `d5837c8` only by two test-file fixes the first two attempts exposed (a raw bidi byte in a test source, which `-Wbidi-chars` + warnings-as-failure stopped; and the launcher test below) |
 | **Final HEAD** | the commit that adds this file (docs only) |
 | **GitHub** | pushed; `origin/main` verified with `git ls-remote` after the push |
+| **GitHub CI on `d940b48`** | run 37043361958: linux ✅, portability ✅, windows ❌ at Test, **736/756 — the same 20 pre-existing Windows failures as before this campaign, none new**. The run on `f715927` had 21: the new DT_NEEDED regression failed on Windows, where `C:\...\secret` has no `/` and was still resolved and hashed — the same disclosure bug on the other platform, fixed in `d940b48` (`\` and `:` now mark a path) |
 
 ## Bugs found and fixed (each: regression test proven to fail first)
 
