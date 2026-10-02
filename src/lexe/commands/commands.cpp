@@ -1909,11 +1909,11 @@ int cmd_inspect(const std::vector<std::string>& args) {
     std::optional<LocalInstallConflict> conflict;
     if (vr.ok()) conflict = local_install_conflict(manifest);
 
-    // Scratch extraction for the dependency/compatibility/Tux32 analysis.
-    const fs::path scratch =
-        fs::temp_directory_path() / ("lexe-inspect-" + pkg_sha.substr(0, 16));
-    fs::remove_all(scratch, ec);
-    fs::create_directories(scratch, ec);
+    // Scratch extraction for the dependency/compatibility/Tux32 analysis. A
+    // PRIVATE directory: the old name was derived from the package hash, which
+    // the package's author knows, so another local user could plant it as a
+    // link and receive the extraction (tests/test_cli_inspect.cpp).
+    const fs::path scratch = util::make_private_temp_dir("lexe-inspect-");
     struct Scratch {
         fs::path p;
         ~Scratch() {

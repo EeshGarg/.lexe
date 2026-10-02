@@ -48,6 +48,22 @@
 #ifndef _WIN32
 
 namespace fs = std::filesystem;
+
+namespace {
+
+/// The real `lexe` binary: `lexe verify` and `lexe inspect` are the surfaces a
+/// person points at an untrusted file, and `inspect` runs analysis the library
+/// `verify_package()` does not (dependencies, Tux32, compatibility). Observing
+/// only the library call would leave both commands unwatched.
+fs::path cli_binary() {
+#ifdef LEXE_TEST_BINARY_PATH
+    return fs::path(LEXE_TEST_BINARY_PATH);
+#else
+    return fs::path("lexe");
+#endif
+}
+
+} // namespace
 using namespace lexe;
 
 namespace {
@@ -170,6 +186,21 @@ TEST_CASE("installing a package never executes the package's own entrypoint") {
             verify_package(pkg, /*check_architecture=*/true);
         CHECK(report.ok());
         CHECK_FALSE(fs::exists(sentinel));
+
+        // The read-only CLI surfaces, human and --json. Exit 0 is required so
+        // a command that failed before reaching the package cannot pass as
+        // "did not execute it".
+        for (const std::vector<std::string>& args :
+             {std::vector<std::string>{"verify", pkg.string()},
+              std::vector<std::string>{"verify", pkg.string(), "--json"},
+              std::vector<std::string>{"inspect", pkg.string()},
+              std::vector<std::string>{"inspect", pkg.string(), "--json"}}) {
+            std::vector<std::string> argv{cli_binary().string()};
+            argv.insert(argv.end(), args.begin(), args.end());
+            INFO("lexe " << args[0] << (args.size() > 2 ? " --json" : ""));
+            CHECK(util::run_process(argv).exit_code == 0);
+            CHECK_FALSE(fs::exists(sentinel));
+        }
 
         // And the install path, which additionally runs the pre-activation
         // health check -- the stage most tempting to implement by launching

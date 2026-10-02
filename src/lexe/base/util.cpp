@@ -11,6 +11,8 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <cerrno>
+#include <random>
 #include <system_error>
 
 #ifdef _WIN32
@@ -498,6 +500,34 @@ void unset_env(const std::string& name) {
 }
 
 #endif
+
+fs::path make_private_temp_dir(const std::string& prefix) {
+#ifdef _WIN32
+    // No mkdtemp: an unguessable name created with create_directory, which
+    // fails rather than adopting something already there.
+    std::random_device rd;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        char suffix[17];
+        std::snprintf(suffix, sizeof suffix, "%08x%08x", rd(), rd());
+        const fs::path p = fs::temp_directory_path() / (prefix + suffix);
+        std::error_code ec;
+        if (fs::create_directory(p, ec)) return p;
+    }
+    throw Error("cannot create a private temporary directory");
+#else
+    // mkdtemp: an unpredictable name, created exclusively with mode 0700. It
+    // never reuses an existing entry, so a link someone planted cannot become
+    // the directory.
+    std::string tmpl =
+        (fs::temp_directory_path() / (prefix + "XXXXXX")).string();
+    if (::mkdtemp(tmpl.data()) == nullptr) {
+        throw Error("cannot create a private temporary directory under " +
+                    fs::temp_directory_path().string() + ": " +
+                    std::strerror(errno));
+    }
+    return fs::path(tmpl);
+#endif
+}
 
 // ---------------------------------------------------------------- processes
 

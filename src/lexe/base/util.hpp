@@ -82,6 +82,13 @@ std::optional<std::string> get_env(const std::string& name);
 void set_env(const std::string& name, const std::string& value);
 void unset_env(const std::string& name);
 
+// --- temporary directories ---
+/// A fresh directory under the system temp directory that nobody else could
+/// have named or created first: unpredictable, created exclusively, 0700 on
+/// POSIX. Never derive a temp path from package content -- a name the package
+/// author can compute is a name another local user can plant.
+std::filesystem::path make_private_temp_dir(const std::string& prefix);
+
 // --- processes ---
 // No shell anywhere: argv arrays only (ARCHITECTURE.md security invariant #3).
 // Implemented with CreateProcessW (correct CommandLineToArgvW-style quoting)

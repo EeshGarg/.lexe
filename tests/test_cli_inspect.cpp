@@ -8,10 +8,16 @@
 #include "helpers.hpp"
 
 #include "lexe/base/util.hpp"
+#include "lexe/package/crypto.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <optional>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -185,5 +191,82 @@ TEST_CASE("a missing package is a not-found error") {
     Work w;
     CHECK(run({"inspect", (w.dir / "nope.lexe").string()}).exit_code == 4);
 }
+
+#ifndef _WIN32
+TEST_CASE("inspect's scratch space cannot be redirected by a pre-planted link") {
+    // inspect extracts the payload to analyse it. It used a PREDICTABLE name in
+    // the shared temp directory -- "lexe-inspect-" + the first 16 hex digits of
+    // the package's SHA-256 -- and ignored the errors from clearing and
+    // creating it. Whoever made the package knows its hash, so another local
+    // user could plant that name as a link to a directory the victim can write
+    // (~/.config/autostart, say). In a sticky /tmp the victim cannot delete the
+    // link, creating "it" succeeds because it exists, the extraction root is
+    // resolved THROUGH the link, and every payload file lands in the victim's
+    // directory -- all of it "under the root", so the per-entry escape check
+    // has nothing to object to.
+    Work w;
+    const fs::path pkg = build_package(w.dir);
+    const fs::path tmp = w.dir / "shared-tmp";
+    const fs::path victim = w.dir / "victim-dir";
+    fs::create_directories(tmp);
+    fs::create_directories(victim);
+    const std::string sha = crypto::sha256_file_hex(pkg);
+    const fs::path planted = tmp / ("lexe-inspect-" + sha.substr(0, 16));
+    fs::create_directory_symlink(victim, planted);
+
+    const auto inspect_with_tmpdir = [&] {
+        const std::optional<std::string> old = util::get_env("TMPDIR");
+        util::set_env("TMPDIR", tmp.string());
+        const util::ProcessResult r = run({"inspect", pkg.string()});
+        if (old) util::set_env("TMPDIR", *old); else util::unset_env("TMPDIR");
+        return r;
+    };
+
+    // The observer throughout: the victim directory's contents, listed
+    // directly -- independent of anything inspect reports about itself. The
+    // package has a payload file (bin/app) that WOULD land there.
+    REQUIRE(fs::is_empty(victim));
+
+    SUBCASE("an ordinary writable temp directory: analysis runs, privately") {
+        const util::ProcessResult r = inspect_with_tmpdir();
+        INFO(r.stdout_text << r.stderr_text);
+        CHECK(r.exit_code == 0);
+        // The fix is not "stop analysing".
+        CHECK(has(r.stdout_text, "Dependencies:"));
+        CHECK(fs::is_empty(victim));
+        // And someone else's entry is not inspect's to delete.
+        CHECK(fs::is_symlink(fs::symlink_status(planted)));
+    }
+
+    SUBCASE("the planted link cannot be removed (the sticky-/tmp case)") {
+        // In a real sticky /tmp the victim cannot delete ANOTHER user's entry;
+        // one user cannot plant a link owned by someone else, so the same
+        // inability is made by taking write permission off the directory. The
+        // first version of this test omitted it -- inspect deleted its own
+        // user's link and the test passed against the vulnerable code. With it,
+        // the vulnerable code wrote bin/app into the victim directory.
+        if (::geteuid() == 0) {
+            MESSAGE("BLOCKED: running as root, which ignores directory "
+                    "permissions, so a non-deletable planted link cannot be "
+                    "arranged");
+            return;
+        }
+        fs::permissions(tmp, fs::perms::owner_read | fs::perms::owner_exec);
+        struct Restore {
+            fs::path p;
+            ~Restore() {
+                std::error_code ec;
+                fs::permissions(p, fs::perms::owner_all, ec);
+            }
+        } restore{tmp};
+        const util::ProcessResult r = inspect_with_tmpdir();
+        INFO(r.stdout_text << r.stderr_text);
+        // Nothing new can be created here either, so inspect may fail; what it
+        // must never do is extract through the link.
+        CHECK(fs::is_empty(victim));
+        CHECK_FALSE(fs::exists(victim / "bin" / "app"));
+    }
+}
+#endif
 
 } // TEST_SUITE("cli_inspect")
