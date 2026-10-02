@@ -468,6 +468,10 @@ TEST_CASE("a build that fails verification names the stage and keeps nothing") {
     const fs::path project = work.dir / "wrongarch";
     fs::create_directories(project / "payload" / "bin");
     test::write_native_executable(project / "payload" / "bin" / "app", "hi");
+    // "Not the host" -- the OTHER of the two ISAs, so the case means the same
+    // thing on an AArch64 host as on an x86-64 one.
+    const std::string other_arch =
+        host_architecture() == "aarch64" ? "x86_64" : "aarch64";
     util::spit(
         project / "lexe.json",
         std::string_view(
@@ -475,7 +479,7 @@ TEST_CASE("a build that fails verification names the stage and keeps nothing") {
             "  \"name\": \"Wrong Arch\",\n  \"version\": \"1.0.0\",\n"
             "  \"publisher\": { \"name\": \"Me\", \"publicKey\": \"AUTO\" },\n"
             "  \"applicationType\": \"native\",\n"
-            "  \"architectures\": [\"aarch64\"],\n"
+            "  \"architectures\": [\"" + other_arch + "\"],\n"
             "  \"entrypoint\": { \"executable\": \"bin/app\" },\n"
             "  \"install\": { \"scope\": \"user\", \"mode\": \"bundled\" }\n}\n"));
 
@@ -489,7 +493,7 @@ TEST_CASE("a build that fails verification names the stage and keeps nothing") {
     INFO(r.stdout_text);
     CHECK(r.stdout_text.find("FAILED") != std::string::npos);
     CHECK(r.stdout_text.find("payload-role") != std::string::npos);
-    CHECK(r.stdout_text.find("aarch64") != std::string::npos);
+    CHECK(r.stdout_text.find(other_arch) != std::string::npos);
 
     // And it must not have left the package behind.
     INFO("a package that fails its own verification must not survive the build");
@@ -934,7 +938,7 @@ TEST_CASE("install without --yes shows the SPEC primary screen and honors "
     CHECK_FALSE(contains(yes.stdout_text, "Source:"));
     CHECK(contains(yes.stdout_text, pkg.string()));
     CHECK(contains(yes.stdout_text, "Application Type:"));
-    CHECK(contains(yes.stdout_text, "x86_64"));
+    CHECK(contains(yes.stdout_text, host_architecture()));
     CHECK(contains(yes.stdout_text, "Permissions:"));
     CHECK(contains(yes.stdout_text, "Installation:"));
     CHECK(contains(yes.stdout_text, "Updates:"));

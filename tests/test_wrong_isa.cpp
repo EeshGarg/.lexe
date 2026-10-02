@@ -101,12 +101,24 @@ TEST_CASE("a build product for another ISA is refused, and a host one is not") {
     test::write_native_executable(real, "hello from the host");
     REQUIRE(fs::exists(real));
 
-    const fs::path foreign = work / "foreign-aarch64";
-    const std::uint16_t was = copy_with_machine(real, foreign, kEmAarch64);
+    // The foreign ISA is the OTHER of the two this project runs on: an x86-64
+    // host gets an AArch64 specimen, an AArch64 host an x86-64 one. Hard-coding
+    // x86-64 as "the host" made this test fail on the AArch64 worker for a
+    // reason that had nothing to do with the runtime.
+    const fs::path foreign = work / "foreign-isa";
+    const std::vector<std::uint8_t> real_bytes = util::slurp(real);
+    REQUIRE(real_bytes.size() > kEMachineOffset + 1);
+    const std::uint16_t host_machine = static_cast<std::uint16_t>(
+        real_bytes[kEMachineOffset] | (real_bytes[kEMachineOffset + 1] << 8));
+    REQUIRE((host_machine == kEmX8664 || host_machine == kEmAarch64));
+    const std::uint16_t other =
+        host_machine == kEmX8664 ? kEmAarch64 : kEmX8664;
+    const std::uint16_t was = copy_with_machine(real, foreign, other);
 
     // The mutation must have CHANGED something, and the host must actually be
     // the ISA we think it is -- otherwise "refused" below could mean anything.
-    REQUIRE(was == kEmX8664);
+    REQUIRE(was == host_machine);
+    REQUIRE(was != other);
     REQUIRE(fs::file_size(foreign) == fs::file_size(real));
 
     const crypto::KeyPair key = test::make_keypair();
@@ -145,7 +157,7 @@ TEST_CASE("a build product for another ISA is refused, and a host one is not") {
         CHECK(Registry(paths).is_installed("com.example.hostisa"));
     }
 
-    SUBCASE("a valid AArch64 ELF is refused as a host build product") {
+    SUBCASE("a valid ELF for the other ISA is refused as a host build product") {
         const fs::path pkg =
             package_shipping("com.example.wrongisa", foreign);
         Installer installer(paths);

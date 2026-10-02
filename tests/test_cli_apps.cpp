@@ -48,15 +48,15 @@ bool has(const std::string& hay, const std::string& needle) {
 std::string install_app(const fs::path& work) {
     fs::create_directories(work / "proj" / "payload" / "bin");
     test::ElfSpec app;
-    app.interp = "/lib64/ld-linux-x86-64.so.2";
-    app.e_machine = 62;
+    app.interp = test::host_interpreter();
+    app.e_machine = test::host_machine();
     app.needed = {"libc.so.6"};
     app.version_needs = {"GLIBC_2.17"};
     test::write_elf(work / "proj" / "payload" / "bin" / "app", app);
     util::spit(work / "proj" / "lexe.json", std::string_view(R"({
   "lexeVersion":"0.1","id":"com.example.manageme","name":"Manage Me",
   "version":"3.4.5","publisher":{"name":"Acme Publisher","publicKey":"AUTO"},
-  "applicationType":"native","architectures":["x86_64"],
+  "applicationType":"native","architectures":[")" + host_architecture() + R"("],
   "entrypoint":{"executable":"bin/app","arguments":[]},
   "install":{"scope":"user","mode":"bundled"},"permissions":[]
 })"));

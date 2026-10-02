@@ -411,6 +411,19 @@ inline void write_native_executable(const fs::path& dest,
     native_exe_detail::install_executable(built, dest);
 }
 
+/// The host's ELF e_machine and program interpreter, for synthesized fixtures
+/// that must look like THIS machine's binaries. Hard-coding x86-64 here made
+/// install fixtures fail on the AArch64 worker, where the runtime correctly
+/// refuses a package declaring only an architecture the host is not.
+inline std::uint16_t host_machine() { return native_exe_detail::host_elf_machine(); }
+inline std::string host_interpreter() {
+#if defined(__aarch64__)
+    return "/lib/ld-linux-aarch64.so.1";
+#else
+    return "/lib64/ld-linux-x86-64.so.2";
+#endif
+}
+
 /// e_machine for a FORMAT-0.1 §5 architecture id.
 inline std::uint16_t elf_machine_for_arch(const std::string& arch) {
     if (arch == "aarch64") return 183; // EM_AARCH64
