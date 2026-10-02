@@ -97,8 +97,8 @@ tells you what each stage concluded, *before* anything is written anywhere.
 | | |
 |---|---|
 | **x86-64 Linux** | Green. All 15 test lanes pass in one run of the code with the tree held unchanged (unit: 777 cases / 10,094 assertions, and again under ASan+UBSan; 12 acceptance suites; Windows programs through Wine and Proton; 349 foreign programs against direct execution, where one Windows specimen has no usable baseline and is reported, not counted), inside the resource budget. GitHub CI builds and tests Linux and Windows on every push; the CI badge at the top shows its current result. |
-| **AArch64 (ARM64)** | A **physical** AArch64 test worker exists (a tablet running Debian arm64 under PRoot on Android, reached over USB), and an older commit was built and run natively on it. That is **historical** evidence: nothing has been run there against the current code yet, and the decisive test — the *same* signed portable package compiled natively on x86-64 **and** on AArch64 — has not been run. No ARM claim beyond that is made. |
-| **Developer Preview** | **Not ready.** It needs current-code AArch64 evidence, the same-package second-ISA run, and a final evidence audit. |
+| **AArch64 (ARM64)** | Current code (`b5c115f`) **builds natively and runs its non-isolated test levels** on a physical AArch64 worker (a tablet: Debian arm64 under PRoot on Android): unit logic 341/341; install lifecycle and launcher levels pass except the cases that launch an application. Those are refused **by design**: the worker's kernel has no user namespaces, so .LEXE's probe finds no working sandbox and every launch and every portable-source build **fails closed**. So on this worker the same-package second-ISA test reaches identical, signature-verified bytes on both machines, and then AArch64 **refuses to compile them unconfined** — the portable type's central claim is **not demonstrated on AArch64**. No ARM claim beyond that is made. |
+| **Developer Preview** | **Not ready.** The remaining gate is the second-ISA run on an AArch64 Linux host with working unprivileged user namespaces (real ARM64 Linux, not PRoot). |
 
 [docs/HANDOFF.md](docs/HANDOFF.md) is the running record of what is proven and what is next.
 
@@ -170,9 +170,10 @@ prove, and what would settle each one, is written down in
 
 The most load-bearing example: the portable type's central claim is that *the same
 signed package compiles natively on x86_64 and on AArch64*. It is implemented and
-tested on x86-64, a physical AArch64 worker is set up for it, and **the
-same-package test on both ISAs has not been run yet.** So that is what the docs
-say. Emulation is explicitly not accepted as a substitute.
+tested on x86-64. On the physical AArch64 worker the same signed package arrives
+byte-identical and verifies, and then **compilation is refused**: that worker
+has no user namespaces, and .LEXE never builds outside its sandbox. **The claim
+is not demonstrated on AArch64 yet.** So that is what the docs say. Emulation is explicitly not accepted as a substitute.
 
 ## Why it is shaped like this
 
@@ -303,7 +304,7 @@ Kept as prominent as the list above, on purpose.
 
 | | |
 |---|---|
-| **Portable code on a second ISA** | The central claim of the `portable` type. Implemented and tested on x86-64; a physical AArch64 worker exists and ran an older commit natively, but **the same-package test on both ISAs has not been run against current code**. The test is in [docs/TESTING.md](docs/TESTING.md) §7. |
+| **Portable code on a second ISA** | The central claim of the `portable` type. Implemented and tested on x86-64. Run against current code on a physical AArch64 worker: identical signed bytes on both hosts, then the AArch64 build is **refused** (no user namespaces there, so no sandbox, so no build). **Not demonstrated on AArch64.** The test is in [docs/TESTING.md](docs/TESTING.md) §7. |
 | **ISA translation chains** | `fex`, `box64`, `qemu-user` and the layered forms are vocabulary the resolver understands and nothing has ever executed. Needs a host where the translation is real. |
 | **The reboot boundary** | That integration survives a reboot, and that double-clicking a `.lexe` in a file manager opens it, need a real desktop session. [tests/acceptance/REBOOT.md](tests/acceptance/REBOOT.md). |
 | **Windows as a test host** | It builds again in CI (it had not since 2026-09-25, when a POSIX-only guard swallowed a portable function), but **20 of its 751 unit tests fail**: five weeks of changes never ran there. Not yet worked through; the Linux build and suite are unaffected. |

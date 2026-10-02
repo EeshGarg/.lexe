@@ -1,115 +1,132 @@
-# Handoff — end of 2026-10-02
+# Handoff — 2026-10-02, ARM campaign
 
-Where .LEXE stands and what tomorrow starts with. Written to be read cold.
-Earlier handoffs are in git history (`7d7c318`, `29d230b`, `5bccec3`).
+Where .LEXE stands after the first current-code run on physical AArch64.
+Written to be read cold. Earlier handoffs: `55ad1ab`, `5bccec3`, `29d230b`.
 
-## Commits and where they are
+## Verdict: Developer Preview — NOT READY
+
+The Preview claim is *".LEXE portable source materializes and executes native
+products on x86-64 Linux and physical AArch64 hardware"*. The x86-64 half is
+demonstrated. The AArch64 half is **BLOCKED: ENVIRONMENT** — the only AArch64
+worker cannot run .LEXE's sandbox, and .LEXE (correctly, by design) refuses to
+build or launch without it. Nothing was found that is wrong with the product on
+AArch64; the claim is simply not shown there.
+
+## Commits
 
 | | |
 |---|---|
 | **Final HEAD** | the commit that adds this file (docs only); `git log -1` |
-| **Tested code commit** | **`fb477f6`** — the last commit that changes code |
-| **Full local evidence run** | `e6129d3` (see *x86-64*); `fb477f6` differs from it only by changes proven not to alter the Linux build (below) |
-| **GitHub** | `origin/main` = local HEAD, verified with `git ls-remote` after the push, not from the push's own output |
-| **GitHub CI** | Run 36968632887 on `fb477f6`: **linux ✅** (ctest 100%, GUI smoke maps windows), **portability ✅**, **windows ❌** — it now *builds*, but **20 of 751 unit tests fail**. Windows tests last passed in CI on 2026-08-27 (`54f3099`); the build was broken from 2026-09-25, so five weeks of changes never ran there. Includes 3 of tonight's purge walk cases and the retired-`remove` stderr check (same stderr-capture failure as every other Windows CLI-stderr test). Not worked through tonight — top non-ARM item. Docs-only commits after `fb477f6` trigger CI again and will show the same. |
+| **ARM evidence** | **`b5c115f`** — synced as a git bundle, the worker read back `b5c115f1681692ef9bcca92ca434635a73c076ad` itself |
+| **Second-ISA evidence** | **`b5c115f`** on both hosts (each records its own `GIT_SHA`) |
+| **x86-64 evidence** | unit 777/777 (10100 assertions) at `b5c115f`; the last full 15-lane run is `e6129d3` — code since then: test fixtures and scripts only, plus the MSVC fix proven byte-identical on Linux (see `55ad1ab`) |
+| **After `b5c115f`** | `b9bc710` harness-only (second-isa key reuse, claim wording, bundle location) and this docs commit. Neither changes product or test code. |
 
-Working tree clean, no stashes. Checkpoints `28d209d`, `8cd909d`, `91439b9` are
-preserved.
+## The ARM worker
 
-## x86-64
+Samsung SM-X610, Android 16, kernel `aarch64`; Debian 13.7 arm64 under PRoot
+(proot-distro); g++ 14.2.0, git 2.47.3, 8 cores, ~7.7 GB RAM. Reached by USB:
+`adb forward tcp:8022` → Termux sshd, key-only (`IdentitiesOnly`, `BatchMode`,
+password and keyboard-interactive off). `ARM_KEY_AUTH_OK` verified. Build at
+`-j2`.
 
-`scripts/test.sh --all` at `e6129d3`, tree unchanged: **15 passed, 0 failed, 0 skipped, 0 blocked**, exit 0. Unit 777 / 10094 assertions (also under ASan+UBSan), 12 acceptance suites. Resources (new meter): peak RSS **1901 MiB (46%)**, **rolling 10 s CPU peak 20.3%** (policy limit 50%); one-sample peak 93.5% (explore start-up burst, informational); independent `/proc/stat` timeline agrees (worst 10 s 22.5%). `fb477f6` differs from `e6129d3` only by: the Windows guard move (Linux preprocessed `installer.cpp` byte-identical, sha256 f85a7959…), a Proton test now self-contained (passes with real and empty HOME; full unit 777/777 locally), and the CI portability script. Logs: `../lexe-run-evidence/full-run-e6129d3.*`.
+**Measured limits** (not assumed):
 
-## The two policy items closed today
+* Native Termux: `unshare --user` → `EINVAL`. The kernel offers no user
+  namespaces.
+* In the PRoot guest, `unshare --user` **exits 0 without creating anything**
+  (no `/proc/self/ns`, the "new PID namespace" child is PID 2676, not 1).
+* With bubblewrap 0.12 installed in the guest, bwrap gets past the faked
+  namespace calls and fails at `sethostname` (`ENOSYS`).
+* **.LEXE is not fooled**: `lexe sandbox` → *"Isolation is unavailable — launch
+  will be refused"*, user namespaces: no. Its probe executes the backend.
+* doctest under PRoot: `TracerPid` ≠ 0, so doctest thinks a debugger is
+  attached and traps on any failed assertion. Run with `--no-breaks`.
 
-**CPU budget — "sustained" is a rolling 10-second average.** The aggregate CPU
-of the build/test tree averaged over any rolling 10-second window must stay
-≤ 50%; a shorter burst may exceed it. RAM (≤ 4 GiB) has no window. The meter
-(`scripts/resource-meter.sh`) reports and verdicts on that metric, prints the
-single-sample peak as informational, and now counts reaped children's CPU
-(it under-read a short-lived-process storm 9.9% vs 31.3%). Validated against
-`/proc/stat` with a control that must fire (13 cores → 54.3%, OVER BUDGET).
-docs/TESTING.md §10.2a.
+## ARM levels at `b5c115f` (`../lexe-arm-evidence/arm-run-b5c115f.log`)
 
-**Permission approvals — FORMAT-0.1 §9.5.1, implemented as written.** Approval
-persists across reinstall by the **same publisher key** and is discarded by
-purge. Uninstall saves the approved set with the key that received it
-(`approvals/<id>.json`); a fresh install inherits it only for the same App ID
-and the same key, merged with what it requests. Another key, another App ID's
-record, a symlink, a duplicate-key file: nothing is granted. 6 mutants, all
-killed (`tests/test_purge.cpp` CASE 6/6b).
+| Level | Result |
+|---|---|
+| 0 environment, ELF, CLI | **PASS** — `file`: ARM aarch64; `readelf`: AArch64; CLI starts |
+| mapping self-audit | **PASS** (it caught `purge` and `wrong_isa` in no level on the first run) |
+| 1 unit logic | **PASS** 341/341, 6436 assertions |
+| 2 install lifecycle | 285/289. The 4 failures are all launches: refused fail-closed (ENVIRONMENT) |
+| 3 launcher/process | 33/39. The 6 failures are all launches (ENVIRONMENT). 7 hostbuild cases and `wrong_isa` report SKIP/BLOCKED: no sandbox, so no build |
+| 4 sandbox/namespaces | **BLOCKED: ENVIRONMENT** — measured by .LEXE's own probe |
+| 5 Wine/Proton | not applicable on AArch64 |
 
-## Uninstall and purge
+The CLI-run failures do not print their reason inside doctest, so it was shown
+directly (`arm-run-probe.txt`): a native AArch64 package builds and installs
+(rc 0); `lexe run` exits 1 with *"refusing to launch … unconfined"*; the
+installed AArch64 entrypoint, executed directly, runs (rc 7, as written).
 
-* **`lexe uninstall <id>`** — removes the program, its integration and debris.
-  Keeps: persistent data, the trust record (incl. a local block), permission
-  approvals (same key only), compatibility preferences, error history. A
-  reinstall is a returning one.
-* **`lexe purge <id>`** — .LEXE forgets the application, installed or not. A
-  reinstall is a first install. Transactional and fail-closed (journal first,
-  post-check before success; launch/uninstall/trust changes refuse while
-  unfinished; install finishes it). Never touches files outside .LEXE's own
-  storage.
-* Trust is per App ID; purging A never touches B, even with the same key.
-* `lexe remove` is retired (exit 2, names both).
-* Contract: one table, `src/lexe/state/appstate.cpp`, mirrored word for word in
-  docs/REFERENCE-POLICY.md "Uninstall and purge"; a unit test fails if they
-  drift.
+## Second ISA at `b5c115f` (`../lexe-isa-evidence/`)
 
-## Fixed tonight because CI showed them (all pre-existing; CI had been red since at least 2026-09-26)
+| | x86-64 (WSL Ubuntu 24.04) | AArch64 (tablet) |
+|---|---|---|
+| package sha256 | `ea0ffa80…3fc23f` | `ea0ffa80…3fc23f` (re-hashed on arrival, and again by the guest) |
+| signer | Ed25519 `85B8 352D 4D50 1D06 8757 85AC 90FF B25D D5EC 52A6 4C3C D22F 0292 57FD 59C5 514A` | identical verify report |
+| compiler | gcc 13.3.0 | gcc 14.2.0 |
+| install | rc 0, product `5b82a8a6…`, ELF64 x86-64, `build.json` hostIsa x86_64 | **rc 1: "needs an isolated build environment and this host has none … refusing to build unconfined"** |
+| run | rc 0, `COMPILED_FOR=x86_64` | no product |
 
-* **Windows build (MSVC C3861)** — `resolve_runtime_contract` sat inside a
-  POSIX-only `#ifndef _WIN32` block by accident since `e2bbf47`. Moved out. On
-  Linux the preprocessed `installer.cpp` (`g++ -E -P`) is byte-identical before
-  and after, which is why e6129d3's full run still describes the Linux build.
-* **Linux CI, 1 of 777** — a Proton discovery test read the REAL home and so
-  needed Steam installed; it passed here and failed on the runner. Reproduced
-  locally with an empty HOME, then made to arrange its own Steam layout.
-* **Portability job** — Debian 11's `bullseye-security` pool now 404s (LTS
-  ended); apt exit 100 before any .LEXE code ran. First fix (drop the suite)
-  was wrong (held broken packages); now served from snapshot.debian.org pinned
-  2026-09-01 — CI portability passes.
+`compare`: identical bytes PASS, identical signer PASS, x86 product PASS;
+AArch64 product **absent** — the experiment is not void (the inputs matched),
+it is **BLOCKED** on the AArch64 side.
 
-## Observations, not acted on tonight
+Wrong-ISA negative: kept on x86-64 (real host ELF with `e_machine` patched,
+plus its positive control) and now ISA-symmetric — on AArch64 it would patch to
+`EM_X86_64` — but on this worker it reports BLOCKED, because the check sits on a
+build product and no build runs without a sandbox.
 
-* Orphaned Wine service processes from `generate_pe.py`'s proton-wine GUI prefix
-  were still running ~10 h later (~3% CPU each). A generator hygiene leak;
-  cleaned by hand.
-* The explore lane's first parallel engine produces a ~1 s burst (90.9% host
-  wide) at `JOBS=8`; no 10-second window comes near the limit, so JOBS is
-  unchanged.
+## Failures found and how they were classified
 
-## ARM64 — BLOCKED: PHYSICAL DEVICE DISCONNECTED
+* **TEST/HARNESS (fixed):** arm-worker ssh options word-split the key path;
+  `git bundle` refuses a bare SHA; Git Bash rewrote `/sdcard`; Termux storage
+  needed a tap (bytes now go over ssh, hashed both ends); doctest traps under
+  PRoot; suites in no level; FAILED_CASE listed SKIP messages; second-isa had
+  the wrong key, path, transport and an incomplete record; six tests assumed
+  the host is x86-64 (`wrong_isa`, `cli_apps`, `cli_inspect` ×2, `cli` ×2).
+* **SPEC (by design, not a bug):** launch and portable-source builds fail
+  closed without isolation; Tux32 Core 1 is x86_64-only.
+* **ENVIRONMENT:** no user namespaces on the worker (see measurements).
+* **PRODUCT PORTABILITY BUG:** none found.
+* Minor, not acted on: bwrap's own `Can't open source /usr` line reaches the
+  user's stderr above .LEXE's refusal message.
 
-`adb devices` is empty; `scripts/arm-worker.sh probe` → `INFRASTRUCTURE no
-device attached`. Nothing about ARM was attempted. Historical: commit `7f82fe4`
-was built and run natively on the tablet — not evidence for current code.
+## Resources
 
-## Developer Preview: NOT READY
+Tablet build `-j2`; the full first build and each level ran without the
+device or adb dropping once the tablet was unlocked and Termux held a wake
+lock (before that, adb shell hung and sshd stalled at the banner). Tablet
+thermal zones are not readable from Termux; no throttling was measured either
+way. Desktop work was builds at the existing `-j6` and unit runs; it was not
+metered this session.
 
-Remaining gates, all needing the tablet: current-code AArch64 evidence, the
-same-package second-ISA experiment, a final evidence audit.
+## What would make it READY — a decision for you
 
-## First action tomorrow
+The tablet cannot do it as it is. Two ways forward:
 
-1. Connect the tablet (SM-X610) by USB and **unlock** it. `adb devices` must
-   show `R52XA081A5Y   device` (accept the USB-debugging prompt if it says
-   `unauthorized`).
-2. In Termux on the tablet, start `sshd`.
-3. `adb forward tcp:8022 tcp:8022`
-4. `bash scripts/arm-worker.sh probe` — PASS through "termux ssh: reachable" and
-   "debian guest".
-5. `bash scripts/arm-worker.sh sync` — the worker must report exactly the SHA
-   you asked for (sync the tested code commit `fb477f6` or HEAD); any other
-   SHA voids the evidence.
-6. `bash scripts/arm-worker.sh build` — `file` must say `ARM aarch64`.
-7. `bash scripts/arm-worker.sh levels 5` — Levels 0–3 substantive; Level 4
-   measured, not assumed; Level 5 not applicable.
-8. `bash scripts/second-isa.sh all` — the same signed portable-source package on
-   x86-64 and AArch64; package hashes must match or the experiment is void.
-9. Final evidence audit, then the Developer Preview decision.
+1. **Run the same second-ISA script on real AArch64 Linux with unprivileged
+   user namespaces** (a Raspberry Pi 4/5 or any arm64 SBC on Debian/Ubuntu, a
+   cloud arm64 VM such as Graviton/Ampere, an arm64 Mac running a Linux VM).
+   `scripts/second-isa.sh` needs only `LEXE_ARM_*` pointing at it. Recommended.
+2. **A product change**: an explicit, consented "unconfined" mode for hosts
+   without isolation. That is a security-design decision, contrary to the
+   current fail-closed contract, and was **not** made here.
+
+## First actions next time
+
+1. Get an AArch64 Linux host with user namespaces (option 1), or decide (2).
+2. `bash scripts/arm-worker.sh probe | sync | build | levels 4`, then
+   `bash scripts/second-isa.sh build && … local` (in WSL) and `… remote` and
+   `… compare` (from Git Bash). Both must show the same `GIT_SHA`.
+3. Tablet only: unlock it, open Termux, `termux-wake-lock`, `sshd`; then
+   `adb forward tcp:8022 tcp:8022`.
 
 ## Evidence — do not delete
 
-* `../lexe-run-evidence/` — full-run logs and CPU timelines.
-* `../lexe-resource-evidence/*.json` — metered peaks.
+* `../lexe-arm-evidence/` — `arm-run-b5c115f.log`, `arm-run-probe.txt`, levels.
+* `../lexe-isa-evidence/` — both records, `compare-b5c115f.txt`, the package.
+  `../lexe-isa-evidence.trial-f64572f/` is the x86-only trial, not evidence.
+* `../lexe-run-evidence/`, `../lexe-resource-evidence/` — x86-64 runs.
