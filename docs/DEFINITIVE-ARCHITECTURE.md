@@ -286,7 +286,7 @@ real detachment rather than a fire-and-forget:
 * the sandbox is not tied to the process that started it (`--die-with-parent`
   is omitted), or the application would end the instant `lexe run` returned;
 * a **supervisor** holds the version's launch lease for the application's
-  lifetime, so a concurrent `remove` or garbage collection cannot delete the
+  lifetime, so a concurrent `uninstall`, `purge` or garbage collection cannot delete the
   files it is running from. It holds its own descriptor on the lease, because
   an inherited one is released by the starter;
 * **no outcome is invented.** Nothing waited for it, so there is no exit code

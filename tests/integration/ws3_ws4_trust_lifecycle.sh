@@ -188,11 +188,14 @@ step "permission consent stays SEPARATE from publisher trust"
 expect_exit 5 install "$WORK/a3net.lexe" --yes          # permission expansion
 expect_exit 0 install "$WORK/a3net.lexe" --yes --accept-permissions
 
-step "cleanup: purge + forget"
-expect_exit 0 remove "$ID" --purge-data --yes
-expect_exit 0 trust forget "$ID"
+step "cleanup: purge forgets the trust record too"
+# Was purge THEN `trust forget`: `remove --purge-data` kept the record.
+assert_file "$LEXE_HOME/trust/$ID.json"   # the control: it is there to remove
+expect_exit 0 purge "$ID" --yes
 assert_absent "$LEXE_HOME/apps/$ID"
 assert_absent "$LEXE_HOME/trust/$ID.json"
+"$LEXE" trust show "$ID" --json >"$TX_OUT" 2>"$TX_ERR"
+grep_out '"localKeyState": *"first-seen"'
 
 echo
 if [[ "$FAILED" -eq 0 ]]; then echo "### TRUST LIFECYCLE OK — $STEP steps"; exit 0

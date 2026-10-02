@@ -939,7 +939,7 @@ class Runner:
         # Leave nothing running and nothing installed: a whole corpus of installs
         # accumulating in one tree would make every later specimen's isolation
         # claim untestable.
-        self.lexe(["remove", appid, "--purge-data", "--yes"])
+        self.lexe(["purge", appid, "--yes"])
         shutil.rmtree(work, ignore_errors=True)
         return rec
 

@@ -28,7 +28,7 @@ enum class DesktopScope {
     xdg,
     /// `<LEXE_HOME>/{applications,icons,mime}` — a private copy that no
     /// desktop environment scans. Integration still writes it (installation
-    /// records and `lexe remove` stay honest), but it registers nothing.
+    /// records and `lexe uninstall` stay honest), but it registers nothing.
     confined,
 };
 
@@ -56,7 +56,7 @@ public:
 
     /// Installed applications root: `<home>/apps` (FORMAT-0.1 §9).
     std::filesystem::path apps_dir() const { return home_ / "apps"; }
-    /// Per-app persistent data root: `<home>/data` (removed only on --purge-data).
+    /// Per-app persistent data root: `<home>/data` (removed only by `lexe purge`).
     std::filesystem::path data_dir() const { return home_ / "data"; }
     /// Download/scratch cache (update packages land here first).
     const std::filesystem::path& cache_dir() const { return cache_; }

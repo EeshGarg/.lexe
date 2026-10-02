@@ -313,8 +313,8 @@ TEST_CASE("uninstall: removes exactly the recorded files and the app dir") {
     const fs::path data_file = paths.data_dir() / kId / "settings.ini";
     util::spit(data_file, std::string_view("user data"));
 
-    SUBCASE("AppOnly: data survives") {
-        installer.uninstall(kId, Installer::UninstallMode::AppOnly);
+    SUBCASE("uninstall: data survives") {
+        installer.uninstall(kId);
 
         CHECK(!fs::exists(paths.apps_dir() / kId));
         CHECK(!registry.is_installed(kId));
@@ -325,8 +325,8 @@ TEST_CASE("uninstall: removes exactly the recorded files and the app dir") {
         CHECK(fs::exists(data_file));            // data survives app-only removal
     }
 
-    SUBCASE("PurgeData: data dir removed too") {
-        installer.uninstall(kId, Installer::UninstallMode::PurgeData);
+    SUBCASE("purge: data dir removed too") {
+        installer.purge(kId);
 
         CHECK(!fs::exists(paths.apps_dir() / kId));
         for (const std::string& file : record.created_files) {
@@ -341,9 +341,9 @@ TEST_CASE("uninstall: unknown application is NotFoundError") {
     test::TempLexeHome home;
     const Paths paths = Paths::detect();
     Installer installer(paths);
-    CHECK_THROWS_AS(installer.uninstall("com.example.nope",
-                                        Installer::UninstallMode::AppOnly),
-                    NotFoundError);
+    CHECK_THROWS_AS(installer.uninstall("com.example.nope"), NotFoundError);
+    // Purge of an App ID .LEXE knows nothing about is the same answer.
+    CHECK_THROWS_AS(installer.purge("com.example.nope"), NotFoundError);
 }
 
 // --------------------------------------------------------------- rollback

@@ -489,7 +489,7 @@ TEST_CASE("full product lifecycle: keygen -> pack -> verify -> info -> "
 
     // -------------------------------------------------------------- remove
     {
-        const auto r = run_cli({"remove", kId, "--yes"});
+        const auto r = run_cli({"uninstall", kId, "--yes"});
         CHECK(r.exit_code == 0);
         // FORMAT-0.1 §9: the whole app directory is gone.
         CHECK_FALSE(fs::exists(app_dir));

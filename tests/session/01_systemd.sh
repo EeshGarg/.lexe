@@ -178,8 +178,8 @@ acc_true "$("$LEXE" service disable "$SESS_APP_ID" >/dev/null 2>&1; echo $?)" \
 "$LEXE" service enable "$SESS_APP_ID" >/dev/null 2>&1
 acc_equals "$(sess_is_enabled)" "enabled" "re-enabled for the removal test"
 
-"$LEXE" remove "$SESS_APP_ID" --yes >"$ACC_ROOT/work/remove.log" 2>&1
-acc_true "$?" "lexe remove succeeds with a service enabled" \
+"$LEXE" uninstall "$SESS_APP_ID" --yes >"$ACC_ROOT/work/remove.log" 2>&1
+acc_true "$?" "lexe uninstall succeeds with a service enabled" \
     "$(cat "$ACC_ROOT/work/remove.log")"
 acc_equals "$(sess_is_enabled)" "not-found" \
     "removing the application retracted the unit from systemd too"

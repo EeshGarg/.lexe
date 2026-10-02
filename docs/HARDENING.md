@@ -82,6 +82,15 @@ named sites. Corpus:
 7. update applies but health check fails → **automatic rollback** (§E);
 8. rollback interrupted mid-flip;
 9. uninstall interrupted after removing some recorded files.
+10. purge interrupted at any point (`purge-after-journal`, `-after-detach`,
+    `-after-trust`, `-before-commit`), and a purge whose post-check finds a
+    trust record back on disk (`purge-resurrect-trust`). The purge journal
+    `apps/.removing/<id>.purge` is written first and removed last; while it
+    exists the purge is unfinished, `install` and `purge` finish it, and
+    launch, uninstall and the trust commands refuse. Post-condition: never
+    reported as purged while any of the application's state remains, and the
+    next install after it is a first install (`tests/test_purge.cpp` CASE
+    4/4b/4c; a real SIGKILL in `tests/lifecycle/02_interrupted.sh` §8b).
 
 Post-condition after EVERY case: `current` resolves to a complete, verified
 version or the app is cleanly absent; re-running the interrupted operation
@@ -230,7 +239,7 @@ fails if the property regresses.
 | A lock is released the instant its holder dies — no timestamp staleness, no stale-file reaping | `flock(2)` tied to the open file description (`lock.cpp`); owner metadata is diagnostics-only | `test_race_linux` (SIGKILL a holder, another process acquires at once) |
 | A running application is never deleted or GC'd out from under it | launcher holds a shared version lease; uninstall/GC take an exclusive version hold and refuse/skip when it is held (`launcher.cpp`, `installer.cpp`) | `test_lock` (uninstall busy while leased), `test_storage` (gc skips leased), `test_race_linux`, `ws8_ws9_lifecycle.sh` |
 | A launch runs a stable immutable version despite a concurrent update (TOCTOU) | lease-then-use-`versions/<v>`; `current` never re-read; revalidate after leasing (`launcher.cpp`) | `test_race_linux`, `ws8_ws9_lifecycle.sh` (update/rollback while cycling) |
-| Persistent data is never inherited by a different publisher key | `.lexe-data-owner` marker checked before install (`installer.cpp`); `--purge-data` never implied by `--yes` | `test_storage`, `ws8_ws9_lifecycle.sh` |
+| Persistent data is never inherited by a different publisher key | `.lexe-data-owner` marker checked before install (`installer.cpp`); data removed only by the separate `lexe purge`, never by `uninstall` or `--yes` | `test_storage`, `ws8_ws9_lifecycle.sh` |
 | Garbage collection is conservative and lease-aware | `installer.cpp garbage_collect` keeps active/newer/rollback-window/txn/leased; typed `GcReport`; failures never touch active | `test_storage` (gc cases) |
 | Authenticity and local publisher trust are distinct typed states, never one "verified" bit | `trust.{hpp,cpp}` (`SignatureState` vs `PublisherKeyState`/`TrustDecision`); presented uniformly by `presentation.cpp` | `test_trust`, `test_presentation`, `test_gui`, `test_cli` |
 | A changed signing key never silently takes over an App ID or its data | install/update/rollback trust gate (`installer.cpp`) + installed-record key pin, `ChangedKeyError` (exit 7); no `--yes`/`--force`/`--accept-permissions` bypass | `test_installer`, `test_trust`, `test_trust_adversarial`, `ws3_ws4_trust_lifecycle.sh` |

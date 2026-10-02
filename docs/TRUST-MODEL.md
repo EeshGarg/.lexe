@@ -50,8 +50,12 @@ labelled a **local** block, never a global or real-world revocation.
 ## App-ID / key continuity
 
 The (App ID → signing key) binding is pinned locally. It persists across
-ordinary uninstall **and** `--purge-data` (purging application data must not
-silently delete trust history). Only `lexe trust forget` removes it.
+`lexe uninstall`, so a reinstall is a returning one. It is removed by `lexe
+purge`, which makes .LEXE forget the application -- trust decision and any local
+block included -- so a later install is a first install; and by `lexe trust
+forget`, which removes only the trust record. (Until the uninstall/purge
+decision, the old `remove --purge-data` deliberately KEPT the binding, and only
+`trust forget` removed it.)
 
 - **Known matching key** → allowed under the normal update policy; no repeated
   identity prompt.
@@ -71,12 +75,29 @@ The installed-record key pin is kept as defense-in-depth: even if the trust
 record is forgotten while the app stays installed, a changed key is still
 refused.
 
+## Scope: one App ID, never a publisher
+
+Every trust record is scoped to **one App ID**. There is no publisher-wide or
+key-wide trust in this runtime: two applications signed by the same key have two
+records, `lexe trust show` says "this App ID only", and:
+
+- purging App A never reads, rewrites or deletes App B's record, even when A and
+  B share a key (and even when A's App ID is a prefix of B's);
+- a purged App A does **not** regain trust because the same key is trusted for
+  B -- its next install is first-seen;
+- a local block on one App ID blocks that App ID only.
+
+This is what lets purge remove "the trust that belongs to A" by deleting one
+file: nothing else can be A's trust. `tests/test_purge.cpp` (CASE 3) checks it
+against a shared key and an App ID that has A's as its prefix.
+
 ## Key rotation
 
 FORMAT 0.1 has **no authenticated key-rotation mechanism** (`KeyRotationState`
 is `Unsupported`). A changed key is always refused. To accept a new publisher
-key for an App ID the user must deliberately remove the application and its data
-(and forget its trust), or install under a different App ID. The runtime does
+key for an App ID the user must deliberately make .LEXE forget the application
+(`lexe purge <id>`, which removes its data and its trust record), or install
+under a different App ID. The runtime does
 **not** invent an insecure rotation file or unsigned manifest field.
 
 ## Retained-data ownership

@@ -15,6 +15,8 @@
 //    apps/<id>/manifest.json and apps/<id>/hashes.json (FORMAT-0.1 §9).
 
 #include "lexe/install/installer.hpp"
+#include "lexe/state/appstate.hpp"
+#include "lexe/base/identity.hpp"
 
 #include "lexe/package/crypto.hpp"
 #include "lexe/analysis/depengine.hpp"
@@ -552,8 +554,10 @@ InstallResult Installer::install(const fs::path& lexe_file,
                 " is installed under key " + record.publisher_key +
                 " but this package is signed with " +
                 manifest.publisher_public_key +
-                ". FORMAT 0.1 has no authenticated key rotation — remove the "
-                "application (and its data) to accept a new publisher key.");
+                ". FORMAT 0.1 has no authenticated key rotation — `lexe purge " +
+                manifest.id + "` forgets the application, its data and its "
+                "trust record, after which a new publisher key installs as a "
+                "first install.");
         }
         try {
             previous_version = registry.current_version(manifest.id);
@@ -876,6 +880,17 @@ void Installer::sweep_removed_locked(const std::string& id) {
 }
 
 std::optional<std::string> Installer::recover_locked(const std::string& id) {
+    // An interrupted PURGE is finished first, and in full, before this App ID is
+    // considered for anything else. The user asked .LEXE to forget it; an
+    // install that went ahead with the old trust record, data owner or
+    // preferences half in place would install a RETURNING application while
+    // the user was told -- by the act of purging -- that it would be a first
+    // one. If the purge cannot finish (a version is running, a file will not
+    // delete) this throws, and so does the install: fail closed.
+    if (purge_pending(paths_, id)) {
+        purge_locked(id);
+        return std::nullopt;
+    }
     // An interrupted UNINSTALL is finished here too: it is the other
     // transaction that can be cut short, and this is where interrupted work is
     // completed before a new operation on the same id begins.
@@ -999,6 +1014,15 @@ void Installer::recover_all() {
             ids.push_back(entry.path().filename().string());
         }
     }
+    // Unfinished purges: `.removing/<id>.purge`. An application that is not
+    // installed any more has no txn.json to be found by, and that is the
+    // ordinary shape of a purge interrupted after it detached the program.
+    for (const auto& entry : fs::directory_iterator(apps / ".removing", ec)) {
+        const fs::path name = entry.path().filename();
+        if (name.extension() != ".purge") continue;
+        const std::string id = name.stem().string();
+        if (app_id_is_valid(id)) ids.push_back(id);
+    }
     for (const std::string& id : ids) {
         try {
             recover(id);
@@ -1046,35 +1070,80 @@ HealthReport Installer::check_health(const std::string& id) const {
     return report;
 }
 
-void Installer::uninstall(const std::string& id, UninstallMode mode) {
-    const AppLock app_lock =
-        locks_->lock_app_mutation(id, "remove", mutation_wait_);
-    const Registry registry(paths_);
-    const InstallationRecord record = registry.read_record(id); // NotFoundError
-
+std::vector<LaunchLease> Installer::hold_versions_or_refuse(const std::string& id) {
     // Runtime-trust WS9: never delete the binaries of an app that is currently
     // running. A launch holds a SHARED lease on its version; probe every
     // installed version with a non-blocking EXCLUSIVE gc-lock. If any is leased,
     // a live process is using it — refuse with BusyError (the documented
     // policy) rather than silently pull files out from under it. Holding the
     // exclusive locks across the removal also prevents a launch from STARTING
-    // mid-uninstall (its shared lease would block on our exclusive hold).
-    std::vector<LaunchLease> version_locks;
-    // Remembered for the lease-file cleanup at the end: by then the app directory
-    // is gone, so installed_versions() would answer nothing.
-    std::vector<std::string> lease_versions;
+    // mid-removal (its shared lease would block on our exclusive hold).
+    //
+    // Taken ONCE, by the caller, before anything is written. flock conflicts
+    // between two descriptors of the same process, so a second probe inside the
+    // removal would refuse against our own hold.
+    const Registry registry(paths_);
+    std::vector<LaunchLease> held;
     for (const std::string& v : registry.installed_versions(id)) {
-        lease_versions.push_back(v);
         std::optional<LaunchLease> vlock = locks_->try_lock_version_for_gc(id, v);
         if (!vlock.has_value()) {
             throw BusyError("cannot remove " + id +
                             ": it is currently running (version " + v +
                             " is in use); close it and try again");
         }
-        version_locks.push_back(std::move(*vlock));
+        held.push_back(std::move(*vlock));
+    }
+    return held;
+}
+
+void Installer::uninstall(const std::string& id) {
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "uninstall", mutation_wait_);
+    // Not finished here, deliberately. A purge deletes the application's data
+    // and its trust record; uninstall promises never to, and finishing someone
+    // else's purge would break that promise on the one occasion it mattered.
+    if (purge_pending(paths_, id)) throw purge_unfinished_error(id);
+    const Registry registry(paths_);
+    (void)registry.read_record(id); // NotFoundError when not installed
+    const std::vector<LaunchLease> held = hold_versions_or_refuse(id);
+    remove_installation_locked(id);
+}
+
+void Installer::remove_installation_locked(const std::string& id) {
+    const Registry registry(paths_);
+    // The record names files outside apps/<id> that this installation created.
+    // A purge may meet an application whose record is gone or unreadable (that
+    // is what interrupted removals leave); its integration artifacts are still
+    // recorded in integration.json, which remove_app() reads, so nothing is
+    // lost by going on without it.
+    std::optional<InstallationRecord> record;
+    if (registry.is_installed(id)) {
+        try {
+            record = registry.read_record(id);
+        } catch (const NotFoundError&) {
+            throw;
+        } catch (const Error&) {
+            if (!purge_pending(paths_, id)) throw; // uninstall: report it
+        }
     }
 
-    // Application binaries + integration are removed in EVERY mode.
+    // Versions whose lease files are this application's: the ones in its own
+    // directories -- the live one and the remains of an interrupted uninstall.
+    // Never by matching names in locks/ (appstate.hpp says why). Collected
+    // first: once the directory is detached, installed_versions() answers
+    // nothing.
+    std::vector<std::string> lease_versions = registry.installed_versions(id);
+    {
+        std::error_code ec;
+        const fs::path tomb_versions = removal_tomb(id) / "versions";
+        if (fs::is_directory(tomb_versions, ec)) {
+            for (const auto& e : fs::directory_iterator(tomb_versions, ec)) {
+                const std::string v = e.path().filename().string();
+                if (version_string_is_valid(v)) lease_versions.push_back(v);
+            }
+        }
+    }
+
     // Desktop-side removal first: this also forgets the app in the durable
     // integration state, so `lexe doctor` does not later try to "repair" an
     // application that is deliberately gone (§15.1).
@@ -1089,7 +1158,8 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     // Without the guard this loop deleted whatever the record named.
     // Demonstrated: two paths appended to `createdFiles` -- an ordinary
     // directory and an ordinary file, both far outside LEXE_HOME -- and
-    // `lexe remove` destroyed both, the directory RECURSIVELY, while reporting
+    // `lexe remove` (now `uninstall`) destroyed both, the directory
+    // RECURSIVELY, while reporting
     // a clean removal.
     //
     // The same defect was found and fixed once already, in
@@ -1109,7 +1179,8 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     // Refusals are reported rather than swallowed: a record naming a path
     // outside the tree is itself a finding.
     refused_paths_.clear();
-    for (const std::string& file : record.created_files) {
+    for (const std::string& file :
+         record.has_value() ? record->created_files : std::vector<std::string>{}) {
         const fs::path path(file);
         if (!may_delete(paths_, path)) {
             refused_paths_.push_back(file);
@@ -1141,8 +1212,11 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     // mutation of this id (`sweep_removed_locked`, under the same lock).
     sweep_removed_locked(id);
     const fs::path tomb = removal_tomb(id);
-    fs::create_directories(tomb.parent_path());
-    fs::rename(registry.app_dir(id), tomb);
+    std::error_code detach_ec;
+    if (fs::exists(fs::symlink_status(registry.app_dir(id), detach_ec))) {
+        fs::create_directories(tomb.parent_path());
+        fs::rename(registry.app_dir(id), tomb);
+    }
     fault::maybe("uninstall-after-detach");
     util::remove_recursive(tomb);
 
@@ -1150,7 +1224,7 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
     //
     // `locks/` accumulated one `<id>.v.<version>.lease` for every version of every
     // application ever installed, and nothing deleted them -- not even
-    // `remove --purge-data`, the mode whose entire promise is that nothing is
+    // `remove --purge-data` (now `purge`), whose entire promise is that nothing is
     // left. That is the unbounded part: versions accumulate without limit, while
     // applications are bounded by the applications someone installs.
     //
@@ -1179,15 +1253,127 @@ void Installer::uninstall(const std::string& id, UninstallMode mode) {
         fs::remove(registry.version_lease_file(id, version), lock_ec);
     }
 
-    // Cache is removed by AppAndCache and PurgeData; independently of data.
-    if (mode == UninstallMode::AppAndCache || mode == UninstallMode::PurgeData) {
-        util::remove_recursive(registry.app_cache_dir(id));
+    // Everything else the table marks as installation material or debris:
+    // cache, downloaded updates, launch-reference scratch. The cache used to
+    // survive a plain removal (the old `remove` default) for no stated reason
+    // -- debris that outlived the installation because nobody deleted it, which
+    // is exactly what an uninstall must not leave. Persistent data, the trust
+    // record, compatibility preferences and error history are NOT touched
+    // here: they are SurvivesUninstall, and only purge removes them.
+    for (const AppStateEntry& entry : app_state_table(paths_, id)) {
+        if (entry.fate != StateFate::RemovedByUninstall) continue;
+        util::remove_recursive(entry.path); // throws on failure; missing is fine
     }
-    // Persistent data is removed ONLY by an explicit PurgeData. Application-only
-    // removal leaves it (and its owner marker) intact for a later reinstall.
-    if (mode == UninstallMode::PurgeData) {
-        util::remove_recursive(registry.app_data_dir(id));
+}
+
+Installer::PurgeReport Installer::purge(const std::string& id) {
+    const AppLock app_lock =
+        locks_->lock_app_mutation(id, "purge", mutation_wait_);
+    return purge_locked(id);
+}
+
+Installer::PurgeReport Installer::purge_locked(const std::string& id) {
+    PurgeReport report;
+    report.finished_interrupted = purge_pending(paths_, id);
+    const std::vector<AppStateEntry> table = app_state_table(paths_, id);
+
+    // What exists BEFORE: both the report and the "nothing to purge" answer
+    // come from it. The mutation lock (Kept) is not state, and an empty integration
+    // scope is not either.
+    std::vector<AppStateEntry> before;
+    for (const AppStateEntry& e : present_entries(table)) {
+        if (e.fate != StateFate::Kept) before.push_back(e);
     }
+    const bool had_integration =
+        !IntegrationState::load(paths_).scope(id).empty();
+    const Registry registry(paths_);
+    report.was_installed = registry.is_installed(id);
+
+    if (!report.finished_interrupted && before.empty() && !had_integration) {
+        // After a purge, .LEXE genuinely does not know this App ID -- so the
+        // answer is the one a never-installed App ID gets, and it is the right
+        // one: forgetting it was the point. Not 6 ("removed earlier"): nothing
+        // here can show that it ever was.
+        throw NotFoundError(
+            "nothing to purge: .LEXE holds no state for " + id,
+            "Either it was never installed here, or it has already been "
+            "purged.");
+    }
+
+    // Refuse a running application BEFORE the journal is written, so a refusal
+    // leaves nothing behind -- not even an unfinished purge that would then
+    // block the launch the user is in the middle of.
+    const std::vector<LaunchLease> held = hold_versions_or_refuse(id);
+
+    // The journal. From here the purge only rolls FORWARD: an interruption at
+    // any later point is finished by the next `lexe purge` or `lexe install` of
+    // this App ID, and launch, uninstall and the trust commands refuse until
+    // then. Written atomically (temp + rename), so it is either there or not.
+    const fs::path journal = purge_journal(paths_, id);
+    fs::create_directories(journal.parent_path());
+    if (!report.finished_interrupted) {
+        util::write_atomic(journal, std::string("{\"id\":\"") + id +
+                                        "\",\"startedAt\":\"" +
+                                        util::now_utc_string() + "\"}\n");
+    }
+    fault::maybe("purge-after-journal");
+
+    remove_installation_locked(id);
+    fault::maybe("purge-after-detach");
+
+    // Test seam (LEXE_TEST_FAULT only): the bytes of a VALID trust record, to be
+    // written back below as a writer outside this lock might. A valid record,
+    // not a corrupt one, because a valid record is the one that would be
+    // honoured -- "purged, and still trusted" is the failure being simulated.
+    std::optional<std::string> resurrect;
+    if (fault::active("purge-resurrect-trust") &&
+        fs::is_regular_file(registry.trust_record_file(id))) {
+        resurrect = util::slurp_text(registry.trust_record_file(id));
+    }
+
+    // The deliberately persistent state uninstall keeps, in TABLE order -- which
+    // puts the trust record first (appstate.cpp): it is the one that decides
+    // whether a later install of this App ID is a first install.
+    for (const AppStateEntry& entry : table) {
+        if (entry.fate != StateFate::SurvivesUninstall) continue;
+        util::remove_recursive(entry.path);
+        if (entry.path == registry.trust_record_file(id)) {
+            fault::maybe("purge-after-trust");
+        }
+    }
+    fault::maybe("purge-before-commit");
+    if (resurrect.has_value()) {
+        util::write_atomic(registry.trust_record_file(id), *resurrect);
+    }
+
+    // The post-check, and the reason the journal outlives the deletions above.
+    // remove_recursive throws on the failures it can see; this catches the ones
+    // it cannot -- something recreated, a removal that returned success over a
+    // path that is still there -- and refuses to call the purge done. A purge
+    // that leaves the trust record behind and says "purged" is the failure this
+    // operation must never have.
+    std::vector<std::string> remaining;
+    for (const AppStateEntry& e : present_entries(table)) {
+        if (e.fate != StateFate::Kept) remaining.push_back(e.what);
+    }
+    if (!IntegrationState::load(paths_).scope(id).empty()) {
+        remaining.push_back("desktop integration records");
+    }
+    if (!remaining.empty()) {
+        std::string list;
+        for (const std::string& r : remaining) list += "\n  - " + r;
+        throw Error("purge of " + id + " did not complete; still present:" + list,
+                    "Nothing was reported as purged. Fix the cause (file "
+                    "permissions, a read-only mount) and run `lexe purge " +
+                        id + "` again. Until it finishes, " + id +
+                        " cannot be launched, and installing it finishes the "
+                        "purge first.");
+    }
+
+    fs::remove(journal); // throws on failure: the purge is not done until this
+    for (const AppStateEntry& e : before) report.removed.push_back(e.what);
+    if (had_integration) report.removed.push_back("desktop integration");
+    return report;
 }
 
 void Installer::rollback(const std::string& id) {

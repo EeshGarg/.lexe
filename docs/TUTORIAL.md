@@ -128,8 +128,8 @@ refuses to launch rather than running the app unconfined.
 Removing the app leaves its data in place by default — you opt in to deleting it:
 
 ```console
-$ lexe remove org.lexe.reference.probe            # keeps data
-$ lexe remove org.lexe.reference.probe --purge-data --yes   # also deletes data
+$ lexe uninstall org.lexe.reference.probe         # keeps data, trust, preferences
+$ lexe purge org.lexe.reference.probe --yes       # .LEXE forgets it entirely
 ```
 
 Likewise, **uninstalling the runtime** (`./packaging/uninstall.sh`) never removes

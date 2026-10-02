@@ -226,7 +226,7 @@ TEST_CASE("uninstall prunes version leases and keeps the mutation lock") {
     CHECK(fs::exists(registry.version_lease_file(spec.id, "1.0.0")));
     CHECK(fs::exists(registry.version_lease_file(spec.id, "2.0.0")));
 
-    installer.uninstall(spec.id, Installer::UninstallMode::PurgeData);
+    installer.purge(spec.id);
 
     INFO("the unbounded state must go");
     CHECK_FALSE(fs::exists(registry.version_lease_file(spec.id, "1.0.0")));

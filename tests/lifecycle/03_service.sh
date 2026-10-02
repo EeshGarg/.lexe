@@ -127,7 +127,7 @@ sleep 2
 acc_true "$([[ "$(beats)" -gt "${first:-0}" ]] && echo 0 || echo 1)" \
     "it is still beating a moment later, so it is genuinely alive"
 
-remove_out="$("$LEXE" remove "$SVC_ID" --yes 2>&1)"
+remove_out="$("$LEXE" uninstall "$SVC_ID" --yes 2>&1)"
 remove_status=$?
 acc_true "$([[ $remove_status -ne 0 ]] && echo 0 || echo 1)" \
     "uninstalling a RUNNING service is refused (exit $remove_status), not a silent kill"
@@ -217,7 +217,7 @@ acc_true "$([[ -z "$(svc_pids)" ]] && echo 0 || echo 1)" \
     "SIGKILL stops it too (there is no way to refuse that)"
 acc_true "$(grep -q 'stopped cleanly' <(tail -1 "$log" 2>/dev/null) && echo 1 || echo 0)" \
     "and it did NOT record a clean stop — a kill is distinguishable from a shutdown"
-acc_true "$("$LEXE" remove "$SVC_ID" --purge-data --yes >/dev/null 2>&1; echo $?)" \
+acc_true "$("$LEXE" purge "$SVC_ID" --yes >/dev/null 2>&1; echo $?)" \
     "the version lease died with its holder: the service can now be uninstalled"
 
 # --------------------------------------------- 7. what this machine cannot show

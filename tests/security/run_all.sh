@@ -114,7 +114,7 @@ sec_case() {
     status=$?
     if [[ $status -eq 0 ]]; then
         fail "$name: install refused" "lexe install ACCEPTED it (exit 0)"
-        "$LEXE" remove "$SUBJECT_ID" --purge-data --yes >/dev/null 2>&1
+        "$LEXE" purge "$SUBJECT_ID" --yes >/dev/null 2>&1
         return 1
     fi
 
@@ -390,7 +390,7 @@ if [[ -f "$WORK/otherkey.lexe" ]]; then
     acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
         "a same-id package signed by a DIFFERENT key is refused after the first pinned one"
     acc_contains "$out" "key" "and the refusal is about the key, not about the bytes"
-    "$LEXE" remove "$SUBJECT_ID" --purge-data --yes >/dev/null 2>&1
+    "$LEXE" purge "$SUBJECT_ID" --yes >/dev/null 2>&1
 else
     fail "a differently-signed package can be built for the substitution case" \
         "$(sed 's/^/    /' "$WORK/otherbuild.log" 2>/dev/null | head -5)"
@@ -405,7 +405,7 @@ acc_true "$("$LEXE" install "$GOOD" --yes --trust >/dev/null 2>&1; echo $?)" \
     "after all of that, the legitimate package still installs"
 acc_true "$("$LEXE" run "$SUBJECT_ID" --no-terminal >/dev/null 2>&1; echo $?)" \
     "and still runs"
-"$LEXE" remove "$SUBJECT_ID" --purge-data --yes >/dev/null 2>&1
+"$LEXE" purge "$SUBJECT_ID" --yes >/dev/null 2>&1
 
 acc_equals "$(cat "$CANARY_DIR/canary.txt")" "untouched" \
     "the canary outside LEXE_HOME was never touched by any of it"

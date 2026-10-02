@@ -204,7 +204,7 @@ TEST_CASE("an uninstall killed partway leaves the application wholly absent") {
 
     {
         ScopedFault fault("uninstall-after-detach");
-        CHECK_THROWS(Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly));
+        CHECK_THROWS(Installer(paths).uninstall(kId));
     }
 
     // Not vacuous: the payload really is still on disk, just not where

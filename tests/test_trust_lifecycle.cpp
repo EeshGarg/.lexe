@@ -198,7 +198,7 @@ TEST_CASE("rollback cannot reactivate a locally blocked application") {
     CHECK(Registry(paths).current_version(kId) == "2.0.0"); // unchanged
 }
 
-TEST_CASE("uninstall and purge preserve local trust history") {
+TEST_CASE("uninstall preserves local trust history; purge forgets it") {
     test::TempLexeHome home;
     const Paths paths = Paths::detect();
     const fs::path work = home.path() / "work";
@@ -209,13 +209,15 @@ TEST_CASE("uninstall and purge preserve local trust history") {
     REQUIRE(TrustStore(paths).exists(kId));
 
     // Ordinary uninstall keeps trust.
-    Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly);
+    Installer(paths).uninstall(kId);
     CHECK(TrustStore(paths).exists(kId));
 
-    // Purge removes data but still keeps trust history (WS4).
+    // Purge forgets it. This asserted the opposite (WS4: "purge removes data
+    // but still keeps trust history") until the uninstall/purge decision made
+    // purge mean "make .LEXE forget this application".
     Installer(paths).install(build_pkg(work, key, "1.0.0"));
-    Installer(paths).uninstall(kId, Installer::UninstallMode::PurgeData);
-    CHECK(TrustStore(paths).exists(kId));
+    Installer(paths).purge(kId);
+    CHECK_FALSE(TrustStore(paths).exists(kId));
 }
 
 } // TEST_SUITE("trust-lifecycle")

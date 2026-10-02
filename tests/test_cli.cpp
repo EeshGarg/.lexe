@@ -278,7 +278,7 @@ TEST_CASE("help prints the full command surface and exits 0") {
     // The tasteful wordmark + tagline heads the help.
     CHECK(contains(r.stdout_text, "Linux applications, made simple."));
     for (const char* command :
-         {"install", "run", "update", "remove", "repair", "info", "verify",
+         {"install", "run", "update", "uninstall", "purge", "repair", "info", "verify",
           "source set", "rollback", "list", "keygen", "pack", "build",
           "sign-update", "integrate", "analyze", "trust"}) {
         CAPTURE(command);
@@ -732,12 +732,12 @@ TEST_CASE("verify keeps its OK verdict and exit code but notes that install "
     // the reader nothing to compare against.
     CHECK(contains(human.stdout_text, "Expected (already installed):"));
     CHECK(contains(human.stdout_text, "Presented (this package):"));
-    // The way out is the one the refusal itself names, not a second wording:
-    // removing the application alone leaves the trust record and fails again.
-    CHECK(contains(human.stdout_text,
-                   "lexe remove " + std::string(kId) + " --purge-data"));
-    CHECK(contains(human.stdout_text,
-                   "lexe trust forget " + std::string(kId)));
+    // The way out is the one the refusal itself names, not a second wording.
+    // It used to be two commands (`remove --purge-data` kept the trust record,
+    // so `trust forget` had to follow); `purge` forgets both, and the old pair
+    // must not survive in this text to send anyone to a retired verb.
+    CHECK(contains(human.stdout_text, "lexe purge " + std::string(kId)));
+    CHECK_FALSE(contains(human.stdout_text, "--purge-data"));
 
     const auto machine = run_cli({"verify", other.string(), "--json"});
     CHECK(machine.exit_code == 0);
@@ -949,7 +949,7 @@ TEST_CASE("install without --yes shows the SPEC primary screen and honors "
     CHECK(contains(yes.stdout_text, "[y/N]"));
     CHECK(Registry(Paths::detect()).is_installed(kId));
 
-    REQUIRE(run_cli({"remove", kId, "--yes"}).exit_code == 0);
+    REQUIRE(run_cli({"uninstall", kId, "--yes"}).exit_code == 0);
 
     // Answer "n": cancelled, nothing installed -- and exit 5, "permission or
     // consent required", NOT 0.
@@ -1102,7 +1102,7 @@ TEST_CASE("the install prompt refuses an input that may never answer, rather "
         run_cli_open_pipe_stdin({"install", pkg.string(), "--yes"}, work.dir);
     CHECK(yes.exit_code == 0);
     CHECK(Registry(Paths::detect()).is_installed(kId));
-    REQUIRE(run_cli({"remove", kId, "--yes"}).exit_code == 0);
+    REQUIRE(run_cli({"uninstall", kId, "--yes"}).exit_code == 0);
 
     // 2. An answer written down in a FILE is still read and still honoured --
     //    the read is bounded by the file, so it cannot produce the unbounded
@@ -1346,9 +1346,9 @@ TEST_CASE("source set is a positive scheme check, not a two-scheme blocklist") {
     CHECK(registry.read_record(kId).update_url == good);
 }
 
-// ------------------------------------------------------------------ remove
+// ------------------------------------------------------- uninstall / purge
 
-TEST_CASE("remove honors the prompt, --yes, and --purge-data") {
+TEST_CASE("uninstall honors the prompt and --yes; purge forgets the App ID") {
     test::TempLexeHome home;
     TempWorkDir work;
     const crypto::KeyPair key = test::make_keypair();
@@ -1361,12 +1361,12 @@ TEST_CASE("remove honors the prompt, --yes, and --purge-data") {
     util::spit(data_file, std::string_view("precious save data\n"));
 
     // Declined prompt: nothing happens; declining is not an error, so exit 0.
-    const auto declined = run_cli_stdin({"remove", kId}, "n\n", work.dir);
+    const auto declined = run_cli_stdin({"uninstall", kId}, "n\n", work.dir);
     CHECK(declined.exit_code == 0);
     CHECK(registry.is_installed(kId));
 
     // Confirmed prompt: removed, but application data survives.
-    const auto confirmed = run_cli_stdin({"remove", kId}, "y\n", work.dir);
+    const auto confirmed = run_cli_stdin({"uninstall", kId}, "y\n", work.dir);
     CHECK(confirmed.exit_code == 0);
     CHECK_FALSE(registry.is_installed(kId));
     CHECK_FALSE(fs::exists(registry.app_dir(kId)));
@@ -1377,32 +1377,61 @@ TEST_CASE("remove honors the prompt, --yes, and --purge-data") {
     // Both cases used to be 4 with the identical sentence "application not
     // installed: <id>", so a caller could separate "fix your App ID" from "this
     // machine already removed that application" on neither channel it can read
-    // -- and the second is the position the loser of every `remove||remove`
-    // race is in. Same category and same argument as install-already-current
-    // (docs/ERRORS.md §6) and rollback-with-nowhere-to-go.
+    // -- and the second is the position the loser of every
+    // `uninstall||uninstall` race is in. Same category and same argument as
+    // install-already-current (docs/ERRORS.md §6) and rollback-with-nowhere-to-go.
     //
-    // Here the witness is the RETAINED DATA left by the app-only removal above.
-    const auto again = run_cli({"remove", kId, "--yes"});
-    CHECK(again.exit_code == 6);
-    CHECK(again.exit_code != 4); // stated apart: the DISTINCTION is the point
-    CHECK(fs::is_regular_file(data_file)); // and it removed nothing
+    // Two witnesses, each tested ALONE, because a case that only ever has both
+    // holds one of them constant and so cannot tell whether reading it works.
+    SUBCASE("witness: retained data alone (trust record forgotten)") {
+        REQUIRE(run_cli({"trust", "forget", kId, "--force"}).exit_code == 0);
+        const auto again = run_cli({"uninstall", kId, "--yes"});
+        CHECK(again.exit_code == 6);
+        CHECK(again.exit_code != 4); // stated apart: the DISTINCTION is the point
+        CHECK(fs::is_regular_file(data_file)); // and it removed nothing
+    }
+    SUBCASE("witness: trust record alone (data directory gone)") {
+        fs::remove_all(paths.data_dir() / kId);
+        REQUIRE_FALSE(registry.has_retained_data(kId));
+        CHECK(run_cli({"uninstall", kId, "--yes"}).exit_code == 6);
+    }
+    SUBCASE("purge removes both witnesses, so the App ID is unknown again") {
+        // Purge works on an application that is NOT installed: what uninstall
+        // kept is exactly what it exists to remove. (The old `remove
+        // --purge-data` refused here with "nothing to remove", so retained data
+        // could not be purged from the CLI at all once the app was gone.)
+        const auto purged = run_cli({"purge", kId, "--yes"});
+        CHECK(purged.exit_code == 0);
+        CHECK_FALSE(fs::exists(paths.data_dir() / kId));
+        CHECK_FALSE(fs::exists(registry.trust_record_file(kId)));
+        // After a purge nothing here can show it was ever installed: 4, the
+        // never-installed answer, which is the point of forgetting it.
+        CHECK(run_cli({"uninstall", kId, "--yes"}).exit_code == 4);
+        // And a second purge has nothing to do: 4 as well.
+        CHECK(run_cli({"purge", kId, "--yes"}).exit_code == 4);
+    }
 
-    // --purge-data removes the data directory too (FORMAT-0.1 §9).
-    REQUIRE(run_cli({"install", pkg.string(), "--yes"}).exit_code == 0);
-    const auto purged = run_cli({"remove", kId, "--purge-data", "--yes"});
-    CHECK(purged.exit_code == 0);
-    CHECK_FALSE(fs::exists(paths.data_dir() / kId));
+    // An App ID this machine never installed is 4, in this same case, because
+    // `CHECK(rc == 6)` on its own is satisfied by an `uninstall` that always
+    // answers 6.
+    CHECK(run_cli({"uninstall", "com.example.absent", "--yes"}).exit_code == 4);
+}
 
-    // Still 6 with the data gone: the surviving witness is now the local trust
-    // record, which `remove` deliberately does not delete. A test that only
-    // covered the retained-data case would hold the other witness constant and
-    // so could not tell whether it worked at all.
-    CHECK(run_cli({"remove", kId, "--yes"}).exit_code == 6);
-
-    // An App ID this machine never installed is still 4, in this same case,
-    // because `CHECK(rc == 6)` on its own is satisfied by a `remove` that
-    // always answers 6.
-    CHECK(run_cli({"remove", "com.example.absent", "--yes"}).exit_code == 4);
+TEST_CASE("`lexe remove` is retired: a usage error that names both replacements") {
+    test::TempLexeHome home;
+    // Not an alias, on purpose: `remove --purge-data` kept the trust record and
+    // `purge` deletes it, so an alias would change what an old script does.
+    for (const std::vector<std::string>& argv :
+         {std::vector<std::string>{"remove", "com.example.any"},
+          std::vector<std::string>{"remove", "com.example.any", "--purge-data",
+                                   "--yes"}}) {
+        // run_cli_err, not run_cli: run_cli leaves stderr uncaptured, and an
+        // assertion on its empty stderr_text proves nothing either way.
+        const auto r = run_cli_err(argv);
+        CHECK(r.exit_code == 2);
+        CHECK(contains(r.stderr_text, "lexe uninstall <id>"));
+        CHECK(contains(r.stderr_text, "lexe purge <id>"));
+    }
 }
 
 // ------------------------------------------------------------------ repair

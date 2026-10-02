@@ -589,8 +589,8 @@ inline ViewModel build_view_model(const std::optional<Manifest>& manifest,
                                          payload_bytes);
         vm.after_install_text =
             "Installs under your home directory — no root, nothing system-wide.\n"
-            "Remove it any time with:  lexe remove " + m.id + "\n"
-            "Your data is kept unless you also pass --purge-data.";
+            "Remove it any time with:  lexe uninstall " + m.id + "\n"
+            "Your data is kept unless you run  lexe purge " + m.id + "  instead.";
         vm.updates_text = format_updates(m.updates_enabled, m.updates_manifest_url,
                                          m.updates_channel);
         vm.channels = channel_options(m.updates_channel);

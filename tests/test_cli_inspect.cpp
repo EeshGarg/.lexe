@@ -153,8 +153,8 @@ TEST_CASE("inspect keeps its PASSED verdict but flags a package `install` "
     CHECK(has(r.stdout_text, "Expected (already installed):"));
     CHECK(has(r.stdout_text, "Presented (this package):"));
     // The remedy the refusal itself names — not a second, divergent wording.
-    CHECK(has(r.stdout_text, "lexe remove com.example.inspectme --purge-data"));
-    CHECK(has(r.stdout_text, "lexe trust forget com.example.inspectme"));
+    CHECK(has(r.stdout_text, "lexe purge com.example.inspectme"));
+    CHECK_FALSE(has(r.stdout_text, "--purge-data"));
 
     const json j = json::parse(
         run({"inspect", second.string(), "--json"}).stdout_text);

@@ -80,10 +80,9 @@ AuthenticityView present_authenticity(const TrustEvaluation& eval,
         v.remedy =
             "Confirm with the publisher — not with the package — that they "
             "rotated their key.\n"
-            "To accept the new key you must remove the application AND clear "
-            "its local trust record, which deletes its data:\n"
-            "  lexe remove " + eval.app_id + " --purge-data\n"
-            "  lexe trust forget " + eval.app_id + "\n"
+            "To accept the new key, make .LEXE forget this application -- "
+            "its data and its trust record included:\n"
+            "  lexe purge " + eval.app_id + "\n"
             "Installing under a different App ID keeps the existing one.";
         break;
     case PublisherKeyState::Blocked:

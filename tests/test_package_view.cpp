@@ -270,8 +270,8 @@ TEST_CASE("format_trust presents authenticity + local trust, first-seen is cauti
     // trust record survives.
     CHECK_FALSE(ch.expected_fingerprint.empty());
     CHECK(ch.expected_fingerprint != ch.fingerprint);
-    CHECK(contains(ch.remedy, "lexe remove com.example.hello --purge-data"));
-    CHECK(contains(ch.remedy, "lexe trust forget com.example.hello"));
+    CHECK(contains(ch.remedy, "lexe purge com.example.hello"));
+    CHECK_FALSE(contains(ch.remedy, "--purge-data"));
 
     // A key that has NOT changed has nothing to compare and nothing to remedy.
     CHECK(fs_lines.expected_fingerprint.empty());
@@ -687,8 +687,9 @@ TEST_CASE("view model reflects SPEC manifest example fields") {
     CHECK(vm.install_text == "Current user only\n126 MB");
     // "After install:" answers where it goes and how to undo it, by id.
     CHECK(contains(vm.after_install_text, "home directory"));
-    CHECK(contains(vm.after_install_text, "lexe remove com.example.application"));
-    CHECK(contains(vm.after_install_text, "purge-data"));
+    CHECK(contains(vm.after_install_text, "lexe uninstall com.example.application"));
+    CHECK(contains(vm.after_install_text, "lexe purge com.example.application"));
+    CHECK_FALSE(contains(vm.after_install_text, "purge-data")); // retired flag
     // "Verify later:" answers whether trust can be re-checked after install.
     CHECK(contains(vm.verify_later_text, "every launch"));
     CHECK(contains(vm.verify_later_text, "lexe inspect"));

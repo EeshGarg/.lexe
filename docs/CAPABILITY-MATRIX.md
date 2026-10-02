@@ -53,7 +53,7 @@ Never `CLI logic <-> GUI logic <-> engine logic`.
 | Update | `install/updater` | `lexe update` | yes | n/a | `test_updater.cpp`, integration lane, lifecycle 01 |
 | Roll back | `install/installer` | `lexe rollback` | yes | n/a | lifecycle 01, `test_repair_after_rollback.cpp` |
 | Repair | `install/installer` | `lexe repair` | yes | n/a | lifecycle 01/02, `test_repair_after_rollback.cpp` |
-| Uninstall (3 modes) | `install/installer` | `lexe remove [--purge-data]` | yes — all three modes | n/a | `test_installer.cpp`, lifecycle 01 |
+| Uninstall and purge | `install/installer`, `state/appstate` | `lexe uninstall`, `lexe purge` | yes — both, including interrupted purge | n/a | `test_purge.cpp`, `test_installer.cpp`, lifecycle 01/02 |
 | Reclaim old versions | `install/installer` | `lexe gc` | yes — Reclaim disk, on the Uninstall page, keeping one older version so Roll back still works | n/a | `test_installer.cpp`, `test_ui.cpp`, integration lane |
 | List installed applications | `state/registry` | `lexe apps`, `lexe list` | yes — Apps | n/a | `test_cli_apps.cpp`, `test_registry.cpp` |
 

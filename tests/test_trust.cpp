@@ -196,18 +196,17 @@ TEST_CASE("evaluate: a changed key is rejected without a bypass") {
 
     // The refusal must describe the procedure that ACTUALLY clears this. It
     // used to say "remove the application and its data to accept a new
-    // publisher" — and that alone does not work: `lexe remove --purge-data`
-    // leaves the local trust record in place, so the next install is refused
-    // identically and the user has followed the instructions for nothing.
-    // Verified end to end: remove --purge-data alone is still refused; adding
-    // `lexe trust forget` succeeds.
+    // publisher" — and that alone did not work: `lexe remove --purge-data`
+    // left the local trust record in place, so `lexe trust forget` had to
+    // follow. `lexe purge` forgets the record too; that it alone lets the new
+    // key install is proven end to end in test_purge.cpp.
     try {
         e.throw_if_rejected();
         FAIL("a changed key must be refused");
     } catch (const ChangedKeyError& err) {
         const std::string what = err.what();
-        CHECK(what.find("lexe trust forget") != std::string::npos);
-        CHECK(what.find("--purge-data") != std::string::npos);
+        CHECK(what.find("lexe purge com.") != std::string::npos);
+        CHECK(what.find("--purge-data") == std::string::npos);
         // Both fingerprints are shown as PREFIXES; say so, or the reader
         // compares five groups against the sixteen every other surface prints
         // and concludes they are different keys.

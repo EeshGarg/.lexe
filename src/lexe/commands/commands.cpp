@@ -23,6 +23,7 @@
 #include "lexe/base/error.hpp"
 #include "lexe/base/http.hpp"
 #include "lexe/install/installer.hpp"
+#include "lexe/state/appstate.hpp"
 #include "lexe/sandbox/isolation.hpp"
 #include "lexe/base/json_strict.hpp"
 #include "lexe/runtime/launcher.hpp"
@@ -92,8 +93,11 @@ constexpr const char* kRunUsage =
     "[--attached-terminal] [--quiet-chain] [-- <args...>]";
 constexpr const char* kUpdateUsage =
     "usage: lexe update <id> | --all [--check]";
-constexpr const char* kRemoveUsage =
-    "usage: lexe remove <id> [--remove-cache] [--purge-data] [--yes]";
+constexpr const char* kUninstallUsage = "usage: lexe uninstall <id> [--yes]";
+constexpr const char* kPurgeUsage = "usage: lexe purge <id> [--yes]";
+constexpr const char* kRemoveRetiredUsage =
+    "usage: lexe remove is retired -- use `lexe uninstall <id>` or "
+    "`lexe purge <id>`";
 constexpr const char* kRepairUsage =
     "usage: lexe repair <id> [--approve-compile]";
 constexpr const char* kInfoUsage = "usage: lexe info <file.lexe | id> [--json]";
@@ -383,14 +387,15 @@ std::optional<std::string> retained_data_owner(const Registry& registry,
 ///
 /// Nothing records "was installed, now is not" directly, so this reads the two
 /// residues an install leaves OUTSIDE the application directory and that
-/// `remove` deliberately does not delete:
+/// `uninstall` deliberately does not delete (`purge` deletes both, which is why
+/// a purged App ID answers 4 like one never installed):
 ///
 ///   * the local trust record (`trust/<id>.json`) with a bound publisher key.
 ///     `TrustStore::record_accept` is called from exactly two places, both of
 ///     them AFTER a committed install, so a record carrying a key means this
 ///     App ID was installed here. A keyless record is NOT evidence: `lexe trust
 ///     block <id>` creates one for an App ID that was never installed.
-///   * retained application data. `remove` without `--purge-data` leaves it on
+///   * retained application data. `uninstall` leaves it on
 ///     purpose, and it only exists because an installed application wrote it.
 ///     Kept as a second witness because `lexe trust forget --force` can delete
 ///     the first.
@@ -959,32 +964,45 @@ int cmd_update(const std::vector<std::string>& args) {
     return failed ? 1 : 0;
 }
 
-int cmd_remove(const std::vector<std::string>& args) {
-    const Parsed parsed = parse_arguments(
-        args, {"--remove-cache", "--purge-data", "--yes"}, {}, false,
-        kRemoveUsage);
-    require_positionals(parsed, 1, kRemoveUsage);
-    const std::string& id = parsed.positionals[0];
-    const bool purge = parsed.flags.count("--purge-data") != 0;
-    const bool remove_cache = parsed.flags.count("--remove-cache") != 0;
+/// `lexe remove` is RETIRED, not aliased, and the reason is in the flag it had.
+///
+/// It had three modes: app-only (kept data AND cache), `--remove-cache`, and
+/// `--purge-data`, which deleted data but deliberately KEPT the local trust
+/// record. `lexe purge` deletes the trust record too -- that is its point. An
+/// alias from `remove --purge-data` to `purge` would therefore start deleting
+/// trust decisions under a name whose documented behaviour was to keep them,
+/// and `remove` mapped to `uninstall` would change what happens to the cache.
+/// Two verbs that mean what they say are the decision; a third that silently
+/// means something new would undo it. docs/COMPATIBILITY.md promises exit codes,
+/// not verb names, and this is a usage error (2) that names both replacements.
+int cmd_remove_retired(const std::vector<std::string>& args) {
+    (void)args;
+    throw UsageError(
+        "`lexe remove` has been replaced by two commands:\n"
+        "  lexe uninstall <id>   remove the program; keep its data, its trust "
+        "decision, its preferences and its error history\n"
+        "  lexe purge <id>       make .LEXE forget it: the program, its data, its "
+        "trust decision (including any local block), its preferences and its "
+        "error history\n"
+        "`remove --purge-data` used to KEEP the trust decision, and `purge` does "
+        "not -- which is why neither is an alias for the old command.");
+}
 
-    // Purge is a superset of remove-cache. Data removal happens ONLY on the
-    // explicit --purge-data flag; --yes confirms the prompt but never widens
-    // the scope to include persistent data (runtime-trust WS8).
-    using Mode = Installer::UninstallMode;
-    const Mode mode = purge          ? Mode::PurgeData
-                      : remove_cache ? Mode::AppAndCache
-                                     : Mode::AppOnly;
+int cmd_uninstall(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--yes"}, {}, false, kUninstallUsage);
+    require_positionals(parsed, 1, kUninstallUsage);
+    const std::string& id = parsed.positionals[0];
 
     const Paths paths = Paths::detect();
     const Registry registry(paths);
     if (!registry.is_installed(id)) {
-        // Two different facts shared one code AND one sentence. `remove <typo>`
-        // and `remove <application this machine removed an hour ago>` both
-        // exited 4 saying "application not installed: <id>", so a caller could
-        // tell them apart on neither channel it can read. An independent pass
-        // measured 4 in 40 of 40 forced `uninstall||uninstall` races, where the
-        // loser is always in the second position.
+        // Two different facts shared one code AND one sentence. `uninstall
+        // <typo>` and `uninstall <application this machine removed an hour
+        // ago>` both exited 4 saying "application not installed: <id>", so a
+        // caller could tell them apart on neither channel it can read. An
+        // independent pass measured 4 in 40 of 40 forced `uninstall||uninstall`
+        // races, where the loser is always in the second position.
         //
         // The second one is not an error about the argument: the App ID is
         // real, this machine knows it, and the state the command asks for
@@ -993,65 +1011,78 @@ int cmd_remove(const std::vector<std::string>& args) {
         // installing an already-current version (bdf3156) and for rolling back
         // with nowhere to go (28e174d).
         //
-        // Not exit 0, for §6's reason: exit 0 from `remove` asserts that this
-        // invocation removed the application, and `lexe remove app && rm -rf
+        // Not exit 0, for §6's reason: exit 0 from `uninstall` asserts that this
+        // invocation removed the application, and `lexe uninstall app && rm -rf
         // /srv/app-data` should not be told a removal happened here that did
         // not. Not 4 either, which is what a mistyped id still gets, asserted
-        // beside this in the tests.
+        // beside this in the tests -- and what a PURGED App ID gets, because a
+        // purge leaves nothing that could show it was ever here.
+        if (purge_pending(paths, id)) throw purge_unfinished_error(id);
         if (was_installed_here(paths, registry, id)) {
             throw BusyError(
-                "nothing to remove: " + id +
-                    " is not installed (this machine removed it earlier)",
+                "nothing to uninstall: " + id +
+                    " is not installed (this machine uninstalled it earlier)",
                 "Nothing changed because the requested state already holds. "
-                "This App ID was installed here and is not installed now" +
-                    std::string(registry.has_retained_data(id)
-                                    ? "; its application data is still "
-                                      "retained, and `lexe remove " +
-                                          id + " --purge-data` deletes that"
-                                    : "") +
-                    ". An App ID this machine has never installed would have "
-                    "exited 4.");
+                "What uninstall keeps for a returning installation -- data, "
+                "trust decision, preferences, error history -- is still here; "
+                "`lexe purge " + id + "` removes it. An App ID this machine "
+                "has never installed would have exited 4.");
         }
         throw NotFoundError("application not installed: " + id);
     }
     if (parsed.flags.count("--yes") == 0) {
-        std::string question;
-        switch (mode) {
-        case Mode::PurgeData:
-            question = "Remove " + id + " and permanently delete its data?";
-            break;
-        case Mode::AppAndCache:
-            question = "Remove " + id + " and its cache (data preserved)?";
-            break;
-        case Mode::AppOnly:
-            question = "Remove " + id + "?";
-            break;
-        }
-        if (!confirm(question)) {
+        if (!confirm("Uninstall " + id + "? Its data, trust decision and "
+                     "preferences are kept for a later reinstall.")) {
             // Declining the prompt is a valid user choice, not an error.
-            std::cerr << "removal cancelled\n";
+            std::cerr << "uninstall cancelled\n";
             return 0;
         }
     }
-    Installer(paths).uninstall(id, mode);
-    switch (mode) {
-    case Mode::PurgeData:
-        std::cout << "Removed " << id << " (application data purged)\n";
-        break;
-    case Mode::AppAndCache:
-        std::cout << "Removed " << id << " (cache cleared; data preserved)\n";
-        break;
-    case Mode::AppOnly:
-        std::cout << "Removed " << id << "\n";
-        // Report retained data so the user knows a later reinstall inherits it,
-        // and how to reclaim the space (WS8 reinstall/orphaned-data behavior).
-        if (registry.has_retained_data(id)) {
-            std::cout << "  Application data retained; reinstalling " << id
-                      << " will reuse it. Use `lexe remove " << id
-                      << " --purge-data` to delete it.\n";
-        }
-        break;
+    Installer(paths).uninstall(id);
+    std::cout << "Uninstalled " << id << "\n";
+    // Say what was kept, from the same table the installer used -- a reinstall
+    // inherits exactly these, and the user should not have to guess which.
+    std::vector<std::string> kept;
+    for (const AppStateEntry& e : present_entries(app_state_table(paths, id))) {
+        if (e.fate == StateFate::SurvivesUninstall) kept.push_back(e.what);
     }
+    if (!kept.empty()) {
+        std::cout << "  Kept for a later reinstall:\n";
+        for (const std::string& k : kept) std::cout << "    - " << k << "\n";
+        std::cout << "  `lexe purge " << id << "` removes these as well.\n";
+    }
+    return 0;
+}
+
+int cmd_purge(const std::vector<std::string>& args) {
+    const Parsed parsed =
+        parse_arguments(args, {"--yes"}, {}, false, kPurgeUsage);
+    require_positionals(parsed, 1, kPurgeUsage);
+    const std::string& id = parsed.positionals[0];
+
+    const Paths paths = Paths::detect();
+    // FORMAT-0.1 §9.5: removing persistent data "MUST require an explicit,
+    // separate instruction" and a confirmation of removal "MUST NOT be
+    // interpreted as consent to discard data". `purge` IS that separate
+    // instruction -- a different verb from `uninstall`, not a flag on it -- and
+    // the question below names the data and the trust decision explicitly.
+    if (parsed.flags.count("--yes") == 0) {
+        if (!confirm("Purge " + id + "? .LEXE will forget it entirely: the "
+                     "program, its data, its trust decision (including any "
+                     "local block), its preferences and its error history. "
+                     "This cannot be undone.")) {
+            std::cerr << "purge cancelled\n";
+            return 0;
+        }
+    }
+    const Installer::PurgeReport report = Installer(paths).purge(id);
+    std::cout << (report.finished_interrupted ? "Finished purging " : "Purged ")
+              << id << "; .LEXE holds no state for it now\n";
+    for (const std::string& r : report.removed) {
+        std::cout << "  removed: " << r << "\n";
+    }
+    std::cout << "  Files the application wrote outside .LEXE's own storage, "
+                 "if any, were not touched.\n";
     return 0;
 }
 
@@ -1465,7 +1496,7 @@ constexpr const char* kCompletionUsage =
 const std::vector<std::string>& known_commands() {
     static const std::vector<std::string> k = {
         "install",  "open",    "run",     "list",     "apps",     "info",
-        "inspect",  "update",  "rollback", "repair",  "remove",   "gc",
+        "inspect",  "update",  "rollback", "repair",  "uninstall", "purge", "gc",
         "build",    "analyze", "sdk",     "pack",     "keygen",   "sign-update",
         "verify",   "trust",   "source",  "config",   "integrate", "doctor",
         "errors",   "compat",  "launch-ref", "completion", "version", "help",
@@ -2247,6 +2278,7 @@ int cmd_trust_show(const std::string& id, bool as_json) {
     const Paths paths = Paths::detect();
     const Registry registry(paths);
     const bool installed = registry.is_installed(id);
+    const bool purging = purge_pending(paths, id);
 
     std::optional<TrustRecord> rec;
     std::string corrupt_reason;
@@ -2264,6 +2296,11 @@ int cmd_trust_show(const std::string& id, bool as_json) {
         ordered_json j;
         j["appId"] = id;
         j["installed"] = installed;
+        // Every trust record is scoped to ONE App ID. .LEXE has no
+        // publisher-wide trust: two applications signed by the same key have
+        // two records, and purging one never touches the other.
+        j["scope"] = "app-id";
+        j["purgePending"] = purging;
         if (!corrupt_reason.empty()) {
             j["localKeyState"] = "corrupt";
             j["detail"] = corrupt_reason;
@@ -2293,6 +2330,13 @@ int cmd_trust_show(const std::string& id, bool as_json) {
 
     std::cout << "Application: " << id << "\n";
     std::cout << "Installed:   " << (installed ? "yes" : "no") << "\n";
+    std::cout << "Scope:       this App ID only (.LEXE keeps no "
+                 "publisher-wide trust)\n";
+    if (purging) {
+        std::cout << "Purge:       INTERRUPTED and not finished -- this record "
+                     "is about to be deleted; run `lexe purge " << id
+                  << "`\n";
+    }
     if (!corrupt_reason.empty()) {
         std::cout << "Local trust: CORRUPT — refusing to use it (fail closed)\n"
                   << "  " << corrupt_reason << "\n";
@@ -2394,6 +2438,10 @@ int cmd_trust(const std::vector<std::string>& args) {
         require_positionals(p, 1, kTrustUsage);
         const std::string& id = p.positionals[0];
         const AppLock lock = trust_mutation_lock(paths, id);
+        // A trust change in the middle of an unfinished purge would be
+        // undone (or half-undone) by the purge finishing. Refused, under
+        // the same lock the purge takes, so the two cannot interleave.
+        if (purge_pending(paths, id)) throw purge_unfinished_error(id);
         TrustStore(paths).block(id);
         std::cout << "Blocked " << id
                   << " locally — install, update and launch are now refused "
@@ -2405,6 +2453,10 @@ int cmd_trust(const std::vector<std::string>& args) {
         require_positionals(p, 1, kTrustUsage);
         const std::string& id = p.positionals[0];
         const AppLock lock = trust_mutation_lock(paths, id);
+        // A trust change in the middle of an unfinished purge would be
+        // undone (or half-undone) by the purge finishing. Refused, under
+        // the same lock the purge takes, so the two cannot interleave.
+        if (purge_pending(paths, id)) throw purge_unfinished_error(id);
         TrustStore(paths).unblock(id); // NotFoundError when nothing to unblock
         std::cout << "Unblocked " << id << " locally\n";
         return 0;
@@ -2416,6 +2468,10 @@ int cmd_trust(const std::vector<std::string>& args) {
         const std::string& id = p.positionals[0];
         const bool force = p.flags.count("--force") != 0;
         const AppLock lock = trust_mutation_lock(paths, id);
+        // A trust change in the middle of an unfinished purge would be
+        // undone (or half-undone) by the purge finishing. Refused, under
+        // the same lock the purge takes, so the two cannot interleave.
+        if (purge_pending(paths, id)) throw purge_unfinished_error(id);
         const Registry registry(paths);
         const bool installed = registry.is_installed(id);
         const bool retained = registry.has_retained_data(id);
@@ -2423,9 +2479,9 @@ int cmd_trust(const std::vector<std::string>& args) {
             throw UsageError(
                 "refusing to forget local trust for " + id + " while it is " +
                 (installed ? "still installed" : "holding retained data") +
-                ". Remove it first (`lexe remove " + id +
-                (retained ? " --purge-data" : "") +
-                "`), or pass --force to forget trust anyway.");
+                ". `lexe purge " + id + "` forgets the application "
+                "entirely, trust included; or pass --force to forget only "
+                "its trust and keep the rest.");
         }
         TrustStore(paths).forget(id);
         std::cout << "Forgot local trust history for " << id << "\n";
@@ -2524,7 +2580,7 @@ std::string trust_label(const std::string& state) {
 
 // The installed-application manager (DX4): a richer `list` — publisher, version,
 // install date, last launch, disk usage, and local trust for every app. Actions
-// are the existing verbs (run / update / repair / verify / remove / trust).
+// are the existing verbs (run / update / repair / verify / uninstall / trust).
 int cmd_apps(const std::vector<std::string>& args) {
     const Parsed parsed = parse_arguments(args, {"--json"}, {}, false, kAppsUsage);
     require_positionals(parsed, 0, kAppsUsage);
@@ -2612,7 +2668,7 @@ int cmd_apps(const std::vector<std::string>& args) {
         row("trust", a.trust);
         std::cout << "\n";
     }
-    std::cout << "Manage: lexe run|update|repair|verify|remove <id>"
+    std::cout << "Manage: lexe run|update|repair|verify|uninstall|purge <id>"
                  "  ·  lexe info <id>  ·  lexe trust show <id>\n";
     return 0;
 }
@@ -4001,8 +4057,10 @@ std::string usage_text() {
            "version\n"
            "  repair <id>                              verify and repair "
            "installed files\n"
-           "  remove <id> [--purge-data] [--yes]       uninstall an "
-           "application\n"
+           "  uninstall <id> [--yes]                   remove the program; "
+           "keep data, trust and preferences\n"
+           "  purge <id> [--yes]                       make .LEXE forget an "
+           "application entirely\n"
            "  gc <id> [--keep <n>]                     reclaim old versions "
            "(keeps active + n)\n"
            "\n"
@@ -4102,8 +4160,23 @@ const std::map<std::string, CommandHelp>& command_help() {
         {"repair",
          {"Re-verify an installation and restore any file that fails its hash.",
           kRepairUsage}},
-        {"remove", {"Uninstall an application, optionally purging its data.",
-                    kRemoveUsage}},
+        {"uninstall",
+         {"Remove the installed program. Its data, local trust decision, "
+          "compatibility preferences and error history are kept, so a "
+          "reinstall is a returning one.",
+          kUninstallUsage,
+          "  lexe uninstall com.example.app\n"
+          "  lexe uninstall com.example.app --yes   no prompt (scripts)"}},
+        {"purge",
+         {"Make .LEXE forget an application: program, data, trust decision "
+          "(including a local block), preferences and error history. A later "
+          "install is a first install. Files the application wrote outside "
+          ".LEXE's own storage are never touched.",
+          kPurgeUsage,
+          "  lexe purge com.example.app\n"
+          "  lexe purge com.example.app --yes       no prompt (scripts)"}},
+        {"remove", {"Retired: replaced by `uninstall` and `purge`.",
+                    kRemoveRetiredUsage}},
         {"gc", {"Reclaim disk from old versions (keeps the active one plus n).",
                 kGcUsage}},
         {"build",
@@ -4258,7 +4331,9 @@ int dispatch(const std::vector<std::string>& args) {
     if (command == "install") return cmd_install(rest);
     if (command == "run") return cmd_run(rest);
     if (command == "update") return cmd_update(rest);
-    if (command == "remove") return cmd_remove(rest);
+    if (command == "uninstall") return cmd_uninstall(rest);
+    if (command == "purge") return cmd_purge(rest);
+    if (command == "remove") return cmd_remove_retired(rest);
     if (command == "repair") return cmd_repair(rest);
     if (command == "info") return cmd_info(rest);
     if (command == "inspect") return cmd_inspect(rest);

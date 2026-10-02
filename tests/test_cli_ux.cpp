@@ -107,7 +107,8 @@ TEST_CASE("every command answers --help with its own usage, not the banner") {
     // The full command surface, from the CLI's own list.
     for (const char* cmd :
          {"install", "run", "list", "apps", "info", "inspect", "update",
-          "rollback", "repair", "remove", "gc", "build", "analyze", "sdk",
+          "rollback", "repair", "uninstall", "purge", "remove", "gc", "build",
+          "analyze", "sdk",
           "pack", "keygen", "sign-update", "verify", "trust", "source",
           "config", "integrate", "completion", "version", "help"}) {
         const util::ProcessResult r = run({cmd, "--help"});

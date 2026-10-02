@@ -582,7 +582,7 @@ UNDERSPEC = "UNDERSPEC"
 
 OPS = ("verify", "install", "install_newer", "install_older", "install_same",
        "install_other_key", "run", "stop", "update", "rollback", "repair",
-       "doctor", "doctor_repair", "uninstall", "uninstall_purge")
+       "doctor", "doctor_repair", "uninstall", "purge")
 
 
 class Abstract:
@@ -614,7 +614,6 @@ class Abstract:
         # broken install path. The first version of this model omitted it and
         # reported six healthy refusals as runtime defects.
         self.bound_key = None
-        self.purged = False           # data purged since the binding was made
         # Desktop integration is MACHINE state, not application state, and
         # `doctor` reports on it. Carried here because leaving it out made the
         # consistency oracle flag `doctor` as answering the same abstract state
@@ -668,7 +667,7 @@ class Abstract:
         """
         return (self.name(), self.health_of(), bool(self.prev), len(self.retained),
                 self.running, self.service, self.data_retained, self.bound_key,
-                self.purged, self.integrated)
+                self.integrated)
 
     def as_dict(self):
         return {k: v for k, v in vars(self).items()}
@@ -723,18 +722,13 @@ class Model:
             key = "other" if op == "install_other_key" else "main"
             # Identity first. A trust decision outranks everything else about the
             # package, and docs/ERRORS.md §1 says exit 7 is never bypassable.
+            # Whether a purge discards the local key binding used to be left
+            # open here (UNDERSPEC): no document said. It is decided now -- `lexe
+            # purge` makes .LEXE forget the application, binding included
+            # (docs/REFERENCE-POLICY.md "Uninstall and purge") -- so the purge
+            # transition below clears `bound_key`, and a different key after a
+            # purge reaches the first-install branch and is PINNED there.
             if s.bound_key is not None and s.bound_key != key:
-                if s.purged:
-                    # FORMAT-0.1 §9.5.1 says a purge discards the permission
-                    # APPROVAL. It does not say whether the local key BINDING
-                    # survives one, and docs/ERRORS.md describes ChangedKeyError as
-                    # "a local record" without stating its lifetime. Left open on
-                    # purpose: deciding it here by watching what the runtime does
-                    # would convert a real gap into a passing test.
-                    return (UNDERSPEC, VALID_EXITS, n,
-                            "neither FORMAT-0.1 §9.5 nor docs/ERRORS.md says "
-                            "whether purging an application's data also discards "
-                            "the local App-ID/key binding")
                 return (PIN, {7}, n,
                         "docs/ERRORS.md §1: a signing key that differs from the one "
                         "bound to this App ID locally is ChangedKeyError, exit 7, "
@@ -752,7 +746,7 @@ class Model:
                 n.retained = sorted(set(s.retained + [n.active]))
                 n.damaged.pop(n.active, None)
                 n.bound_key = key
-                n.data_retained, n.data_key, n.purged = True, key, False
+                n.data_retained, n.data_key = True, key
                 n.integrated = True
                 return PIN, {0}, n, "FORMAT-0.1 §9.2: a completed install is reachable"
             if op == "install_other_key":
@@ -840,36 +834,21 @@ class Model:
                     "typed exit (`verify`, `sdk verify`, `analyze`) and does not "
                     "mention `doctor`; see DOCTOR_GAP")
 
-        # ---- uninstall
-        if op in ("uninstall", "uninstall_purge"):
+        # ---- uninstall: remove the program; keep data and the key binding
+        if op == "uninstall":
             if not s.present:
                 # Three different absences, and the runtime tells two of them
-                # apart on purpose (dbbd625). This used to pin 4 for all of
-                # them, which is the pre-dbbd625 answer: 210 divergences in 3000
-                # sequences at seed 20260929, every one install -> remove ->
-                # remove, every one the runtime saying "this machine removed it
-                # earlier" with 6. The model was stale; the runtime was right.
+                # apart on purpose (dbbd625). A never-installed -- or PURGED --
+                # App ID leaves nothing that could show it was ever here.
                 if s.bound_key is None and not s.data_retained:
                     return PIN, {4}, n, ("docs/ERRORS.md §1: NotFoundError is 4 "
-                                         "-- this App ID was never installed here")
-                if s.data_retained:
-                    # FORMAT-0.1 §9.5 makes app-only removal keep the data, and
-                    # only an installed application can have written it: proof,
-                    # from a document, that this machine removed it.
-                    return PIN, {6}, n, (
-                        "docs/ERRORS.md §6: removing what this machine already "
-                        "removed is an operation conflict, 6 -- the requested "
-                        "state already holds; retained data (FORMAT-0.1 §9.5) "
-                        "is the evidence it was installed here")
-                # Purged. What remains is the local key binding, and whether a
-                # purge discards it is the question this model already leaves
-                # open for install (see the purged branch above). The runtime
-                # keeps it and answers 6; pinning that here would turn an
-                # undocumented behaviour into a passing test.
-                return (UNDERSPEC, {4, 6}, n,
-                        "after --purge-data, only the local key binding can show "
-                        "the App ID was installed here, and no document says "
-                        "whether a purge discards it")
+                                         "-- nothing here shows this App ID was "
+                                         "ever installed (never, or purged)")
+                return PIN, {6}, n, (
+                    "docs/ERRORS.md §6: removing what this machine already "
+                    "removed is an operation conflict, 6; uninstall keeps both "
+                    "witnesses -- retained data (FORMAT-0.1 §9.5) and the local "
+                    "key binding")
             if s.running or s.service:
                 return (PIN, {6}, n,
                         "docs/CONCURRENCY.md: uninstall while launching is refused "
@@ -877,12 +856,32 @@ class Model:
                         "process; FORMAT-0.1 §9.4 requires the refusal")
             n.present, n.active, n.retained, n.prev = False, None, [], None
             n.damaged = {}
-            if op == "uninstall_purge":
-                n.data_retained, n.data_key, n.purged = False, None, True
             return (PIN, {0}, n,
-                    "FORMAT-0.1 §9.5: removal of persistent data requires a "
-                    "separate explicit instruction, so a plain removal succeeds "
-                    "and keeps the data")
+                    "docs/REFERENCE-POLICY.md: uninstall removes the program and "
+                    "keeps data, trust and preferences; FORMAT-0.1 §9.5: removal "
+                    "of persistent data requires a separate explicit instruction")
+
+        # ---- purge: make .LEXE forget the application
+        if op == "purge":
+            if s.running or s.service:
+                return (PIN, {6}, n,
+                        "docs/REFERENCE-POLICY.md: purge refuses a running "
+                        "application before it writes anything (BusyError, 6)")
+            if not s.present and s.bound_key is None and not s.data_retained:
+                return (PIN, {4}, n,
+                        "docs/REFERENCE-POLICY.md: purge of an App ID .LEXE holds "
+                        "no state for is NotFoundError, 4")
+            # After a purge the App ID is UNKNOWN: a fresh abstract state. Only
+            # machine-level desktop integration is carried over -- it was never
+            # the application's (see `integrated` above).
+            fresh = Abstract()
+            fresh.integrated = s.integrated
+            return (PIN, {0}, fresh,
+                    "docs/REFERENCE-POLICY.md: after a successful purge no "
+                    ".LEXE-managed state of the application can affect a later "
+                    "install -- including on an application that is no longer "
+                    "installed, whose retained data and trust are what purge "
+                    "exists to remove")
 
         raise AssertionError("unmodelled op %r" % op)
 
@@ -1090,7 +1089,7 @@ PERMISSION_SCENARIOS = [
                          "flags": ("--yes", "--trust")}, {0}),
             ("install", {"perms": ("network",), "version": "2.0.0",
                          "flags": ("--yes", "--accept-permissions")}, {0}),
-            ("remove_purge", {}, {0}),
+            ("purge", {}, {0}),
             ("install", {"perms": (), "version": "1.0.0",
                          "flags": ("--yes", "--trust")}, {0}),
             # The same expansion as before, with a bare confirmation. If the purge
@@ -1112,7 +1111,7 @@ PERMISSION_SCENARIOS = [
             ("install", {"perms": (), "version": "1.0.0",
                          "flags": ("--yes", "--trust")}, {0}),
             ("run", {}, {0}),
-            ("remove", {}, {0}),
+            ("uninstall", {}, {0}),
             ("install", {"perms": (), "version": "1.0.0", "key": "other",
                          "flags": ("--yes", "--trust")}, {6, 7}),
         ],
@@ -1578,7 +1577,7 @@ def run_case(cfg, seed, case):
 # reported as STOP_GAP rather than pretended into the walk.
 WALK_OPS = ("verify", "install", "install_newer", "install_same",
             "install_older", "install_other_key", "run", "update", "rollback",
-            "repair", "doctor", "doctor_repair", "uninstall", "uninstall_purge")
+            "repair", "doctor", "doctor_repair", "uninstall", "purge")
 
 # Fixture actions. Not operations of the runtime, so they carry no expectation:
 # they are how a sequence REACHES a state the runtime has no verb for.
@@ -1640,9 +1639,9 @@ class SequenceRunner:
         if op == "doctor_repair":
             return ["doctor", "--repair"]
         if op == "uninstall":
-            return ["remove", APP_ID, "--yes"]
-        if op == "uninstall_purge":
-            return ["remove", APP_ID, "--purge-data", "--yes"]
+            return ["uninstall", APP_ID, "--yes"]
+        if op == "purge":
+            return ["purge", APP_ID, "--yes"]
         raise AssertionError(op)
 
     def run_sequence(self, seed, idx, length, illegal_bias):
@@ -1850,11 +1849,10 @@ def run_permission_scenarios(cfg):
                     rec = ws.cli("run", APP_ID, label=op)
                 elif op == "rollback":
                     rec = ws.cli("rollback", APP_ID, label=op)
-                elif op == "remove":
-                    rec = ws.cli("remove", APP_ID, "--yes", label=op)
-                elif op == "remove_purge":
-                    rec = ws.cli("remove", APP_ID, "--purge-data", "--yes",
-                                 label=op)
+                elif op == "uninstall":
+                    rec = ws.cli("uninstall", APP_ID, "--yes", label=op)
+                elif op == "purge":
+                    rec = ws.cli("purge", APP_ID, "--yes", label=op)
                 else:
                     raise AssertionError(op)
                 good = rec["rc"] in want
@@ -1947,10 +1945,10 @@ def check_taxonomy(cfg):
                     "no_such_application_rc": no_app["rc"],
                     "indistinguishable": no_target["rc"] == no_app["rc"],
                     "message": (no_target["err"] or no_target["out"]).strip()[:200]})
-        ws.cli("remove", APP_ID, "--yes", label="remove")
-        gone = ws.cli("remove", APP_ID, "--yes", label="remove again")
-        absent = ws.cli("remove", "no.such.app.at.all", "--yes",
-                        label="remove no app")
+        ws.cli("uninstall", APP_ID, "--yes", label="uninstall")
+        gone = ws.cli("uninstall", APP_ID, "--yes", label="uninstall again")
+        absent = ws.cli("uninstall", "no.such.app.at.all", "--yes",
+                        label="uninstall no app")
         gone_msg = (gone["err"] or gone["out"]).strip()[:200]
         absent_msg = (absent["err"] or absent["out"]).strip()[:200]
         out.append({**TAXONOMY_QUESTIONS[2],
@@ -2062,7 +2060,7 @@ SCHEDULES = [
     ("run||update", "trigger", "installed-long", ["run", APP_ID],
      ["install", "@v2", "--yes", "--trust"], "running-undisturbed"),
     ("uninstall||run", "trigger", "installed-long",
-     ["run", APP_ID], ["remove", APP_ID, "--yes"], "uninstall-refused-while-running"),
+     ["run", APP_ID], ["uninstall", APP_ID, "--yes"], "uninstall-refused-while-running"),
     ("gc||run", "trigger", "installed-long-two-versions",
      ["run", APP_ID], ["gc", APP_ID, "--keep", "0"], "running-files-survive"),
     ("rollback||run", "trigger", "installed-long-two-versions",
@@ -2078,9 +2076,9 @@ SCHEDULES = [
      ["install", "@v3", "--yes", "--trust"], ["rollback", APP_ID],
      "coherent-and-the-program-matches-the-record"),
     ("uninstall||uninstall", "hold", "installed",
-     ["remove", APP_ID, "--yes"], ["remove", APP_ID, "--yes"], "absent-afterwards"),
+     ["uninstall", APP_ID, "--yes"], ["uninstall", APP_ID, "--yes"], "absent-afterwards"),
     ("doctor-repair||uninstall", "barrier", "installed",
-     ["doctor", "--repair"], ["remove", APP_ID, "--yes"], "absent-afterwards"),
+     ["doctor", "--repair"], ["uninstall", APP_ID, "--yes"], "absent-afterwards"),
     ("update||repair", "hold", "installed",
      ["install", "@v2", "--yes", "--trust"], ["repair", APP_ID],
      "healthy-afterwards"),
@@ -2088,7 +2086,7 @@ SCHEDULES = [
      ["run", APP_ID], ["install", "@v2", "--yes", "--trust"],
      "coherent-and-the-program-matches-the-record"),
     ("uninstall||repair", "hold", "installed",
-     ["remove", APP_ID, "--yes"], ["repair", APP_ID], "coherent"),
+     ["uninstall", APP_ID, "--yes"], ["repair", APP_ID], "coherent"),
     ("rollback||rollback", "hold", "installed-two-versions",
      ["rollback", APP_ID], ["rollback", APP_ID], "coherent"),
     # The promote is the instant installed state changes. A reader that takes no
@@ -2686,7 +2684,7 @@ def measure_cost(cfg, samples):
                ("rollback", ["rollback", APP_ID]),
                ("runtime-list", ["runtime", "list"]),
                ("doctor", ["doctor"]),
-               ("remove", ["remove", APP_ID, "--purge-data", "--yes"]),
+               ("purge", ["purge", APP_ID, "--yes"]),
                ("run-absent", ["run", APP_ID])]
         acc = {k: [] for k, _ in seq}
         for i in range(samples):

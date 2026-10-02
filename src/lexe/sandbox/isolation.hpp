@@ -222,7 +222,7 @@ inline constexpr const char* kSandboxRuntime = "/run/lexe/session";
 /// Under the application own private data root, deliberately: Wine prefix
 /// already lands there because HOME is redirected to it, and Proton state is
 /// the application state for exactly the same reason. It also means uninstalling
-/// the application with --purge-data removes the prefix, and that nothing of the
+/// `lexe purge` of the application removes the prefix, and that nothing of the
 /// user real Steam installation is bound, named, or reachable from inside.
 ///
 /// Proton does NOT create this directory: with it missing, wine fails with

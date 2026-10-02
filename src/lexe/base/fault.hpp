@@ -27,4 +27,9 @@ struct Injected : Error {
 /// Throw Injected if LEXE_TEST_FAULT == site; otherwise do nothing.
 void maybe(const char* site);
 
+/// Whether LEXE_TEST_FAULT == site, for the rare failpoint that must simulate
+/// something OTHER than a crash -- e.g. a writer outside the lock recreating
+/// state in the middle of an operation, which a throw cannot model.
+bool active(const char* site);
+
 } // namespace lexe::fault

@@ -108,26 +108,31 @@ lc_assert_coherent "after repairing a deletion"
 # ------------------------------------------------------------------ uninstall
 
 starts_before="$(lc_starts_logged)"
-acc_true "$("$LEXE" remove "$LC_APP_ID" --yes >/dev/null 2>&1; echo $?)" \
+acc_true "$("$LEXE" uninstall "$LC_APP_ID" --yes >/dev/null 2>&1; echo $?)" \
     "uninstall"
 lc_assert_coherent "after uninstall"
 acc_true "$(lc_is_installed && echo 1 || echo 0)" \
     "the application is gone from lexe list"
 acc_dir_absent "$(lc_version_dir 1.0.0)" "its version directory is gone"
 
-# The default uninstall keeps user data: losing it silently is the behaviour
-# --purge-data exists to make explicit.
+# Uninstall keeps user data: losing it silently is the behaviour `lexe purge`
+# exists to make explicit.
 acc_file_exists "$LEXE_HOME/data/$LC_APP_ID/profile.conf" \
     "user data is RETAINED by default, so an uninstall is not a data loss event"
 acc_true "$([[ "$starts_before" -gt 0 ]] && echo 0 || echo 1)" \
     "the application had really been run $starts_before time(s) before removal"
 
-# And with --purge-data it is genuinely gone.
+# And with `lexe purge` it is genuinely gone -- and so is the trust decision,
+# which uninstall kept: purge makes .LEXE forget the application.
 "$LEXE" install "$v1" --yes >/dev/null 2>&1
-acc_true "$("$LEXE" remove "$LC_APP_ID" --purge-data --yes >/dev/null 2>&1; echo $?)" \
-    "uninstall --purge-data"
+acc_file_exists "$LEXE_HOME/trust/$LC_APP_ID.json" \
+    "the trust record survived the uninstall above (the control for the next check)"
+acc_true "$("$LEXE" purge "$LC_APP_ID" --yes >/dev/null 2>&1; echo $?)" \
+    "purge"
 acc_file_absent "$LEXE_HOME/data/$LC_APP_ID/profile.conf" \
     "and then the data really is gone"
-lc_assert_coherent "after purging uninstall"
+acc_file_absent "$LEXE_HOME/trust/$LC_APP_ID.json" \
+    "and so is the local trust record"
+lc_assert_coherent "after purging"
 
 acc_summary

@@ -10,10 +10,12 @@
 namespace lexe::fault {
 
 void maybe(const char* site) {
-    const std::optional<std::string> active = util::get_env("LEXE_TEST_FAULT");
-    if (active.has_value() && *active == site) {
-        throw Injected(site);
-    }
+    if (active(site)) throw Injected(site);
+}
+
+bool active(const char* site) {
+    const std::optional<std::string> fault = util::get_env("LEXE_TEST_FAULT");
+    return fault.has_value() && *fault == site;
 }
 
 } // namespace lexe::fault

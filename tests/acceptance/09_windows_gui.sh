@@ -238,7 +238,7 @@ acc_equals "$(find "$data_dir" -maxdepth 3 \( -name 'wayland-*' -o -name 'bus' \
 leftover="$(pgrep -f "windows-gui.exe" 2>/dev/null | head -1 || true)"
 acc_equals "$leftover" "" "no Windows process outlived the launches"
 
-acc_true "$("$LEXE" remove "$WIN_ID" --purge-data --yes >/dev/null 2>&1; echo $?)" \
+acc_true "$("$LEXE" purge "$WIN_ID" --yes >/dev/null 2>&1; echo $?)" \
     "the version lease was released: it can be uninstalled"
 
 acc_summary

@@ -271,6 +271,39 @@ lc_assert_coherent() {
         return 1
     fi
 
+    # One state in which an installed application legitimately does not launch:
+    # an UNFINISHED PURGE (a journal at apps/.removing/<id>.purge). The user asked
+    # .LEXE to forget the application, so the launch is refused (exit 6) until
+    # the purge finishes. FORMAT-0.1 §9.2 allows exactly this -- an installed
+    # application "MUST be launchable, or MUST report honestly" -- and what it
+    # forbids is still checked here, more strictly than for the ordinary case:
+    # every file intact (no half-removal), the refusal is 6 and NAMES the purge,
+    # and nothing executed. Every other installed state still has to RUN.
+    if [[ -f "$LEXE_HOME/apps/.removing/$LC_APP_ID.purge" ]]; then
+        local entry; entry="$(lc_installed_entry "$recorded")"
+        if [[ ! -x "$entry" ]]; then
+            fail "$label: coherent" \
+                "installed at \"$recorded\" mid-purge, but its entrypoint is missing" \
+                "or not executable: a purge must not half-remove an installation"
+            return 1
+        fi
+        local starts_before out rc
+        starts_before="$(lc_starts_logged)"
+        out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"; rc=$?
+        if [[ "$rc" != "6" || "$out" != *"interrupted purge"* ]]; then
+            fail "$label: coherent" \
+                "installed at \"$recorded\" mid-purge, and the launch was not an" \
+                "honest refusal (wanted exit 6 naming the purge; got $rc):" "$out"
+            return 1
+        fi
+        if [[ "$(lc_starts_logged)" != "$starts_before" ]]; then
+            fail "$label: coherent" "the refused launch executed the application"
+            return 1
+        fi
+        pass "$label: coherent (installed at $recorded, files intact; launch honestly refused while a purge is unfinished)"
+        return 0
+    fi
+
     local ran; ran="$(lc_running_version)"
     if [[ -z "$ran" ]]; then
         fail "$label: coherent" \

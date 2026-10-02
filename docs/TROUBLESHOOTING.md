@@ -58,14 +58,13 @@ lexe inspect <new.lexe>       # the key this package presents, in full
 ```
 
 If you have established that the publisher genuinely rotated their key — from
-the publisher themselves, not from the package — the only route is to remove the
-application **and clear its local trust record**, so the new key is accepted as
-first-seen. Both steps are required; removing alone leaves the trust record in
-place and the next install is refused identically:
+the publisher themselves, not from the package — the only route is to make .LEXE
+forget the application, so the new key is accepted as first-seen. `uninstall`
+alone is not enough: it keeps the trust record (and the data bound to the old
+key) on purpose, and the next install is refused identically.
 
 ```sh
-lexe remove <id> --purge-data   # retained data is bound to the old key
-lexe trust forget <id>          # without this, the install is still refused
+lexe purge <id>                  # program, data AND trust record: forgotten
 lexe install <new.lexe> --trust
 ```
 

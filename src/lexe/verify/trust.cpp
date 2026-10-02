@@ -256,21 +256,20 @@ void TrustEvaluation::throw_if_rejected() const {
         if (expected.has_value()) {
             msg += "; expected key " + expected->short_id + "…";
         }
-        // The procedure below is the one that actually works, verified end to
-        // end. This message used to say "remove the application and its data to
-        // accept a new publisher" — and that alone does NOT work: `lexe remove
-        // --purge-data` leaves the local trust record in place, so the next
-        // install is refused identically and the user has followed the
-        // instructions for nothing. Clearing the trust record is the missing
-        // step.
+        // The procedure below is the one that actually works. It used to be
+        // two commands -- `lexe remove --purge-data`, which deliberately KEPT
+        // the trust record, then `lexe trust forget` -- because the removal
+        // alone left the binding that refuses the new key. `lexe purge` is
+        // one command for exactly that: it forgets the application, its data
+        // AND its trust record, so the next install is a first install.
         msg += ", presented key " + presented.short_id +
                "…. FORMAT 0.1 has no authenticated key rotation. Compare both "
                "fingerprints in full with `lexe trust show " + app_id +
-               "`. To accept a new publisher key you must remove the "
-               "application AND clear its local trust record: `lexe remove " +
-               app_id + " --purge-data` then `lexe trust forget " + app_id +
-               "` — this deletes the application's data. Installing under a "
-               "different App ID keeps the existing one.";
+               "`. To accept a new publisher key, make .LEXE forget this "
+               "application with `lexe purge " + app_id +
+               "` -- this deletes its data and its trust record, and the next "
+               "install is a first install. Installing under a different App "
+               "ID keeps the existing one.";
         throw ChangedKeyError(msg);
     }
     case TrustDecision::RejectBlocked:

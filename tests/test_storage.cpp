@@ -96,9 +96,14 @@ TEST_CASE("registry: has_retained_data reflects only real data content") {
     CHECK(registry.has_retained_data(kId));
 }
 
-// ----------------------------------------------------- three uninstall modes
+// ------------------------------------------------- uninstall versus purge
 
-TEST_CASE("uninstall modes: cache and data are removed only when asked") {
+// There were three modes (app only / app and cache / app and data). The cache
+// now always goes with the program: it is debris an installation leaves, and an
+// uninstall that keeps debris "because nobody deletes it" is what the removal
+// contract forbids (docs/REFERENCE-POLICY.md, "Uninstall and purge"). Data is
+// still kept by uninstall and removed only by the separate purge.
+TEST_CASE("uninstall removes the cache and keeps data; purge removes both") {
     test::TempLexeHome home;
     TempWorkDir work;
     const Paths paths = Paths::detect();
@@ -114,25 +119,17 @@ TEST_CASE("uninstall modes: cache and data are removed only when asked") {
                    std::string_view("cache"));
     };
 
-    SUBCASE("AppOnly preserves BOTH data and cache") {
+    SUBCASE("uninstall removes the cache, preserves data") {
         seed();
-        Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly);
-        CHECK_FALSE(registry.is_installed(kId));
-        CHECK(fs::exists(registry.app_data_dir(kId) / "save.dat"));
-        CHECK(fs::exists(registry.app_cache_dir(kId) / "thumb.png"));
-    }
-
-    SUBCASE("AppAndCache removes cache, preserves data") {
-        seed();
-        Installer(paths).uninstall(kId, Installer::UninstallMode::AppAndCache);
+        Installer(paths).uninstall(kId);
         CHECK_FALSE(registry.is_installed(kId));
         CHECK(fs::exists(registry.app_data_dir(kId) / "save.dat"));
         CHECK_FALSE(fs::exists(registry.app_cache_dir(kId)));
     }
 
-    SUBCASE("PurgeData removes app, cache AND data") {
+    SUBCASE("purge removes app, cache AND data") {
         seed();
-        Installer(paths).uninstall(kId, Installer::UninstallMode::PurgeData);
+        Installer(paths).purge(kId);
         CHECK_FALSE(registry.is_installed(kId));
         CHECK_FALSE(fs::exists(registry.app_data_dir(kId)));
         CHECK_FALSE(fs::exists(registry.app_cache_dir(kId)));
@@ -147,8 +144,8 @@ TEST_CASE("uninstall: removing cache is idempotent and stays under the root") {
     const crypto::KeyPair key = test::make_keypair();
     install_with(paths, work.dir, key);
 
-    // No cache written yet: AppAndCache must still succeed (idempotent remove).
-    Installer(paths).uninstall(kId, Installer::UninstallMode::AppAndCache);
+    // No cache written yet: uninstall must still succeed (idempotent remove).
+    Installer(paths).uninstall(kId);
     CHECK_FALSE(fs::exists(registry.app_cache_dir(kId)));
     // The shared cache root itself is untouched — only the per-app subtree goes.
     CHECK(registry.app_cache_dir(kId).parent_path() ==
@@ -186,7 +183,7 @@ TEST_CASE("retained data: a different publisher key may not inherit it") {
     install_with(paths, work.dir, key_a);
     util::spit(registry.app_data_dir(kId) / "profile.db",
                std::string_view("A's data"));
-    Installer(paths).uninstall(kId, Installer::UninstallMode::AppOnly);
+    Installer(paths).uninstall(kId);
     REQUIRE(registry.has_retained_data(kId));
 
     test::TestAppSpec spec;
@@ -214,7 +211,14 @@ TEST_CASE("retained data: a different publisher key may not inherit it") {
           "A's data");
 }
 
-TEST_CASE("retained data: purge removes data but preserves local trust history") {
+// This case asserted the OPPOSITE until the uninstall/purge decision: that a
+// purge "must NOT silently delete trust history", so a different key was still
+// refused and `lexe trust forget` was the separate step. The product decision
+// is now that purge means "make .LEXE forget this application", trust record
+// included, and a later install takes the first-install path. Nothing about it
+// is silent: purge is its own verb and its confirmation names the trust
+// decision. `uninstall` keeps the record, asserted in the case above.
+TEST_CASE("retained data: purge forgets data AND the local trust record") {
     test::TempLexeHome home;
     TempWorkDir work;
     const Paths paths = Paths::detect();
@@ -226,17 +230,17 @@ TEST_CASE("retained data: purge removes data but preserves local trust history")
     install_with(paths, work.dir, key_a);
     util::spit(registry.app_data_dir(kId) / "profile.db",
                std::string_view("A's data"));
-    Installer(paths).uninstall(kId, Installer::UninstallMode::PurgeData);
+    Installer(paths).purge(kId);
     CHECK_FALSE(registry.has_retained_data(kId)); // data gone
+    CHECK_FALSE(TrustStore(paths).exists(kId));   // and the binding with it
 
-    // Purge deletes DATA, but must NOT silently delete trust history: a
-    // different key is still refused as a changed key.
-    CHECK_THROWS_AS(install_with(paths, work.dir, key_b), ChangedKeyError);
-
-    // Forgetting trust is the explicit, separate step that lets a new publisher
-    // claim the id cleanly.
-    TrustStore(paths).forget(kId);
+    // So a different key is a FIRST install -- and it inherits nothing: the
+    // data it gets is a fresh directory with its own owner marker.
     CHECK_NOTHROW(install_with(paths, work.dir, key_b));
+    CHECK_FALSE(fs::exists(registry.app_data_dir(kId) / "profile.db"));
+    const std::optional<TrustRecord> rec = TrustStore(paths).read(kId);
+    REQUIRE(rec.has_value());
+    CHECK(rec->public_key == test::encode_public_key_str(key_b.public_key));
 }
 
 // ------------------------------------------------ lease-aware garbage collect

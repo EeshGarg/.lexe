@@ -186,19 +186,44 @@ public:
     InstallResult install(const std::filesystem::path& lexe_file,
                           const InstallOptions& opts = {});
 
-    /// The three explicit uninstall modes (runtime-trust WS8).
-    enum class UninstallMode {
-        AppOnly,     // remove binaries + integration; PRESERVE data and cache
-        AppAndCache, // remove binaries + integration + cache; PRESERVE data
-        PurgeData,   // remove binaries + integration + cache + persistent data
+    /// `lexe uninstall`: remove the installed program -- everything the
+    /// installation needs to execute, its desktop integration, and its
+    /// installation debris (cache, downloaded updates). Keeps exactly the
+    /// locations appstate.hpp marks SurvivesUninstall: persistent data, the
+    /// local trust record, compatibility preferences and error history, so a
+    /// reinstall behaves as a RETURNING installation.
+    ///
+    /// Throws NotFoundError when not installed; BusyError when a version is
+    /// running, or when an interrupted purge of `id` has not finished --
+    /// uninstall never deletes data, so it will not finish a purge either.
+    void uninstall(const std::string& id);
+
+    /// What `purge` found and removed.
+    struct PurgeReport {
+        bool was_installed = false;
+        /// A purge journal was already present: this call FINISHED an
+        /// interrupted purge rather than starting one.
+        bool finished_interrupted = false;
+        /// Descriptions (appstate.hpp) of the locations that existed and are
+        /// now gone, plus "desktop integration" when any was recorded.
+        std::vector<std::string> removed;
     };
 
-    /// Remove the application per `mode`. Application-only removal preserves
-    /// persistent data (and cache); PurgeData removes every application-owned
-    /// root. Throws NotFoundError when not installed. Full data removal must be
-    /// an explicit choice (PurgeData) — never a side effect of a bare confirm.
-    void uninstall(const std::string& id,
-                   UninstallMode mode = UninstallMode::AppOnly);
+    /// `lexe purge`: make .LEXE forget the application. Removes every location
+    /// in appstate.hpp's table except the inert per-app mutation lock --
+    /// installation, data, trust record (binding, explicit trust AND any local
+    /// block), preferences, error history, cache -- whether or not it is
+    /// currently installed.
+    ///
+    /// Transactional and fail-closed. A journal is written before anything is
+    /// changed and removed only after a post-check finds every location gone;
+    /// until then the purge is unfinished, `install` finishes it first, and
+    /// launch, uninstall and the trust commands refuse. Throws (and leaves the
+    /// journal) rather than report success over anything that remains.
+    ///
+    /// Throws NotFoundError when .LEXE holds no state for `id` and no purge is
+    /// pending; BusyError when a version is running.
+    PurgeReport purge(const std::string& id);
 
     /// Flip `current` back to the most recent retained previous version and
     /// update the records (SPEC "Rollback"). Throws NotFoundError when there
@@ -266,6 +291,21 @@ private:
     /// Deletes a tombstone a killed uninstall left behind. Best-effort;
     /// assumes the per-app mutation lock is held.
     void sweep_removed_locked(const std::string& id);
+
+    /// Exclusive gc-holds on every version of `id` found in its own
+    /// directories, or BusyError naming the one that is running. Taken BEFORE a
+    /// removal writes anything, so a refusal leaves nothing behind.
+    std::vector<LaunchLease> hold_versions_or_refuse(const std::string& id);
+
+    /// The removal shared by uninstall and purge (lock held, versions held):
+    /// integration, recorded files, the atomic detach of `apps/<id>`, version
+    /// leases, and every RemovedByUninstall location. Works whether or not the
+    /// app is still installed, so it can finish what an interrupted run left.
+    void remove_installation_locked(const std::string& id);
+
+    /// purge()'s body with the per-app mutation lock already held. Also how
+    /// install finishes an interrupted purge before it does anything else.
+    PurgeReport purge_locked(const std::string& id);
 
     Paths paths_;
     std::shared_ptr<OperationLockManager> locks_;

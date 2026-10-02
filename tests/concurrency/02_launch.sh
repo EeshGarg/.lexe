@@ -60,7 +60,7 @@ if [[ -z "$live" ]]; then
     skip "could not keep the application alive long enough to race an uninstall"
 else
     pass "a detached launch is holding a lease on 1.0.0 (pid $live)"
-    out="$(timeout "$CONC_TIMEOUT" "$LEXE" remove "$LC_APP_ID" --yes 2>&1)"
+    out="$(timeout "$CONC_TIMEOUT" "$LEXE" uninstall "$LC_APP_ID" --yes 2>&1)"
     rc=$?
     acc_true "$([[ $rc -ne 0 ]] && echo 0 || echo 1)" \
         "uninstalling a running application is refused (exit $rc), not silently done"
@@ -153,5 +153,5 @@ done
 pass "a mutation and a launch contending in both orders always terminate"
 lc_assert_coherent "after contending in both lock orders"
 
-"$LEXE" remove "$LC_APP_ID" --purge-data --yes >/dev/null 2>&1
+"$LEXE" purge "$LC_APP_ID" --yes >/dev/null 2>&1
 acc_summary

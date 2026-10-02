@@ -49,7 +49,7 @@ acc_equals "$(lc_current_version)" "1.0.0" "and 1.0.0 is the current version"
 
 # --------------------------------------------- install + install (three ways)
 
-"$LEXE" remove "$LC_APP_ID" --purge-data --yes >/dev/null 2>&1
+"$LEXE" purge "$LC_APP_ID" --yes >/dev/null 2>&1
 conc_race_same "install-x3" 3 -- "$LEXE" install "$v1" --yes --trust
 conc_assert_no_timeouts "install-x3" 3
 conc_assert_losers_lost_legitimately "install-x3" 3
@@ -105,9 +105,9 @@ acc_true "$("$LEXE" run "$LC_APP_ID" --no-terminal >/dev/null 2>&1; echo $?)" \
 "$LEXE" install "$v1" --yes >/dev/null 2>&1
 conc_race_pair "repair-uninstall" \
     -- "$LEXE" repair "$LC_APP_ID" \
-    -- "$LEXE" remove "$LC_APP_ID" --yes
+    -- "$LEXE" uninstall "$LC_APP_ID" --yes
 conc_assert_no_timeouts "repair-uninstall" 2
-note "repair exited $(conc_rc repair-uninstall a), remove exited $(conc_rc repair-uninstall b)"
+note "repair exited $(conc_rc repair-uninstall a), uninstall exited $(conc_rc repair-uninstall b)"
 lc_assert_coherent "after repair+uninstall"
 # Whichever won, the state must be decidable: either installed and runnable, or
 # absent. A repair that "succeeded" against a removed application would be the
@@ -125,9 +125,9 @@ fi
 "$LEXE" install "$v1" --yes >/dev/null 2>&1
 conc_race_pair "install-uninstall" \
     -- "$LEXE" install "$v2" --yes \
-    -- "$LEXE" remove "$LC_APP_ID" --yes
+    -- "$LEXE" uninstall "$LC_APP_ID" --yes
 conc_assert_no_timeouts "install-uninstall" 2
-note "install exited $(conc_rc install-uninstall a), remove exited $(conc_rc install-uninstall b)"
+note "install exited $(conc_rc install-uninstall a), uninstall exited $(conc_rc install-uninstall b)"
 lc_assert_coherent "after install+uninstall"
 
 # --------------------------------------------- the registry survived all of it
@@ -153,10 +153,10 @@ acc_equals "$staging" "" \
 
 # And a clean install still works after everything, which is the real test of
 # whether the races left anything poisoned.
-"$LEXE" remove "$LC_APP_ID" --purge-data --yes >/dev/null 2>&1
+"$LEXE" purge "$LC_APP_ID" --yes >/dev/null 2>&1
 acc_true "$("$LEXE" install "$v1" --yes --trust >/dev/null 2>&1; echo $?)" \
     "a fresh install still succeeds after every race above"
 acc_equals "$(lc_running_version)" "1.0.0" "and it runs"
-"$LEXE" remove "$LC_APP_ID" --purge-data --yes >/dev/null 2>&1
+"$LEXE" purge "$LC_APP_ID" --yes >/dev/null 2>&1
 
 acc_summary

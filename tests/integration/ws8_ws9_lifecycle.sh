@@ -170,8 +170,10 @@ assert_file "$LEXE_HOME/data/$ID/profile.db"          # data untouched by gc
 "$LEXE" repair "$ID" >/dev/null 2>&1 && pass "active install healthy after gc" \
   || fail "active install unhealthy after gc"
 
-step "remove --remove-cache — cache cleared, data preserved, app uninstalled"
-expect_exit 0 remove "$ID" --remove-cache --yes
+step "uninstall — cache cleared, data preserved, app uninstalled"
+# The cache goes WITH the program now (it used to need --remove-cache):
+# debris an installation leaves is not state worth keeping.
+expect_exit 0 uninstall "$ID" --yes
 assert_absent "$LEXE_HOME/apps/$ID"                   # app gone
 assert_absent "$LEXE_HOME/cache/apps/$ID"             # cache gone
 assert_file   "$LEXE_HOME/data/$ID/profile.db"        # data preserved
@@ -180,8 +182,8 @@ step "reinstall v1.0.0 with the SAME key — retained data is reused"
 expect_exit 0 install "$WORK/v1.lexe" --yes
 assert_file "$LEXE_HOME/data/$ID/profile.db"          # same-owner inherits data
 
-step "remove (app-only) — data retained for later"
-expect_exit 0 remove "$ID" --yes
+step "uninstall again — data retained for later"
+expect_exit 0 uninstall "$ID" --yes
 assert_absent "$LEXE_HOME/apps/$ID"
 assert_file   "$LEXE_HOME/data/$ID/profile.db"
 
@@ -193,19 +195,19 @@ make_pkg 1.0.0 "$KEYDIR/k2.json" "$WORK/v1-k2.lexe"
 expect_exit 7 install "$WORK/v1-k2.lexe" --yes
 assert_file "$LEXE_HOME/data/$ID/profile.db"          # unchanged by the refusal
 
-step "remove --purge-data — data deleted, but local trust history preserved"
-"$LEXE" install "$WORK/v1.lexe" --yes >/dev/null 2>&1  # reinstall (same key) to remove
-expect_exit 0 remove "$ID" --purge-data --yes
+step "purge — data AND the local trust record deleted"
+# This step used to assert the opposite -- "trust history preserved", then a
+# different publisher "STILL refused after purge", then `trust forget` as the
+# separate step. `lexe purge` now means "make .LEXE forget this application",
+# trust included; `uninstall` is what keeps it (the exit-7 step above).
+"$LEXE" install "$WORK/v1.lexe" --yes >/dev/null 2>&1  # reinstall (same key) to purge
+assert_file   "$LEXE_HOME/trust/$ID.json"             # the control: it is there
+expect_exit 0 purge "$ID" --yes
 assert_absent "$LEXE_HOME/data/$ID"                   # data gone
 assert_absent "$LEXE_HOME/apps/$ID"
-assert_file   "$LEXE_HOME/trust/$ID.json"             # trust history preserved
+assert_absent "$LEXE_HOME/trust/$ID.json"             # trust record gone
 
-step "a DIFFERENT publisher is STILL refused after purge (trust persists)"
-expect_exit 7 install "$WORK/v1-k2.lexe" --yes
-
-step "forget local trust, THEN a different publisher may claim the id"
-expect_exit 0 trust forget "$ID"
-assert_absent "$LEXE_HOME/trust/$ID.json"
+step "after purge a DIFFERENT publisher installs as a FIRST install"
 expect_exit 0 install "$WORK/v1-k2.lexe" --yes
 assert_current 1.0.0
 
@@ -237,13 +239,17 @@ EOF
 "$LEXE" run "$SLEEP_ID" >/dev/null 2>&1 &
 RUN_PID=$!
 sleep 2  # let the launcher acquire the version lease and start the child
-expect_exit 6 remove "$SLEEP_ID" --yes           # busy: a launch holds the lease
+expect_exit 6 uninstall "$SLEEP_ID" --yes        # busy: a launch holds the lease
+expect_exit 6 purge "$SLEEP_ID" --yes            # and so is purge
+assert_file "$LEXE_HOME/trust/$SLEEP_ID.json"    # the refused purge deleted nothing
 kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null || true
 sleep 1
-expect_exit 0 remove "$SLEEP_ID" --purge-data --yes   # succeeds once the run ends
+expect_exit 0 purge "$SLEEP_ID" --yes            # succeeds once the run ends
 
-step "purge the k2 install from step 16, then assert no orphaned files remain"
-expect_exit 0 remove "$ID" --purge-data --yes
+step "purge the k2 install, then assert no orphaned files remain"
+expect_exit 0 purge "$ID" --yes
+assert_absent "$LEXE_HOME/trust/$ID.json"
+assert_absent "$LEXE_HOME/trust/$SLEEP_ID.json"
 assert_absent "$LEXE_HOME/apps/$ID"
 assert_absent "$LEXE_HOME/data/$ID"
 assert_absent "$LEXE_HOME/apps/$SLEEP_ID"

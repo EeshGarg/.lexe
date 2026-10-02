@@ -151,7 +151,7 @@ acc_equals "$chain" "proton" \
 #
 # STEAM_COMPAT_DATA_PATH points inside the sandbox at /run/lexe/data/.proton,
 # which is this directory on the host. If it landed anywhere else, Proton's
-# prefix would be the user's state and --purge-data would not remove it.
+# prefix would be the user's state and `lexe purge` would not remove it.
 data_dir="$LEXE_HOME/data/$WIN_ID"
 acc_true "$([[ -d "$data_dir/.proton/pfx" ]] && echo 0 || echo 1)" \
     "Proton's prefix lands in the application's private data root"

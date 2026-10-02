@@ -37,7 +37,7 @@ when you start one. What the detached supervisor does:
 
 * holds the **version lease** — a shared `flock` on
   `<LEXE_HOME>/locks/<id>.v.<version>.lease` — for the application's whole
-  lifetime, which is what makes `lexe remove` refuse while it runs and `lexe gc`
+  lifetime, which is what makes `lexe uninstall` and `lexe purge` refuse while it runs and `lexe gc`
   keep its files;
 * keeps the sandbox alive after `lexe run` returns, by omitting bubblewrap's
   `--die-with-parent`;
@@ -167,7 +167,7 @@ decisions.
 | `update` | `.LEXE` | the unit is untouched. A **running** service keeps running the version it started with, because its lease protects those files. The new version takes effect on the next restart, and `lexe update` says so rather than restarting it silently |
 | `rollback` | `.LEXE` | same |
 | `repair` | `.LEXE` | same |
-| `remove` | `.LEXE` | the unit is **stopped, disabled and deleted** before the application is removed. A unit left pointing at an uninstalled application is a systemd restart loop against a binary that is gone |
+| `uninstall` / `purge` | `.LEXE` | the unit is **stopped, disabled and deleted** before the application is removed. A unit left pointing at an uninstalled application is a systemd restart loop against a binary that is gone |
 | `service enable` | user | unit written, recorded in `integration.json`, `daemon-reload`, enabled |
 | `service disable` | user | stopped, disabled, deleted, un-recorded, `daemon-reload` |
 | crash | systemd | restarted after `RestartSec`, per `Restart=on-failure` |

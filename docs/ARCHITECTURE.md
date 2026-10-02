@@ -48,7 +48,7 @@ other, and the `lexe` binary is just its entry point. `lexe-ui` and
 | `package/` | the container and what it declares: ZIP reader/writer, manifest, Ed25519/SHA-256, and the defensive ELF and PE readers | `base` |
 | `verify/` | the FORMAT §6 pipeline and the local trust model | `base`, `package` |
 | `analysis/` | dependency graphs, runtime profiles and the Tux32 Core 1 baseline — read-only inspection, no installed state | `base`, `package` |
-| `state/` | the LAYOUT of installed state: the installation records, the canonical per-application path API, per-app user overrides, and the operation locks and version leases that serialise access to it | `base`, `package` |
+| `state/` | the LAYOUT of installed state: the installation records, the canonical per-application path API, per-app user overrides, the per-App-ID state table that `uninstall` and `purge` act on (`appstate`), and the operation locks and version leases that serialise access to it | `base`, `package` |
 | `install/` | ORCHESTRATION over that state: transactional install/uninstall/rollback/repair and updates | everything below |
 | `runtime/` | getting an application to run: execution-policy resolution, compatibility chains, host compilation, launch references, and the launcher | `base`, `package`, `verify`, `install`, `sandbox`, `analysis` |
 | `sandbox/` | the isolation backend and the permission model | `base`, `package` |
@@ -132,7 +132,8 @@ developer tools):
 lexe install <file.lexe> [--yes] [--channel <c>]
 lexe run <id> [-- args…]
 lexe update <id> | --all [--check]
-lexe remove <id> [--purge-data] [--yes]
+lexe uninstall <id> [--yes]
+lexe purge <id> [--yes]
 lexe repair <id>
 lexe info <file.lexe | id> [--json]
 lexe analyze <binary | project-dir | payload-dir> [--json] [--profile <p>]

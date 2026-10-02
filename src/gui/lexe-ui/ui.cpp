@@ -788,44 +788,49 @@ inline std::string reclaim_result(const GcReport& report) {
     return join_lines(lines);
 }
 
-inline std::string uninstall_mode_label(Installer::UninstallMode mode) {
-    switch (mode) {
-    case Installer::UninstallMode::AppOnly:
-        return "Remove the application (keep my data)";
-    case Installer::UninstallMode::AppAndCache:
-        return "Remove the application and its cache (keep my data)";
-    case Installer::UninstallMode::PurgeData:
-        return "Remove everything, including my data";
+/// The two removal choices the Uninstall page offers -- the same two
+/// operations as `lexe uninstall` and `lexe purge`, and nothing in between.
+/// There used to be three (app only / app and cache / app and data); the cache
+/// is now always removed with the program, and "data" is not the only thing a
+/// purge forgets.
+enum class RemovalChoice { Uninstall, Purge };
+
+inline std::string uninstall_mode_label(RemovalChoice choice) {
+    switch (choice) {
+    case RemovalChoice::Uninstall:
+        return "Uninstall (keep my data and settings)";
+    case RemovalChoice::Purge:
+        return "Purge: forget this application completely, including my data";
     }
-    return "Remove the application";
+    return "Uninstall";
 }
 
-inline std::string uninstall_mode_description(Installer::UninstallMode mode) {
-    switch (mode) {
-    case Installer::UninstallMode::AppOnly:
-        return "Deletes the installed program files and everything .LEXE "
-               "registered for it (menu entry, icons, file associations, launch "
-               "reference). Your saved data and its cache are kept, so "
+inline std::string uninstall_mode_description(RemovalChoice choice) {
+    switch (choice) {
+    case RemovalChoice::Uninstall:
+        return "Deletes the installed program and everything .LEXE registered "
+               "for it (menu entry, icons, file associations, launch reference, "
+               "cache). Your saved data, your trust decision for this "
+               "application and your compatibility preferences are kept, so "
                "reinstalling later picks them up again.";
-    case Installer::UninstallMode::AppAndCache:
-        return "As above, and also deletes the application's cache directory. "
-               "Your saved data is still kept. Use this to reclaim space "
-               "without losing anything you created.";
-    case Installer::UninstallMode::PurgeData:
+    case RemovalChoice::Purge:
         return "As above, and also deletes the application's persistent data "
-               "directory — documents, profiles and settings the application "
-               "saved. This cannot be undone, and reinstalling starts from "
-               "scratch.";
+               "(documents, profiles and settings it saved in its .LEXE data "
+               "folder), its trust decision -- including a block -- its "
+               "preferences and its error history. This cannot be undone, and "
+               "reinstalling is a first install. Files it saved elsewhere in "
+               "your home folder are not touched.";
     }
     return "";
 }
 
 inline std::string uninstall_confirmation(const std::string& name,
                                           const std::string& id,
-                                          Installer::UninstallMode mode) {
-    std::string text = "Remove " + name + " (" + id + ")?\n\n" +
-                       uninstall_mode_description(mode);
-    if (mode != Installer::UninstallMode::PurgeData) {
+                                          RemovalChoice choice) {
+    std::string text = (choice == RemovalChoice::Purge ? "Purge " : "Uninstall ") +
+                       name + " (" + id + ")?\n\n" +
+                       uninstall_mode_description(choice);
+    if (choice != RemovalChoice::Purge) {
         text += "\n\nYour saved data is NOT deleted by this choice.";
     } else {
         text += "\n\nThis permanently deletes the saved data as well.";
@@ -1127,7 +1132,7 @@ struct Ui {
     GtkWidget* channel_combo = nullptr;
     GtkWidget* error_details_view = nullptr;
     GtkWidget* wait_check = nullptr;
-    GtkWidget* uninstall_radios[3] = {nullptr, nullptr, nullptr};
+    GtkWidget* uninstall_radios[2] = {nullptr, nullptr};
 
     lexe::Paths paths;
     bool paths_ok = false;
@@ -1758,15 +1763,19 @@ void start_launch(Ui* ui, const std::string& id) {
 }
 
 void start_uninstall(Ui* ui, const std::string& id,
-                     lexe::Installer::UninstallMode mode) {
+                     lexe::ui::RemovalChoice choice) {
     const lexe::Paths paths = ui->paths;
     set_status(ui, "Removing " + id + "…");
     auto failure = std::make_shared<std::string>();
     run_task(
         ui,
-        [paths, id, mode, failure] {
+        [paths, id, choice, failure] {
             try {
-                lexe::Installer(paths).uninstall(id, mode);
+                if (choice == lexe::ui::RemovalChoice::Purge) {
+                    lexe::Installer(paths).purge(id);
+                } else {
+                    lexe::Installer(paths).uninstall(id);
+                }
             } catch (const std::exception& e) {
                 *failure = e.what();
             }
@@ -2268,17 +2277,17 @@ void on_uninstall_clicked(GtkButton*, gpointer data) {
     // Copied before the modal loop below: the page may be rebuilt underneath it.
     const std::string id = action->a;
     const std::string name = action->b;
-    using Mode = lexe::Installer::UninstallMode;
-    const Mode modes[3] = {Mode::AppOnly, Mode::AppAndCache, Mode::PurgeData};
-    const int index = ui->uninstall_mode < 0 || ui->uninstall_mode > 2
+    using Choice = lexe::ui::RemovalChoice;
+    const Choice choices[2] = {Choice::Uninstall, Choice::Purge};
+    const int index = ui->uninstall_mode < 0 || ui->uninstall_mode > 1
                           ? 0
                           : ui->uninstall_mode;
-    const Mode mode = modes[index];
-    if (!confirm(ui, lexe::ui::uninstall_confirmation(name, id, mode),
-                 "_Remove")) {
+    const Choice choice = choices[index];
+    if (!confirm(ui, lexe::ui::uninstall_confirmation(name, id, choice),
+                 choice == Choice::Purge ? "_Purge" : "_Uninstall")) {
         return;
     }
-    start_uninstall(ui, id, mode);
+    start_uninstall(ui, id, choice);
 }
 
 void on_reclaim_clicked(GtkButton*, gpointer data) {
@@ -3041,8 +3050,8 @@ void build_errors_section(Ui* ui, GtkWidget* box,
 void build_uninstall_section(Ui* ui, GtkWidget* box,
                              const lexe::InstallationRecord& record,
                              const std::optional<lexe::Manifest>& manifest) {
-    using Mode = lexe::Installer::UninstallMode;
-    const Mode modes[3] = {Mode::AppOnly, Mode::AppAndCache, Mode::PurgeData};
+    using Choice = lexe::ui::RemovalChoice;
+    const Choice modes[2] = {Choice::Uninstall, Choice::Purge};
     const std::string name =
         manifest.has_value() && !manifest->name.empty() ? manifest->name
                                                         : record.id;
@@ -3054,7 +3063,7 @@ void build_uninstall_section(Ui* ui, GtkWidget* box,
 
     GtkWidget* card = add_card(box, "What to remove");
     GtkWidget* first = nullptr;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
         GtkWidget* radio =
             first == nullptr
                 ? gtk_radio_button_new_with_label(
@@ -3072,7 +3081,7 @@ void build_uninstall_section(Ui* ui, GtkWidget* box,
         connect_action(radio, "toggled", G_CALLBACK(on_uninstall_mode_toggled),
                        ui, "", "", i);
     }
-    const int active = (ui->uninstall_mode < 0 || ui->uninstall_mode > 2)
+    const int active = (ui->uninstall_mode < 0 || ui->uninstall_mode > 1)
                            ? 0
                            : ui->uninstall_mode;
     gtk_toggle_button_set_active(
@@ -3316,7 +3325,6 @@ void refresh(Ui* ui) {
     ui->wait_check = nullptr;
     ui->uninstall_radios[0] = nullptr;
     ui->uninstall_radios[1] = nullptr;
-    ui->uninstall_radios[2] = nullptr;
 
     if (ui->page != "home" && ui->page != "install" && ui->page != "apps" &&
         ui->page != "app" && ui->page != "settings") {

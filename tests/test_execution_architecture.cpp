@@ -920,7 +920,7 @@ TEST_CASE("integration never forgets an artifact it cannot regenerate") {
     CHECK(integration.verify().ok);
 
     // And uninstall still removes them, because they were never forgotten.
-    installer.uninstall(id, Installer::UninstallMode::AppOnly);
+    installer.uninstall(id);
     CHECK_FALSE(fs::exists(paths.icons_dir() / "64x64" / "apps" /
                            ("lexe-" + id + ".png")));
     CHECK(registered_icons(paths, id) == 0);

@@ -236,7 +236,7 @@ guarded for fork/exec, symlinks, file locking and FIFOs.
 
 Beyond the unit binary, on this machine: **12 acceptance suites**, 3 lifecycle
 scripts (including the interrupted-operation torture set), the security lane, and
-2 integration scripts — all green. `./scripts/test.sh --all` runs every one of
+3 integration scripts — all green. `./scripts/test.sh --all` runs every one of
 them and distinguishes PASS from SKIP from BLOCKED, so a capability this machine
 cannot demonstrate is reported as a gap rather than counted as a success.
 

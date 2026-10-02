@@ -47,6 +47,7 @@ Not part of the contract; do not depend on their exact shape across versions:
 | **Settings** file (`<home>/settings.json`) | **Detail** | Preferences only; unknown fields are ignored, but the schema may grow. |
 | Registry/installation.json field set | **Detail** | Internal bookkeeping; read via `lexe apps`/`info`, not by hand. |
 | C++ APIs, module boundaries, and `src/lexe` types | **Detail** | ALPHA makes no API/ABI promise. |
+| CLI **verb names** | **Detail** | Not promised. `lexe remove` was retired in favour of `lexe uninstall` and `lexe purge`; it now exits 2 (usage) naming both, rather than aliasing either, because its `--purge-data` kept the trust record and `purge` deletes it -- an alias would change what an old script does. |
 | CLI `--json` **shapes** | **Informative** | Stable enough to script an Alpha, but may gain fields; treat additively. |
 | CLI **exit codes** (0 ok · 1 runtime · 2 usage · 3 verification · 4 not-found · 5 permission · 6 busy · 7 trust) | **Promise (this line)** | Documented and depended on by `lexe sdk verify` (0/3) and tests. |
 | **Builder defaults** (Core Portable default, x86-64, generated key path) | **Detail** | Convenience defaults; may change without affecting produced packages. |

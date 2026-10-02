@@ -16,7 +16,7 @@
 //         util::remove_recursive(fs::path(file));
 //
 // Measured before the fix: two paths appended to that record, an ordinary
-// directory and an ordinary file well outside LEXE_HOME, and `lexe remove`
+// directory and an ordinary file well outside LEXE_HOME, and `lexe remove` (now `lexe uninstall`)
 // destroyed both -- the directory RECURSIVELY -- while printing a clean
 // removal.
 //

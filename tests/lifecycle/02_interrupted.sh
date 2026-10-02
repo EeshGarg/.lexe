@@ -248,13 +248,88 @@ acc_true "$("$LEXE" doctor >/dev/null 2>&1; echo $?)" "and doctor is healthy aga
 # The mirror image of the install trigger: a remove says nothing until it is
 # done either, but the version directories disappearing is an unmistakable sign
 # that it is in the middle of the work.
-lc_kill_at "gone:$LC_VERSIONS/*" KILL -- remove "$LC_APP_ID" --yes
+lc_kill_at "gone:$LC_VERSIONS/*" KILL -- uninstall "$LC_APP_ID" --yes
 lc_interrupt_report "killed during uninstall"
 lc_assert_coherent "killed during uninstall"
-"$LEXE" remove "$LC_APP_ID" --yes >/dev/null 2>&1
+"$LEXE" uninstall "$LC_APP_ID" --yes >/dev/null 2>&1
 acc_true "$(lc_is_installed && echo 1 || echo 0)" \
     "the uninstall completes when retried"
 lc_assert_coherent "after retrying the uninstall"
+
+# --------------------------------------------- 8b. interrupted purge
+#
+# Purge makes .LEXE forget an application, trust decision included, and is
+# transactional: a journal (`apps/.removing/<id>.purge`) is written before
+# anything changes and removed only after a post-check finds everything gone.
+# Two real SIGKILLs, at the two boundaries that matter: the moment the journal
+# appears, and the moment the trust record disappears. Whatever instant the
+# signal lands at, three things must hold:
+#
+#   * never "files gone and installed=true" (lc_assert_coherent);
+#   * an unfinished purge is never mistaken for a finished one: launch and
+#     uninstall refuse (exit 6) and `trust show` says so;
+#   * it FINISHES -- by `lexe purge` again, or by `lexe install`, which must
+#     then be a first install, not a return under the old explicit trust.
+#
+# The unit failpoints (test_purge.cpp, CASE 4) stop the purge at chosen lines;
+# this stops a real process wherever the kernel happens to find it, observed
+# only through the CLI.
+LC_PURGE_JOURNAL="$LEXE_HOME/apps/.removing/$LC_APP_ID.purge"
+LC_TRUST_RECORD="$LEXE_HOME/trust/$LC_APP_ID.json"
+
+lc_check_unfinished_purge() { # <label>
+    local label="$1"
+    if [[ ! -f "$LC_PURGE_JOURNAL" ]]; then
+        note "$label: the purge completed before the signal landed; nothing unfinished to check"
+        return 0
+    fi
+    pass "$label: the purge is recorded as unfinished (journal present)"
+    local out rc
+    out="$("$LEXE" uninstall "$LC_APP_ID" --yes 2>&1)"; rc=$?
+    acc_equals "$rc" "6" "$label: uninstall refuses an unfinished purge (6)"
+    if lc_is_installed; then
+        out="$(timeout 120 "$LEXE" run "$LC_APP_ID" --no-terminal 2>&1)"; rc=$?
+        acc_equals "$rc" "6" "$label: an application mid-purge is not launched (6)"
+        acc_equals "$(lc_starts_logged)" "$LC_STARTS_BEFORE_PURGE" \
+            "$label: and it really did not run: no start was recorded"
+    fi
+    out="$("$LEXE" trust show "$LC_APP_ID" 2>&1)"
+    acc_contains "$out" "INTERRUPTED and not finished" \
+        "$label: trust show says the purge is unfinished"
+}
+
+for trigger in "path:$LC_PURGE_JOURNAL" "gone:$LC_TRUST_RECORD"; do
+    "$LEXE" install "$v1" --yes --trust >/dev/null 2>&1
+    acc_true "$([[ -f "$LC_TRUST_RECORD" ]] && echo 0 || echo 1)" \
+        "a trust record exists before the purge (the control)"
+    LC_STARTS_BEFORE_PURGE="$(lc_starts_logged)"
+    label="killed during purge (${trigger%%:*} trigger)"
+
+    lc_kill_at "$trigger" KILL -- purge "$LC_APP_ID" --yes
+    lc_interrupt_report "$label"
+    lc_assert_coherent "$label"
+    lc_check_unfinished_purge "$label"
+
+    if [[ "$trigger" == path:* ]]; then
+        # Finish it the direct way.
+        out="$("$LEXE" purge "$LC_APP_ID" --yes 2>&1)"; rc=$?
+        acc_equals "$rc" "0" "$label: purging again finishes it" "$out"
+        acc_file_absent "$LC_TRUST_RECORD" "$label: the trust record is gone"
+        acc_file_absent "$LEXE_HOME/data/$LC_APP_ID/profile.conf" \
+            "$label: and so is the data"
+        acc_file_absent "$LC_PURGE_JOURNAL" "$label: and nothing is left unfinished"
+    else
+        # Finish it by installing: install completes the purge FIRST, so this
+        # is a first install -- the explicit trust from before must be gone.
+        out="$("$LEXE" install "$v1" --yes 2>&1)"; rc=$?
+        acc_equals "$rc" "0" "$label: installing finishes the purge, then installs" "$out"
+        acc_file_absent "$LC_PURGE_JOURNAL" "$label: nothing is left unfinished"
+        out="$("$LEXE" trust show "$LC_APP_ID" --json 2>&1)"
+        acc_contains "$out" '"explicitlyTrusted": false' \
+            "$label: the reinstall is a FIRST install, not a return under the old trust"
+        lc_assert_coherent "$label: after finishing by install"
+    fi
+done
 
 # --------------------------------------------- 9. a stale version lease
 #
@@ -271,11 +346,11 @@ if [[ -n "$lease" ]]; then
     sleep 1
     kill -9 "$holder" 2>/dev/null
     wait "$holder" 2>/dev/null
-    acc_true "$("$LEXE" remove "$LC_APP_ID" --yes >/dev/null 2>&1; echo $?)" \
+    acc_true "$("$LEXE" uninstall "$LC_APP_ID" --yes >/dev/null 2>&1; echo $?)" \
         "a lease whose holder was killed does not strand the version"
 else
     note "no lease file at rest; the kernel-released design leaves none behind"
-    "$LEXE" remove "$LC_APP_ID" --yes >/dev/null 2>&1
+    "$LEXE" uninstall "$LC_APP_ID" --yes >/dev/null 2>&1
 fi
 lc_assert_coherent "after a killed lease holder"
 
@@ -290,6 +365,6 @@ compat_status=$?
 acc_true "$([[ $compat_status -ne 0 ]] && echo 0 || echo 1)" \
     "a chain the package does not permit cannot be selected, absent or not"
 acc_contains "$compat_out" "does not permit" "and the reason says so"
-"$LEXE" remove "$LC_APP_ID" --purge-data --yes >/dev/null 2>&1
+"$LEXE" purge "$LC_APP_ID" --yes >/dev/null 2>&1
 
 acc_summary

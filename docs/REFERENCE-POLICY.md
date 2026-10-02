@@ -177,27 +177,114 @@ XDG_DATA_DIRS environment variables" over the command's own output.
 registry — never assembled ad hoc by callers).**
 
 * **Persistent data** (`data/<id>/`) belongs to the App ID, not a version. It
-  survives ordinary update, rollback and app-only uninstall; a package cannot
+  survives ordinary update, rollback and uninstall (only `lexe purge` removes
+  it); a package cannot
   redirect its location. The `.lexe-data-owner` marker pins the publisher key
   that owns the data: a reinstall by the same key reuses it, but a DIFFERENT
   key claiming the same id over retained data is refused (`RetainedDataConflict`,
   exit 6) until the data is purged. The installer never parses or executes app
   data. A binary rollback is not a data-format rollback.
-* **Cache** (`cache/apps/<id>/`) is disposable and removed independently of data.
+* **Cache** (`cache/apps/<id>/`) is disposable: uninstall removes it with the
+  program, and data is never touched by that.
 * **Runtime temp** (`cache/runtime-tmp/`) holds per-launch private directories
   under an installer-controlled root; the sandbox maps them to `/tmp`.
 
-**Uninstall has three explicit modes:**
+### Uninstall and purge
 
-| Command | binaries + integration | cache | persistent data |
+Two commands, and the difference between them should be clear without knowing
+anything about package managers:
+
+* **`lexe uninstall <id>`** — *remove the installed program.* Everything the
+  installation needs to execute goes, with its desktop integration and the
+  debris it leaves (cache, downloaded updates). What makes a later reinstall a
+  **returning** installation is kept, and it is a fixed, documented list — not
+  whatever happened to survive.
+* **`lexe purge <id>`** — *make .LEXE forget this application.* Everything
+  .LEXE holds for that App ID goes, including the data, the local trust
+  decision (and any local block) and the preferences. A later install is a
+  **first** install. It works whether or not the application is still
+  installed: what uninstall keeps is exactly what purge exists to remove.
+
+**Every per-application location, and what each command does to it.** This is
+the table in `src/lexe/state/appstate.cpp`; the code reads it, and
+`tests/test_purge.cpp` checks that every entry below is named here word for word
+and walks LEXE_HOME to catch anything the table itself forgot.
+
+| Location | What it is | `uninstall` | `purge` |
 |---|---|---|---|
-| `lexe remove <id>` | removed | preserved | preserved |
-| `lexe remove <id> --remove-cache` | removed | removed | preserved |
-| `lexe remove <id> --purge-data` | removed | removed | **removed** |
+| `apps/<id>/` | installation: program files, installation record, approved permissions, update source, transaction journal | removed | removed |
+| `apps/.removing/<id>/` | remains of an interrupted uninstall | removed | removed |
+| `cache/apps/<id>/` | cache | removed | removed |
+| `cache/updates/<id>/` | downloaded update packages | removed | removed |
+| `cache/launchref-work/<id>/` | launch-reference scratch | removed | removed |
+| desktop entry, icons, MIME, service unit | desktop integration (recorded in `integration.json`) | removed | removed |
+| `trust/<id>.json` | local trust record: the App-ID/key binding, any explicit trust and any local block | **kept** | removed |
+| `data/<id>/` | persistent application data, and the marker binding it to a publisher key | **kept** | removed |
+| `config/apps/<id>.json` | compatibility preferences | **kept** | removed |
+| `state/errors/<id>/` | error history | **kept** | removed |
+| `locks/<id>.lock` | per-app mutation lock (an empty flock anchor) | kept | kept |
 
-Full data removal requires the explicit `--purge-data` flag — `--yes` confirms
-a prompt but never widens the scope to include persistent data. Uninstall refuses
-(exit 6) while the application is running (a launch holds a version lease).
+The mutation lock is not state: it is an empty file whose inode is what
+mutual exclusion is built on, and deleting it would let the next opener lock a
+different inode while this one is still held. Version lease files
+(`locks/<id>.v.<version>.lease`) are removed for the versions found in the
+application's own directories and never by matching names, because the name
+`com.a.v.1.v.2.0.0.lease` is equally App `com.a` at version `1.v.2.0.0` and App
+`com.a.v.1` at `2.0.0`; a lease is an empty flock anchor that influences nothing.
+
+**Permission approval does not survive an uninstall.** It lives in the
+installation record, so the next install is a first install for permissions as
+for everything else. FORMAT-0.1 §9.5.1 says approval persists across "reinstall
+by the same publisher key"; this runtime meets that for a reinstall over an
+existing installation and does not carry it across an uninstall. If §9.5.1 is
+meant to cover reinstalling after an uninstall, that is an open question about
+this runtime, not something settled here by reading the sentence narrowly.
+
+**The purge invariant.**
+
+> After a successful `lexe purge A`, no .LEXE-managed state associated
+> exclusively with A can affect a subsequent installation, verification,
+> authorization, configuration or execution of A.
+
+**Trust is scoped to one App ID.** A trust record binds one App ID to one key;
+.LEXE has no publisher-wide or key-wide trust. Two applications signed by the
+same key have two records, purging one never touches the other's, and a purged
+application does not regain trust because the same key is trusted for another
+App ID. `lexe trust show` states the scope.
+
+**Purge is transactional and fails closed.** A journal
+(`apps/.removing/<id>.purge`) is written before anything changes; the program is
+detached by the same atomic rename uninstall uses; the persistent state is
+deleted, trust record first; a post-check then confirms every location above is
+gone, and only then is the journal removed and success reported. While a journal
+exists the purge is unfinished: `lexe install` finishes it before doing anything
+else (so the install is a first install), `lexe purge` finishes it, and launch,
+`lexe uninstall` and the `lexe trust` mutations refuse with exit 6. Uninstall
+does not finish a purge because finishing it would delete data, which uninstall
+never does. A purge that cannot remove something reports a failure, keeps the
+journal and says what remains; it never reports success over remaining state.
+A running application is refused (exit 6) before the journal is written, so a
+refusal leaves nothing behind.
+
+**What purge never touches.** Files the application wrote anywhere outside
+.LEXE's own storage — documents, exports, projects in the user's home folder.
+Purge removes .LEXE-owned application state and never guesses who owns
+anything else; a path an installation record names outside the runtime's own
+directories is refused, not deleted (`may_delete`).
+
+**Exit codes.** `uninstall`: 0 removed; 4 never installed here (or purged); 6
+removed earlier (retained data or a trust record shows it was here), running,
+or a purge is unfinished. `purge`: 0 purged, or an interrupted purge finished;
+4 .LEXE holds no state for the App ID; 6 running; 1 a location could not be
+removed (the purge is reported unfinished). Both prompt unless `--yes` is
+given; `purge` is itself the "explicit, separate instruction" FORMAT-0.1 §9.5
+requires for removing persistent data, and its prompt names the data and the
+trust decision.
+
+**`lexe remove` is retired**, not aliased: `remove --purge-data` kept the trust
+record and `purge` does not, so an alias would change what an old script does
+under the name it already used. It is a usage error (exit 2) naming both
+replacements.
 
 `lexe gc <id> [--keep <n>]` reclaims superseded immutable versions, always
 keeping the active version, everything at or newer than it, the newest `n`
@@ -475,7 +562,7 @@ it.
 * **Sandboxing** is bubblewrap on Linux. The format requires isolation between
   applications (§9.6); it does not name a mechanism.
 * **A confirmation prompt needs an input that can answer it.** `lexe install` and
-  `lexe remove` prompt only when stdin is a **terminal** (a person is there) or a
+  `lexe uninstall` and `lexe purge` prompt only when stdin is a **terminal** (a person is there) or a
   **regular file** (the answer is already written down, all of it, so the read is
   bounded). On anything else — a pipe, a socket, `/dev/null` — they refuse with
   exit 5 and name `--yes`, rather than waiting.

@@ -639,39 +639,40 @@ TEST_CASE("error records round-trip through the store into the rows") {
 
 // ------------------------------------------------------------ Uninstall
 
-TEST_CASE("each uninstall mode says exactly what it deletes") {
+TEST_CASE("each removal choice says exactly what it deletes") {
     TempLexeHome home;
-    using Mode = lexe::Installer::UninstallMode;
-    const std::string app_only =
-        lexe::ui::uninstall_mode_description(Mode::AppOnly);
-    CHECK(contains(app_only, "data and its cache are kept"));
+    using Choice = lexe::ui::RemovalChoice;
+    const std::string uninstall =
+        lexe::ui::uninstall_mode_description(Choice::Uninstall);
+    CHECK(contains(uninstall, "saved data, your trust decision"));
+    CHECK(contains(uninstall, "are kept"));
+    CHECK(contains(uninstall, "cache")); // removed WITH the program now
 
-    const std::string with_cache =
-        lexe::ui::uninstall_mode_description(Mode::AppAndCache);
-    CHECK(contains(with_cache, "cache"));
-    CHECK(contains(with_cache, "data is still kept"));
-
-    const std::string purge =
-        lexe::ui::uninstall_mode_description(Mode::PurgeData);
+    const std::string purge = lexe::ui::uninstall_mode_description(Choice::Purge);
     CHECK(contains(purge, "persistent data"));
+    CHECK(contains(purge, "trust decision"));
+    CHECK(contains(purge, "including a block"));
     CHECK(contains(purge, "cannot be undone"));
+    // The ownership boundary, said where the user decides.
+    CHECK(contains(purge, "elsewhere in your home folder are not touched"));
 
-    CHECK(contains(lexe::ui::uninstall_mode_label(Mode::AppOnly), "keep my data"));
-    CHECK(contains(lexe::ui::uninstall_mode_label(Mode::PurgeData),
+    CHECK(contains(lexe::ui::uninstall_mode_label(Choice::Uninstall),
+                   "keep my data"));
+    CHECK(contains(lexe::ui::uninstall_mode_label(Choice::Purge),
                    "including my data"));
 }
 
 TEST_CASE("the uninstall confirmation states the data outcome either way") {
     TempLexeHome home;
-    using Mode = lexe::Installer::UninstallMode;
+    using Choice = lexe::ui::RemovalChoice;
     const std::string keep = lexe::ui::uninstall_confirmation(
-        "Hello App", "com.example.hello", Mode::AppOnly);
+        "Hello App", "com.example.hello", Choice::Uninstall);
     CHECK(contains(keep, "Hello App"));
     CHECK(contains(keep, "com.example.hello"));
     CHECK(contains(keep, "saved data is NOT deleted"));
 
     const std::string purge = lexe::ui::uninstall_confirmation(
-        "Hello App", "com.example.hello", Mode::PurgeData);
+        "Hello App", "com.example.hello", Choice::Purge);
     CHECK(contains(purge, "permanently deletes the saved data"));
 }
 
@@ -911,8 +912,8 @@ TEST_CASE("the frontend never claims 'verified', 'trusted', 'safe' or 'secure' "
     composed.push_back(lexe::ui::settings_scope_note());
     composed.push_back(
         lexe::ui::missing_launch_target_text("com.example.hello"));
-    using Mode = lexe::Installer::UninstallMode;
-    for (Mode mode : {Mode::AppOnly, Mode::AppAndCache, Mode::PurgeData}) {
+    using Choice = lexe::ui::RemovalChoice;
+    for (Choice mode : {Choice::Uninstall, Choice::Purge}) {
         composed.push_back(lexe::ui::uninstall_mode_label(mode));
         composed.push_back(lexe::ui::uninstall_mode_description(mode));
     }

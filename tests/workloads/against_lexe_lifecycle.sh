@@ -52,7 +52,7 @@ mkdir -p "$LEXE_HOME"
 PUB="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["publicKey"])' "$W/key.json")"
 
 cleanup() {
-    "$LEXE_BIN" remove "$APP" --purge-data --yes >/dev/null 2>&1
+    "$LEXE_BIN" purge "$APP" --yes >/dev/null 2>&1
     rm -rf "$W"
 }
 APP="wl.lifecycle"
@@ -176,16 +176,16 @@ if build_and_install linux-run-bounded-3s 3.0.0 3000; then
     done
     # `remove` takes the whole application away, so §9.4 leaves it no option but
     # to refuse while a version is executing.
-    "$LEXE_BIN" remove "$APP" --yes >"$W/busy.log" 2>&1
+    "$LEXE_BIN" uninstall "$APP" --yes >"$W/busy.log" 2>&1
     rc=$?
     if [[ $rc -eq 6 ]]; then
-        pass "lexe remove refuses (exit 6, busy) while the application is running"
+        pass "lexe uninstall refuses (exit 6, busy) while the application is running"
     elif [[ $rc -eq 0 ]]; then
-        fail "lexe remove SUCCEEDED while the application was running" \
+        fail "lexe uninstall SUCCEEDED while the application was running" \
              "§9.4: the files of an executing version must not be removed" \
              "$(tail -3 "$W/busy.log")"
     else
-        fail "lexe remove exited $rc while running (expected 6, busy)" \
+        fail "lexe uninstall exited $rc while running (expected 6, busy)" \
              "$(tail -3 "$W/busy.log")"
     fi
 
@@ -283,7 +283,7 @@ PYEOF
             fail "$label (expected to $expect, did $got; exit $rc)" \
                  "$(head -1 "$W/$id.err")"
         fi
-        "$LEXE_BIN" remove "$id" --purge-data --yes >/dev/null 2>&1
+        "$LEXE_BIN" purge "$id" --yes >/dev/null 2>&1
     }
     dep_case "a dangling absolute rpath does not block a launch /usr can satisfy" \
              wl.depdangling /nonexistent-rb/lib accept
@@ -409,7 +409,7 @@ except Exception:
                  "starts anyway — the check condemns a package that works, which is" \
                  "the false negative that looks like caution"
         fi
-        "$LEXE_BIN" remove "$id" --purge-data --yes >/dev/null 2>&1
+        "$LEXE_BIN" purge "$id" --yes >/dev/null 2>&1
     }
     dep_agree "analyze agrees with the launch: bundled lib, no rpath to reach it" \
               wl.depagree1 "" yes

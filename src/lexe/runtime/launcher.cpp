@@ -10,6 +10,7 @@
 // unconfined launch.
 
 #include "lexe/runtime/launcher.hpp"
+#include "lexe/state/appstate.hpp"
 
 #include "lexe/state/appconfig.hpp"
 #include "lexe/package/crypto.hpp"
@@ -394,6 +395,13 @@ ExecutionReport run_application(const Paths& paths, const RunRequest& request) {
 
     // Throws NotFoundError when the app is not installed.
     InstallationRecord record = registry.read_record(id);
+
+    // An unfinished purge: the user asked .LEXE to forget this application, and
+    // a purge interrupted before it detached the program leaves it installed
+    // and runnable. Running it then would execute an application the user is
+    // in the middle of removing, under trust and preferences that are about to
+    // be deleted. Refuse, and say how to finish.
+    if (purge_pending(paths, id)) throw purge_unfinished_error(id);
 
     // Enforce LOCAL trust before doing anything else. A locally blocked App ID
     // must not launch; a corrupt trust record, or one that binds a DIFFERENT

@@ -187,7 +187,7 @@ Double-click `run.lexe` again — the window must open normally (6.5).
 ## 7. Teardown
 
 ```sh
-lexe remove com.usha.guihello --purge-data --yes
+lexe purge com.usha.guihello --yes
 rm -f ~/Desktop/App.lexe ~/Desktop/run.lexe /tmp/lexe-manual-key.json /tmp/gui-hello.orig
 lexe doctor                      # should report no orphaned registrations
 ```

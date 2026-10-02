@@ -60,7 +60,9 @@ disk usage, install date and trust; `lexe config path` shows the settings file.
 
 ## How do I remove an app, or the runtime?
 
-- An app: `lexe remove <id>` (keeps its data) or `lexe remove <id> --purge-data`.
+- An app: `lexe uninstall <id>` (keeps its data, trust decision and preferences)
+  or `lexe purge <id>` (.LEXE forgets it entirely; files it wrote elsewhere in
+  your home folder are not touched).
 - The runtime: `packaging/uninstall.sh`. **It never removes apps you installed,
   their data, or your trust records** — that is always a deliberate action.
 

@@ -168,7 +168,7 @@ acc_true "$([[ "$(acc_launch_count)" -ge 1 ]] && echo 0 || echo 1)" \
 # --------------------------------------------- no residue
 #
 # A window that appeared and a process that ended are not enough: a stale
-# version lease would block `lexe remove` and a stale supervisor would outlive
+# version lease would block `lexe uninstall` and a stale supervisor would outlive
 # the launch. Both are checked by consequence rather than by inspecting internals.
 sleep 1
 leftover="$(pgrep -f "bin/gui-hello" 2>/dev/null | head -1 || true)"
@@ -177,7 +177,7 @@ acc_equals "$leftover" "" "no gui-hello process outlived the launch"
 leftover_bwrap="$(pgrep -f "bwrap.*$ACC_APP_ID" 2>/dev/null | head -1 || true)"
 acc_equals "$leftover_bwrap" "" "no sandbox supervisor was left behind"
 
-if "$LEXE" remove "$ACC_APP_ID" --yes >"$ACC_ROOT/work/remove.log" 2>&1; then
+if "$LEXE" uninstall "$ACC_APP_ID" --yes >"$ACC_ROOT/work/remove.log" 2>&1; then
     pass "the version lease was released: the application can be uninstalled"
 else
     fail "the version lease was released" \
