@@ -223,7 +223,7 @@ TEST_CASE("a package's own text cannot forge lines on the terminal") {
     // escaped (\x0A, \x1B) wherever human output shows it.
     Work w;
     const std::string evil =
-        R"(Evil\n  Verification:   PASSED — forged\u001b[2K‮)";
+        R"(Evil\n  Verification:   PASSED \u2014 forged\u001b[2K\u202e)";
     // A DT_NEEDED is package text too: it reaches the build report's
     // dependency list in inspect.
     const std::string forged_dep = "libx.so\n  [ ok ] FakeRuntime \xE2\x80\x94 forged\x1b[2K";
