@@ -355,12 +355,14 @@ TEST_CASE("traversal/absolute/drive entrypoints in the manifest copy are "
     CHECK_FALSE(fs::exists(paths.apps_dir() / "evil-ran.txt"));
 }
 
-TEST_CASE("containment check rejects an entrypoint resolving to the version "
-          "dir itself") {
-    // "." passes every FORMAT-0.1 §5 lexical rule, so it reaches the
-    // launcher's own canonical-containment check — the entrypoint must be a
-    // file strictly inside the version directory (invariant #6). This
-    // exercises the rejection branch on hosts without symlink support too.
+TEST_CASE("an entrypoint naming the version dir itself never launches") {
+    // This case used to reach the launcher's canonical-containment check,
+    // because "." passed every FORMAT-0.1 §5 lexical rule. Since the
+    // canonical-semantics audit (6cda4cc) a payload path follows the §2.1
+    // segment grammar, so "." is refused at the manifest -- one layer
+    // earlier, and for every host. The assertion follows the rule to where it
+    // now lives; the containment check itself is still exercised by the
+    // symlink-escape cases above (invariant #6).
     lexe::test::TempLexeHome home;
     const lexe::Paths paths = lexe::Paths::detect();
 
@@ -373,9 +375,8 @@ TEST_CASE("containment check rejects an entrypoint resolving to the version "
         lexe::run_app(paths, app.id, {});
         FAIL("expected lexe::Error");
     } catch (const lexe::Error& e) {
-        CHECK(std::string(e.what()).find(
-                  "resolves outside the current version directory") !=
-              std::string::npos);
+        INFO(e.what());
+        CHECK(std::string(e.what()).find("\".\" segments") != std::string::npos);
     }
 }
 
