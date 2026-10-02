@@ -6,6 +6,7 @@
 
 #include "elf_builder.hpp"
 #include "helpers.hpp"
+#include "lexe/base/util.hpp"
 
 #include "lexe/analysis/depengine.hpp"
 #include "lexe/package/elf.hpp"
@@ -81,6 +82,42 @@ TEST_CASE("classifies host / bundle / forbidden / unresolved dependencies") {
     CHECK(r.has_unresolved());
     CHECK(r.has_forbidden());
 
+    fs::remove_all(work);
+}
+
+TEST_CASE("a DT_NEEDED naming a PATH is never looked up on the host") {
+    // `lexe inspect` analyses an untrusted package's ELF. resolve() joined each
+    // soname onto a search directory, and `dir / "/etc/passwd"` IS
+    // "/etc/passwd" (and "../../x" walks out of dir): a package could make
+    // inspect open, hash and print the digest of any host file it named -- an
+    // existence-and-content oracle on the inspecting machine. A soname with a
+    // '/' is not a library to search for; it is reported unresolved without
+    // touching the filesystem.
+    const fs::path work = test::unique_temp_dir("lexe-dep-");
+    fs::create_directories(work / "lib");
+    // A real file OUTSIDE the search directory, reachable only via the path.
+    const fs::path outside = work / "secret";
+    util::spit(outside, std::string_view("host secret"));
+
+    test::ElfSpec app;
+    app.interp = "/lib64/ld-linux-x86-64.so.2";
+    const std::string abs = outside.string();
+    app.needed = {abs, "../secret"};
+    const fs::path root = work / "lib" / "app";
+    test::write_elf(root, app);
+
+    DependencyOptions opts;
+    opts.payload_search_paths = {work / "lib"};
+    const DependencyReport r = analyze_dependencies(root, opts);
+
+    for (const std::string& name : {abs, std::string("../secret")}) {
+        CAPTURE(name);
+        const Dependency* d = find(r, name);
+        REQUIRE(d != nullptr);
+        CHECK(d->kind == DependencyKind::Unresolved);
+        CHECK(d->resolved_path.empty());
+        CHECK(d->sha256.empty()); // the file was not read
+    }
     fs::remove_all(work);
 }
 

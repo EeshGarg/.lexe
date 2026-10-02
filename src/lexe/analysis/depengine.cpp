@@ -185,6 +185,15 @@ namespace {
 
 /// Resolve a soname to a file under an ordered set of directories.
 fs::path resolve(const std::string& soname, const std::vector<fs::path>& dirs) {
+    // A name with a '/' is a PATH, not a library to search for, and the object
+    // being analysed may be untrusted: `dir / "/etc/passwd"` is "/etc/passwd",
+    // and "../x" walks out of dir. Looking either up would let a package make
+    // `lexe inspect` open and hash host files of its choosing. Unresolved, and
+    // the filesystem is not touched. ("." and ".." are directories anyway.)
+    if (soname.empty() || soname.find('/') != std::string::npos ||
+        soname == "." || soname == "..") {
+        return {};
+    }
     std::error_code ec;
     for (const fs::path& dir : dirs) {
         const fs::path candidate = dir / soname;
