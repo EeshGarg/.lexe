@@ -34,6 +34,10 @@ struct BuildReport {
 
     // --- analysis ---
     RuntimeProfile profile = RuntimeProfile::CorePortable;
+    /// False when the package declares no profile (or one this reader does not
+    /// know): FORMAT §5.7 -- treated as NO profile, never a default. `profile`,
+    /// `profile_assessment` and `core1` are then meaningless and not rendered.
+    bool profile_declared = true;
     DependencyReport dependencies;
     ProfileAssessment profile_assessment;
     CompatibilityReport compatibility;

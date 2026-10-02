@@ -98,8 +98,14 @@ std::string render_build_report_text(const BuildReport& r) {
         }
         os << "\n";
     }
-    os << "Runtime profile: " << pinfo.name << " (" << pinfo.portability
-       << " portability)\n";
+    if (r.profile_declared) {
+        os << "Runtime profile: " << pinfo.name << " (" << pinfo.portability
+           << " portability)\n";
+    } else {
+        // FORMAT §5.7: an absent or unknown declaration is NO profile -- never
+        // a substituted default, and so nothing to assess against.
+        os << "Runtime profile: none declared (not assessed)\n";
+    }
 
     if (r.core1.has_value()) {
         const Core1VerifyResult& c = *r.core1;
@@ -192,7 +198,11 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
                             {"version", r.app_version}};
     }
     j["architectures"] = r.architectures;
-    j["runtimeProfile"] = to_string(r.profile);
+    if (r.profile_declared) {
+        j["runtimeProfile"] = to_string(r.profile);
+    } else {
+        j["runtimeProfile"] = nullptr; // §5.7: none declared, none substituted
+    }
     j["permissions"] = r.permissions;
     if (!r.signing_fingerprint.empty()) j["signingKey"] = r.signing_fingerprint;
 
@@ -266,7 +276,7 @@ nlohmann::ordered_json build_report_json(const BuildReport& r) {
     j["glibcRequirement"] = r.dependencies.max_glibc_version();
     if (!r.dependencies.cycles.empty()) j["cycles"] = r.dependencies.cycles;
 
-    j["profileAssessment"] = {
+    if (r.profile_declared) j["profileAssessment"] = {
         {"claimsPortability", r.profile_assessment.claims_portability},
         {"warnings", r.profile_assessment.warnings},
         {"notes", r.profile_assessment.notes}};

@@ -1867,7 +1867,22 @@ BuildReport inspect_report(const PackageReader& reader, const Manifest& manifest
     DependencyReport deps =
         analyze_dependencies(scratch / fs::path(manifest.entrypoint_executable),
                              opts);
-    BuildReport r = assemble_report(std::move(deps), RuntimeProfile::CorePortable);
+    // The profile the package DECLARES (§5.7). Absent or unknown is no profile
+    // -- not Core Portable, which this used to assume for every package, so a
+    // package built as native-capture reported as a portability failure.
+    std::optional<RuntimeProfile> declared;
+    if (!manifest.runtime_profile.empty()) {
+        try {
+            declared = runtime_profile_from_string(manifest.runtime_profile);
+        } catch (const Error&) {
+        }
+    }
+    BuildReport r = assemble_report(std::move(deps),
+                                    declared.value_or(RuntimeProfile::CorePortable));
+    if (!declared.has_value()) {
+        r.profile_declared = false;
+        r.core1.reset();
+    }
     // Identity and permissions are already shown in the inspection header, so
     // leave them off the report to avoid duplicating them; keep architectures.
     if (r.architectures.empty()) r.architectures = manifest.architectures;
@@ -1923,14 +1938,36 @@ int cmd_inspect(const std::vector<std::string>& args) {
     } scratch_guard{scratch};
     BuildReport report;
     std::string analysis_error;
-    try {
-        report = inspect_report(reader, manifest, scratch);
-    } catch (const Error& e) {
-        analysis_error = e.what();
+    // Analysis describes a BINARY, so it runs only when there is a verified
+    // native one. Otherwise it used to report on content it never examined: a
+    // portable package (source only) or a windows one (a PE) got "Tux32:
+    // invalid-input" and "[ ok ]" for every distribution from an empty
+    // dependency list; and a package that FAILED verification had its
+    // unauthenticated bytes described as if they were the package.
+    std::string not_analysed;
+    if (!vr.ok()) {
+        not_analysed = "the package failed verification, so its content is not "
+                       "described";
+    } else if (manifest.application_type != "native") {
+        not_analysed = "a " + manifest.application_type +
+                       " package ships no native binary to analyse" +
+                       (manifest.application_type == "portable"
+                            ? " (it is compiled on the installing machine)"
+                            : "");
+    }
+    if (not_analysed.empty()) {
+        try {
+            report = inspect_report(reader, manifest, scratch);
+        } catch (const Error& e) {
+            analysis_error = e.what();
+        }
     }
 
     if (parsed.flags.count("--json") != 0) {
         ordered_json j;
+        // First, so no consumer reads "application"/"publisher" below without
+        // passing it: false means those are the file's CLAIMS, unverified.
+        j["authenticated"] = vr.ok();
         j["package"] = {{"path", pkg.string()},
                         {"fileSize", file_size},
                         {"payloadSize", payload_size(reader)},
@@ -1957,9 +1994,13 @@ int cmd_inspect(const std::vector<std::string>& args) {
         if (conflict.has_value()) {
             j["localTrust"] = local_install_conflict_json(*conflict);
         }
-        if (analysis_error.empty()) {
+        if (!not_analysed.empty()) {
+            j["analysis"] = {{"performed", false}, {"reason", not_analysed}};
+        } else if (analysis_error.empty()) {
+            j["analysis"] = {{"performed", true}};
             j["report"] = build_report_json(report);
         } else {
+            j["analysis"] = {{"performed", false}, {"reason", analysis_error}};
             j["analysisError"] = analysis_error;
         }
         j["manifest"] = manifest_json(manifest);
@@ -1970,6 +2011,13 @@ int cmd_inspect(const std::vector<std::string>& args) {
     // ---- human, formatted ----
     std::cout << "Package: " << pkg.string() << " (" << format_size(file_size)
               << ")\n\n";
+    if (!vr.ok()) {
+        // BEFORE the manifest's facts, not after them: a reader who stops at
+        // "Publisher:" must already know none of it is authenticated.
+        std::cout << "  NOT AUTHENTIC — this package failed verification. "
+                     "Everything below is what the file CLAIMS, not what was "
+                     "verified.\n\n";
+    }
     print_manifest_info(manifest, display_size(manifest, reader));
     std::cout << "\n";
     print_kv("Signing key:", fp.grouped);
@@ -2004,7 +2052,9 @@ int cmd_inspect(const std::vector<std::string>& args) {
 
     // Dependencies / compatibility / Tux32 — the shared build report.
     std::cout << "\n";
-    if (analysis_error.empty()) {
+    if (!not_analysed.empty()) {
+        std::cout << "Analysis:        not performed — " << not_analysed << "\n";
+    } else if (analysis_error.empty()) {
         std::cout << render_build_report_text(report);
     } else {
         std::cout << "Dependency analysis unavailable: " << analysis_error

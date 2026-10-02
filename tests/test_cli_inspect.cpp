@@ -68,7 +68,8 @@ fs::path build_package(const fs::path& work, const std::string& key = "k.json",
   "version":")" + version + R"(","publisher":{"name":"Demo Publisher","publicKey":"AUTO"},
   "applicationType":"native","architectures":[")" + host_architecture() + R"("],
   "entrypoint":{"executable":"bin/app","arguments":[]},
-  "install":{"scope":"user","mode":"bundled"},"permissions":["network"]
+  "install":{"scope":"user","mode":"bundled"},"permissions":["network"],
+  "runtimeProfile":"core-portable"
 })"));
     REQUIRE(run({"keygen", (work / key).string()}).exit_code == 0);
     const util::ProcessResult b = run({"build", (work / "proj").string(), "-o",
@@ -190,6 +191,60 @@ TEST_CASE("--manifest dumps the raw manifest JSON") {
 TEST_CASE("a missing package is a not-found error") {
     Work w;
     CHECK(run({"inspect", (w.dir / "nope.lexe").string()}).exit_code == 4);
+}
+
+TEST_CASE("inspect describes only what it examined, and says so") {
+    Work w;
+    const crypto::KeyPair key = test::make_keypair();
+
+    SUBCASE("a portable package ships no binary, so nothing is analysed") {
+        // Before: "Tux32: invalid-input" and "[ ok ]" for every distribution,
+        // from a dependency list that was empty because nothing was examined.
+        const fs::path pkg = test::make_portable_package(w.dir, key);
+        const util::ProcessResult j = run({"inspect", pkg.string(), "--json"});
+        REQUIRE(j.exit_code == 0);
+        const json doc = json::parse(j.stdout_text);
+        CHECK(doc.at("authenticated") == true);
+        CHECK(doc.at("analysis").at("performed") == false);
+        CHECK_FALSE(doc.contains("report"));
+        const util::ProcessResult h = run({"inspect", pkg.string()});
+        CHECK(has(h.stdout_text, "not performed"));
+        CHECK_FALSE(has(h.stdout_text, "[ ok ]"));
+        CHECK_FALSE(has(h.stdout_text, "Tux32"));
+    }
+
+    SUBCASE("no declared runtimeProfile is no profile, not Core Portable") {
+        // FORMAT §5.7: "MUST NOT substitute a default".
+        const fs::path pkg = test::make_test_package(w.dir, key);
+        const util::ProcessResult j = run({"inspect", pkg.string(), "--json"});
+        REQUIRE(j.exit_code == 0);
+        const json doc = json::parse(j.stdout_text);
+        REQUIRE(doc.at("analysis").at("performed") == true);
+        CHECK(doc.at("report").at("runtimeProfile").is_null());
+        CHECK_FALSE(doc.at("report").contains("profileAssessment"));
+        CHECK_FALSE(doc.at("report").contains("tux32"));
+        CHECK(has(run({"inspect", pkg.string()}).stdout_text,
+                  "none declared (not assessed)"));
+    }
+
+    SUBCASE("a package that fails verification is marked BEFORE its claims") {
+        const fs::path pkg = test::make_test_package(w.dir, key);
+        test::tamper_entry(pkg, "signatures/manifest.sig",
+                           [](std::vector<std::uint8_t>& b) {
+                               std::fill(b.begin(), b.end(), std::uint8_t{0});
+                           });
+        const util::ProcessResult h = run({"inspect", pkg.string()});
+        CHECK(h.exit_code == 3);
+        const std::size_t banner = h.stdout_text.find("NOT AUTHENTIC");
+        const std::size_t claim = h.stdout_text.find("Publisher:");
+        REQUIRE(banner != std::string::npos);
+        REQUIRE(claim != std::string::npos);
+        CHECK(banner < claim);
+        const json doc = json::parse(run({"inspect", pkg.string(), "--json"}).stdout_text);
+        CHECK(doc.at("authenticated") == false);
+        CHECK(doc.at("analysis").at("performed") == false);
+        CHECK_FALSE(doc.contains("report"));
+    }
 }
 
 #ifndef _WIN32
