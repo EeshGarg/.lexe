@@ -326,13 +326,10 @@ void extract_icons(const PackageReader& reader, const fs::path& dest) {
     }
 }
 
-#ifndef _WIN32
-/// ZIP extraction can drop Unix mode bits — FORMAT-0.1 §1 writers (and
-/// PackageWriter in particular) store entries with zeroed external
-/// attributes, so the extracted entrypoint may land without its exec bit.
-/// The launcher self-heals at launch time, but install time is the correct
-/// place (e.g. app dirs made read-only afterwards). Owner exec is always
-/// added; group/others exec mirror the corresponding read bits.
+// resolve_runtime_contract is PORTABLE and is called on every platform; it
+// sat inside the POSIX-only block below by accident (inserted between the
+// exec-bit helper and its own doc comment), so MSVC never saw it and the
+// Windows CI build failed with C3861 from that commit on.
 /// Definitive Architecture §7 "RUNTIME RESOLUTION" + §16: resolve the
 /// application's dependency/runtime contract ONCE, at install (and repair),
 /// and record the outcome. A normal native launch then only confirms the
@@ -444,6 +441,13 @@ void resolve_runtime_contract(const fs::path& version_dir,
     }
 }
 
+#ifndef _WIN32
+/// ZIP extraction can drop Unix mode bits — FORMAT-0.1 §1 writers (and
+/// PackageWriter in particular) store entries with zeroed external
+/// attributes, so the extracted entrypoint may land without its exec bit.
+/// The launcher self-heals at launch time, but install time is the correct
+/// place (e.g. app dirs made read-only afterwards). Owner exec is always
+/// added; group/others exec mirror the corresponding read bits.
 void ensure_entrypoint_executable(const fs::path& version_dir,
                                   const std::string& entrypoint) {
     std::error_code ec;

@@ -103,6 +103,16 @@ TEST_SUITE("proton") {
 // ------------------------------------------------------------------ discovery
 
 TEST_CASE("Proton is looked for where Proton actually lives, not on $PATH") {
+    // A scratch HOME holding one Steam layout. This case used to read the REAL
+    // home, so its non-emptiness precondition held only on a machine with Steam
+    // installed: green on the development host, and a FATAL failure on the bare
+    // GitHub runner (CI run 36964916861), where nothing was searched at all.
+    // The precondition is now arranged here rather than inherited.
+    const fs::path home = test::unique_temp_dir("lexe-proton-home-");
+    const EnvGuard scoped_home("HOME", home.string());
+    const EnvGuard no_override("LEXE_PROTON", std::nullopt);
+    fs::create_directories(home / ".steam/root/compatibilitytools.d/GE-Proton-Test");
+
     const std::vector<std::string> searched = provider_search_paths("proton");
     REQUIRE_FALSE(searched.empty());
 
@@ -113,6 +123,7 @@ TEST_CASE("Proton is looked for where Proton actually lives, not on $PATH") {
         CHECK(candidate.size() > 7);
         CHECK(candidate.rfind("/proton") == candidate.size() - 7);
     }
+    fs::remove_all(home);
 }
 
 TEST_CASE("the Steam layouts a real machine uses are all searched") {

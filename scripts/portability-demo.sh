@@ -123,6 +123,12 @@ else
   "$CONTAINER" run --rm -v "$REPO:/repo:ro" -v "$WORK:/work" "$SYSROOT_IMAGE" \
     sh -eu -c '
       export DEBIAN_FRONTEND=noninteractive
+      # Debian 11 left LTS in 2026 and its bullseye-security pool now answers
+      # 404 for every package the index still lists (measured in CI run
+      # 36964916861: apt exit 100 before anything of .LEXE ran). The glibc 2.31
+      # this sysroot exists for comes from the main suite, so the security
+      # suite is dropped HERE ONLY; the other images are still supported.
+      sed -i "/debian-security/d" /etc/apt/sources.list
       apt-get update -qq >/dev/null
       apt-get install -y -qq --no-install-recommends g++ make python3-pip >/dev/null
       pip3 install --quiet "cmake>=3.22,<4" ninja 2>/dev/null || pip3 install --quiet cmake ninja
