@@ -270,6 +270,19 @@ TEST_CASE("manifest §5 violations fail at the manifest stage") {
                                         "../escape"; },
                       "entrypoint-escape"),
                  false, "manifest");
+    // A "." segment names the same file as the path without it, so the
+    // manifest and the archive could disagree about which entry is meant:
+    // a portable package declaring "bin/./app" while shipping payload/bin/app
+    // passed §6.7's "MUST NOT contain the entrypoint" (an exact comparison)
+    // and verify then said it carried "no prebuilt entrypoint". Same grammar
+    // as an archive entry path (§2.1) now.
+    int dot_case = 0;
+    for (const char* dotted : {"bin/./app", "./bin/app", "bin/app/.", "."}) {
+        CAPTURE(dotted);
+        expect_stage(pack([&](json& m) { m["entrypoint"]["executable"] = dotted; },
+                          "entrypoint-dot-" + std::to_string(dot_case++)),
+                     false, "manifest");
+    }
     expect_stage(pack([](json& m) { m["architectures"] =
                                         json::array({"sparc"}); },
                       "bad-arch"),

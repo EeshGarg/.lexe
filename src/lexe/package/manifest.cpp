@@ -201,6 +201,12 @@ void validate_relative_payload_path(const std::string& path,
         if (segment == "..") {
             fail(std::string(kField) + " must not contain \"..\" segments");
         }
+        // Same grammar as an archive entry path (§2.1). "bin/./app" names the
+        // same file as "bin/app" but does not compare equal to it, which let a
+        // portable package ship its own entrypoint past §6.7's absence rule.
+        if (segment == ".") {
+            fail(std::string(kField) + " must not contain \".\" segments");
+        }
         if (slash == std::string::npos) break;
         start = slash + 1;
     }
