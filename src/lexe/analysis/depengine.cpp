@@ -190,7 +190,10 @@ fs::path resolve(const std::string& soname, const std::vector<fs::path>& dirs) {
     // and "../x" walks out of dir. Looking either up would let a package make
     // `lexe inspect` open and hash host files of its choosing. Unresolved, and
     // the filesystem is not touched. ("." and ".." are directories anyway.)
-    if (soname.empty() || soname.find('/') != std::string::npos ||
+    // '\\' and ':' too: on a Windows host "C:\x\secret" has no '/' and is
+    // still absolute (GitHub CI's windows job caught exactly that -- the file
+    // was resolved and hashed). No real soname contains any of the three.
+    if (soname.empty() || soname.find_first_of("/\\:") != std::string::npos ||
         soname == "." || soname == "..") {
         return {};
     }
