@@ -542,14 +542,14 @@ TrustEvaluation print_primary_screen(const Manifest& manifest,
     const presentation::IsolationView iso = presentation::present_isolation(caps);
     const NormalizedPermissions perms = normalize_permissions(manifest.permissions);
 
-    std::cout << manifest.name << "\n"
-              << "Published by " << manifest.publisher_name
+    std::cout << util::display_safe(manifest.name) << "\n"
+              << "Published by " << util::display_safe(manifest.publisher_name)
               << " (publisher identity not independently verified)\n"
               << "Version " << manifest.version << "\n\n"
               << "Authenticity & local trust:\n"
-              << "  " << auth.headline << "\n"
-              << "  " << auth.signature_text << "\n"
-              << "  " << auth.key_text << "\n";
+              << "  " << util::display_safe(auth.headline) << "\n"
+              << "  " << util::display_safe(auth.signature_text) << "\n"
+              << "  " << util::display_safe(auth.key_text) << "\n";
     // When the key CHANGED, both fingerprints, labelled — one fingerprint on a
     // "the signing key has changed" screen gives nothing to compare against.
     if (auth.expected_fingerprint_grouped.empty()) {
@@ -621,7 +621,7 @@ constexpr int kLabelWidth = 15;
 
 void print_kv(const std::string& label, const std::string& value) {
     std::cout << "  " << std::left << std::setw(kLabelWidth) << label << " "
-              << value << "\n";
+              << util::display_safe(value) << "\n";
 }
 
 /// Shared manifest block of `lexe info` (package and installed modes).
@@ -1297,7 +1297,7 @@ int cmd_analyze(const std::vector<std::string>& args) {
     report.runtime_contract_checked = contract_checked;
 
     if (parsed.flags.count("--json") != 0) {
-        std::cout << build_report_json(report).dump(2) << "\n";
+        std::cout << build_report_json(report).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
     } else {
         std::cout << render_build_report_text(report);
         if (!report.profile_assessment.warnings.empty()) {
@@ -1445,7 +1445,7 @@ int cmd_sdk_verify(const std::vector<std::string>& args) {
     const Core1VerifyResult r = verify_against_profile(deps, profile);
 
     if (parsed.flags.count("--json") != 0) {
-        std::cout << sdk_verify_json(target, profile, r).dump(2) << "\n";
+        std::cout << sdk_verify_json(target, profile, r).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
     } else {
         render_sdk_verify_text(std::cout, profile, r);
     }
@@ -1474,7 +1474,7 @@ int cmd_version(const std::vector<std::string>& args) {
         j["stage"] = version::kStage;
         j["packageFormat"] = version::kPackageFormat;
         j["tux32Baseline"] = {{"id", t.id}, {"specVersion", t.spec_version}};
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
     } else {
         std::cout << "lexe " << version::runtime_string() << "\n";
         std::cout << "  runtime:        " << version::runtime_string() << "\n";
@@ -1641,7 +1641,7 @@ int cmd_config(const std::vector<std::string>& args) {
     if (sub == "list") {
         const Settings s = Settings::load(paths);
         if (as_json) {
-            std::cout << s.to_json().dump(2) << "\n";
+            std::cout << s.to_json().dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         } else {
             std::cout << "Settings (" << Settings::file(paths).string()
                       << "):\n";
@@ -1714,7 +1714,7 @@ int cmd_info(const std::vector<std::string>& args) {
                 {"full", fp.full}, {"grouped", fp.grouped}, {"short", fp.short_id}};
             j["identityVerified"] = false;
             j["manifest"] = manifest_json(manifest);
-            std::cout << j.dump(2) << "\n";
+            std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         } else {
             std::cout << "Package: " << target << " ("
                       << format_size(
@@ -1802,7 +1802,7 @@ int cmd_info(const std::vector<std::string>& args) {
             {"identityVerified", false},
         };
         j["manifest"] = manifest_json(manifest);
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
     } else {
         std::cout << "Installed application: " << record.id << "\n";
         // The size on disk, the same figure `lexe apps` reports — not the
@@ -1914,7 +1914,7 @@ int cmd_inspect(const std::vector<std::string>& args) {
     const auto file_size = static_cast<std::uint64_t>(fs::file_size(pkg, ec));
 
     if (parsed.flags.count("--manifest") != 0) { // the explicit raw-JSON path
-        std::cout << manifest_json(manifest).dump(2) << "\n";
+        std::cout << manifest_json(manifest).dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         return vr.ok() ? 0 : 3;
     }
 
@@ -2004,7 +2004,7 @@ int cmd_inspect(const std::vector<std::string>& args) {
             j["analysisError"] = analysis_error;
         }
         j["manifest"] = manifest_json(manifest);
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         return vr.ok() ? 0 : 3;
     }
 
@@ -2134,13 +2134,13 @@ int cmd_verify(const std::vector<std::string>& args) {
                             {"detail", failure->detail},
                             {"hint", failure->hint}};
         }
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
     } else {
         std::cout << "Verifying " << file << "\n";
         for (const VerificationStage& stage : report.stages) {
             std::cout << "  " << (stage.ok ? "[ ok ]" : "[FAIL]") << " "
                       << std::left << std::setw(18) << stage.name << " "
-                      << stage.detail << "\n";
+                      << util::display_safe(stage.detail) << "\n";
         }
         if (report.ok()) {
             std::cout << "verification: OK (signature valid, Ed25519)\n";
@@ -2374,7 +2374,7 @@ int cmd_trust_show(const std::string& id, bool as_json) {
         }
         j["identityVerified"] = false; // never externally verified
         j["note"] = kNote;
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         return 0;
     }
 
@@ -2447,7 +2447,7 @@ int cmd_trust_classes(const std::vector<std::string>& args) {
                                {"available", info.available},
                                {"unavailableReason", info.unavailable_reason}});
         }
-        std::cout << ordered_json{{"signerClasses", std::move(classes)}}.dump(2)
+        std::cout << ordered_json{{"signerClasses", std::move(classes)}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                   << "\n";
         return 0;
     }
@@ -2566,7 +2566,7 @@ int cmd_list(const std::vector<std::string>& args) {
                          {"updateUrl", record.update_url},
                          {"installedAt", record.installed_at}});
         }
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         return 0;
     }
 
@@ -2687,7 +2687,7 @@ int cmd_apps(const std::vector<std::string>& args) {
                          {"diskBytes", a.disk},
                          {"trust", a.trust}});
         }
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         return 0;
     }
 
@@ -2851,7 +2851,7 @@ int cmd_build(const std::vector<std::string>& args) {
         }
         if (existing.empty() || existing == "AUTO") {
             doc["publisher"]["publicKey"] = pubkey;
-            util::spit(manifest_file, std::string_view(doc.dump(2) + "\n"));
+            util::spit(manifest_file, std::string_view(doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n"));
             injected_key = true;
         }
     }
@@ -3136,7 +3136,7 @@ int cmd_open(const std::vector<std::string>& args) {
             std::cout << ordered_json{{"role", "launch"},
                                       {"applicationId", target},
                                       {"action", "run"}}
-                             .dump(2)
+                             .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                       << "\n";
         }
         const Paths paths = Paths::detect();
@@ -3238,7 +3238,7 @@ int cmd_doctor(const std::vector<std::string>& args) {
                                  {"detail", provider.detail}});
         }
         j["compatibilityProviders"] = std::move(providers);
-        std::cout << j.dump(2) << "\n";
+        std::cout << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
         return report.ok ? 0 : 1;
     }
 
@@ -3321,7 +3321,7 @@ int cmd_errors(const std::vector<std::string>& args) {
         // No id: list applications that currently have diagnostics.
         const std::vector<std::string> ids = store.applications_with_errors();
         if (parsed.flags.count("--json") != 0) {
-            std::cout << ordered_json{{"applications", ids}}.dump(2) << "\n";
+            std::cout << ordered_json{{"applications", ids}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << "\n";
             return 0;
         }
         if (ids.empty()) {
@@ -3368,7 +3368,7 @@ int cmd_errors(const std::vector<std::string>& args) {
         std::cout << ordered_json{{"applicationId", id},
                                   {"directory", store.app_dir(id).string()},
                                   {"records", std::move(records)}}
-                         .dump(2)
+                         .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                   << "\n";
         return 0;
     }
@@ -3471,7 +3471,7 @@ int cmd_runtime(const std::vector<std::string>& args) {
                                       {"guestIsa", provider->guest_isa},
                                       {"detail", provider->detail},
                                       {"searched", searched}}
-                             .dump(2)
+                             .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                       << "\n";
             return provider->available ? 0 : 4;
         }
@@ -3530,7 +3530,7 @@ int cmd_runtime(const std::vector<std::string>& args) {
                                   {"hostIsa", host.isa},
                                   {"knownChains", known_chain_ids()},
                                   {"runtimes", list}}
-                         .dump(2)
+                         .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                   << "\n";
         return 0;
     }
@@ -3602,7 +3602,7 @@ int cmd_service(const std::vector<std::string>& args) {
                              {"status", session::to_string(caps.status)},
                              {"detail", caps.detail},
                              {"managerVersion", caps.manager_version}}
-                             .dump(2)
+                             .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                       << "\n";
         } else {
             print_kv("Session manager:", session::to_string(caps.status));
@@ -3668,7 +3668,7 @@ int cmd_service(const std::vector<std::string>& args) {
                                   : (st.lexe_supervised_running ? "lexe"
                                                                 : "none")},
                              {"detail", st.detail}}
-                             .dump(2)
+                             .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                       << "\n";
             return 0;
         }
@@ -3739,7 +3739,7 @@ int cmd_service(const std::vector<std::string>& args) {
                                       {"started", now},
                                       {"unitName", session::unit_name(id)},
                                       {"unitPath", path}}
-                             .dump(2)
+                             .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                       << "\n";
             return 0;
         }
@@ -3783,7 +3783,7 @@ int cmd_service(const std::vector<std::string>& args) {
                                   {"enabled", false},
                                   {"hadUnit", had_unit},
                                   {"unitName", session::unit_name(id)}}
-                         .dump(2)
+                         .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                   << "\n";
         return 0;
     }
@@ -3835,7 +3835,7 @@ int cmd_sandbox(const std::vector<std::string>& args) {
                               {"networkNamespaces", caps.network_namespaces},
                               {"bindMounts", caps.bind_mounts}}},
                          {"controls", controls}}
-                         .dump(2)
+                         .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                   << "\n";
         return available ? 0 : 1;
     }
@@ -3986,12 +3986,12 @@ int cmd_compat(const std::vector<std::string>& args) {
                          {"alternatives", std::move(alternatives)},
                          {"rejected", std::move(rejected)},
                          {"configFile", AppConfig::file(paths, id).string()}}
-                         .dump(2)
+                         .dump(2, ' ', false, nlohmann::json::error_handler_t::replace)
                   << "\n";
         return resolution.ok ? 0 : 1;
     }
 
-    std::cout << manifest.name << "  (" << id << ")\n\n";
+    std::cout << util::display_safe(manifest.name) << "  (" << id << ")\n\n";
     if (resolution.mission_critical) {
         std::cout << "  This application is MISSION-CRITICAL. That is an "
                      "execution restriction,\n  not a safety certification: "

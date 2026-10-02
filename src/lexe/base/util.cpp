@@ -501,6 +501,58 @@ void unset_env(const std::string& name) {
 
 #endif
 
+std::string display_safe(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    const auto hex_byte = [&](unsigned char c) {
+        char buf[5];
+        std::snprintf(buf, sizeof buf, "\\x%02X", c);
+        out += buf;
+    };
+    const auto code_point = [&](std::uint32_t cp) {
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "\\u{%04X}", static_cast<unsigned>(cp));
+        out += buf;
+    };
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            if (c < 0x20 || c == 0x7F) hex_byte(c); else out += static_cast<char>(c);
+            ++i;
+            continue;
+        }
+        // Decode one UTF-8 sequence strictly (no overlongs, no surrogates).
+        std::size_t len = 0;
+        std::uint32_t cp = 0;
+        if (c >= 0xC2 && c <= 0xDF) { len = 2; cp = c & 0x1F; }
+        else if (c >= 0xE0 && c <= 0xEF) { len = 3; cp = c & 0x0F; }
+        else if (c >= 0xF0 && c <= 0xF4) { len = 4; cp = c & 0x07; }
+        bool valid = len != 0 && i + len <= text.size();
+        for (std::size_t k = 1; valid && k < len; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(text[i + k]);
+            if ((cc & 0xC0) != 0x80) valid = false;
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        if (valid && ((len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+                      (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)))) {
+            valid = false;
+        }
+        if (!valid) {
+            hex_byte(c);
+            ++i;
+            continue;
+        }
+        const bool hidden = (cp >= 0x80 && cp <= 0x9F) ||
+                            (cp >= 0x200B && cp <= 0x200F) ||
+                            (cp >= 0x202A && cp <= 0x202E) ||
+                            (cp >= 0x2060 && cp <= 0x2069) || cp == 0xFEFF;
+        if (hidden) code_point(cp); else out.append(text.substr(i, len));
+        i += len;
+    }
+    return out;
+}
+
 fs::path make_private_temp_dir(const std::string& prefix) {
 #ifdef _WIN32
     // No mkdtemp: an unguessable name created with create_directory, which

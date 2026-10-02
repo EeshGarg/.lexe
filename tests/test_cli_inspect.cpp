@@ -55,7 +55,8 @@ bool has(const std::string& hay, const std::string& needle) {
 // a DIFFERENT signing key (the local-trust conflict case below).
 fs::path build_package(const fs::path& work, const std::string& key = "k.json",
                        const std::string& out = "app.lexe",
-                       const std::string& version = "2.1.0") {
+                       const std::string& version = "2.1.0",
+                       const std::string& name_json = "Inspect Me") {
     fs::create_directories(work / "proj" / "payload" / "bin");
     test::ElfSpec app;
     app.interp = test::host_interpreter();
@@ -64,7 +65,7 @@ fs::path build_package(const fs::path& work, const std::string& key = "k.json",
     app.version_needs = {"GLIBC_2.17"};
     test::write_elf(work / "proj" / "payload" / "bin" / "app", app);
     util::spit(work / "proj" / "lexe.json", std::string_view(R"({
-  "lexeVersion":"0.1","id":"com.example.inspectme","name":"Inspect Me",
+  "lexeVersion":"0.1","id":"com.example.inspectme","name":")" + name_json + R"(",
   "version":")" + version + R"(","publisher":{"name":"Demo Publisher","publicKey":"AUTO"},
   "applicationType":"native","architectures":[")" + host_architecture() + R"("],
   "entrypoint":{"executable":"bin/app","arguments":[]},
@@ -192,6 +193,44 @@ TEST_CASE("a missing package is a not-found error") {
     Work w;
     CHECK(run({"inspect", (w.dir / "nope.lexe").string()}).exit_code == 4);
 }
+
+TEST_CASE("a package's own text cannot forge lines on the terminal") {
+    // A signed name carrying a newline printed a fake "Verification: PASSED"
+    // row under Name; an ESC sequence reached stdout raw. Package text is now
+    // escaped (\x0A, \x1B) wherever human output shows it.
+    Work w;
+    const std::string evil =
+        R"(Evil\n  Verification:   PASSED — forged\u001b[2K‮)";
+    const fs::path pkg = build_package(w.dir, "k.json", "app.lexe", "2.1.0", evil);
+    for (const char* cmd : {"inspect", "verify", "info"}) {
+        CAPTURE(cmd);
+        const util::ProcessResult r = run({cmd, pkg.string()});
+        // No raw ESC and no raw RTL override anywhere in the output.
+        CHECK(r.stdout_text.find('\x1b') == std::string::npos);
+        CHECK(r.stdout_text.find("\xE2\x80\xAE") == std::string::npos);
+        // The forged text never starts a line of its own.
+        CHECK_FALSE(has(r.stdout_text, "\n  Verification:   PASSED \xE2\x80\x94 forged"));
+        // ...but it is still visible, escaped, so nothing is hidden either.
+        CHECK(has(r.stdout_text, "Evil\\x0A"));
+    }
+}
+
+#ifndef _WIN32
+TEST_CASE("verify --json always emits a verdict, even about bytes that are not UTF-8") {
+    // nlohmann's dump() throws on invalid UTF-8, so a rejection whose detail
+    // (or file name) carried such bytes printed NOTHING on stdout and exited 1
+    // -- a machine consumer got no verdict for a fail-closed rejection.
+    Work w;
+    const fs::path bad = w.dir / std::string("pkg-\xff\xfe.lexe");
+    util::spit(bad, std::string_view("not a zip"));
+    const util::ProcessResult r = run({"verify", bad.string(), "--json"});
+    INFO(r.stderr_text);
+    CHECK(r.exit_code == 3);
+    REQUIRE_FALSE(r.stdout_text.empty());
+    const json doc = json::parse(r.stdout_text); // valid UTF-8 JSON
+    CHECK(doc.at("ok") == false);
+}
+#endif
 
 TEST_CASE("inspect describes only what it examined, and says so") {
     Work w;

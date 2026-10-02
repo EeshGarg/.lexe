@@ -351,9 +351,9 @@ case("container-encrypted-entry", "§2.1", "reject",
 case("container-unsupported-method", "§2.1", "reject",
      "a compression method the reader does not support must be refused",
      lambda p: p.entry_opts.update({"payload/data.txt": {"method": 99}}))
-case("container-zip64-eocd", "§1", "unspecified",
-     "§1 forbids a WRITER emitting ZIP64 unless required but does not say what "
-     "a READER must do with one on a small archive",
+case("container-zip64-eocd", "§1", "reject",
+     "§1: a reader MUST reject ZIP64 structures (was 'MAY', which left the "
+     "verdict reader-defined; settled in the canonical-semantics audit)",
      lambda p: p.zip_opts.update(zip64_eocd=True))
 
 # ============================ §2.1 Entry paths ==============================

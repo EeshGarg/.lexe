@@ -82,6 +82,19 @@ std::optional<std::string> get_env(const std::string& name);
 void set_env(const std::string& name, const std::string& value);
 void unset_env(const std::string& name);
 
+// --- display ---
+/// `text` made safe to put on a terminal as ONE line of human output. Package
+/// content (a name, a publisher, an ELF's DT_NEEDED) is publisher-controlled;
+/// printed raw, a newline in it forges whole lines ("Verification: PASSED"
+/// under the Name row) and an ESC sequence rewrites the screen. Escaped, not
+/// dropped, so what the package really says stays visible:
+///   C0 controls, DEL       -> \xNN       (newline and tab included)
+///   C1 controls             -> \u{NNNN}
+///   bidi / invisible format -> \u{NNNN}  (U+200B-200F, 202A-202E, 2060-2069, FEFF)
+///   invalid UTF-8 bytes     -> \xNN
+/// Everything else, including all other non-ASCII text, passes unchanged.
+std::string display_safe(std::string_view text);
+
 // --- temporary directories ---
 /// A fresh directory under the system temp directory that nobody else could
 /// have named or created first: unpredictable, created exclusively, 0700 on

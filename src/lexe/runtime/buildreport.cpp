@@ -1,6 +1,7 @@
 // buildreport — see buildreport.hpp. Assembly + frontend-neutral rendering.
 
 #include "lexe/runtime/buildreport.hpp"
+#include "lexe/base/util.hpp"
 
 #include <sstream>
 
@@ -41,7 +42,7 @@ void list_kind(std::ostringstream& os, const DependencyReport& deps,
     if (items.empty()) return;
     os << "  " << heading << " (" << items.size() << "):\n";
     for (const Dependency* d : items) {
-        os << "    - " << d->soname;
+        os << "    - " << util::display_safe(d->soname);
         if (show_hash && !d->sha256.empty()) {
             os << "  sha256:" << d->sha256.substr(0, 12) << "…";
         }
@@ -57,7 +58,7 @@ void list_kind(std::ostringstream& os, const DependencyReport& deps,
             os << "  [found on this host, NOT in the package]";
             break;
         case DependencyOrigin::Elsewhere:
-            os << "  [found only at " << d->resolved_path.string()
+            os << "  [found only at " << util::display_safe(d->resolved_path.string())
                << ", which a sandboxed launch will not have]";
             break;
         case DependencyOrigin::None:
@@ -146,7 +147,7 @@ std::string render_build_report_text(const BuildReport& r) {
                << (r.runtime_unreachable.size() == 1 ? "y" : "ies")
                << " the loader cannot reach at launch:\n";
             for (const std::string& soname : r.runtime_unreachable) {
-                os << "    ! " << soname << "\n";
+                os << "    ! " << util::display_safe(soname) << "\n";
             }
             os << "                  The files may well be in the package. The "
                   "loader searches DT_RPATH/DT_RUNPATH and then the system "
