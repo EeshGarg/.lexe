@@ -119,6 +119,9 @@ EOF
 }
 EOF
 
+    # A throwaway evidence key per package; keygen refuses to overwrite, so
+    # the previous run's key and package go first.
+    rm -f "$KEY" "$PKG"
     "$LEXE" keygen "$KEY" >/dev/null || { bad "keygen"; return 1; }
     "$LEXE" build "$proj" -o "$PKG" --key "$KEY" >/dev/null || { bad "lexe build"; return 1; }
 
@@ -247,6 +250,9 @@ cmd_compare() {
     [ -f "$x" ] && [ -f "$a" ] || { bad "need both records; run local and remote first"; return 1; }
 
     get() { sed -n "s/^$2=//p" "$1" | head -1; }
+    local fails=0
+    # Counts failures, so the closing claim is stated only when nothing failed.
+    bad() { printf '  FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
     local xp ap xm am xr ar
     xp="$(get "$x" PACKAGE_SHA256)"; ap="$(get "$a" PACKAGE_SHA256)"
@@ -279,7 +285,12 @@ cmd_compare() {
     [ "$ar" = "0" ] && ok "AArch64 product executed (rc=0)" || bad "AArch64 product rc=$ar"
 
     say ""
-    say "  the claim this supports:"
+    if [ "$fails" -ne 0 ]; then
+        say "  $fails check(s) failed: this run does NOT support the claim below."
+        say "  the claim it was built to test:"
+    else
+        say "  the claim this supports:"
+    fi
     say "    .LEXE portable source materializes and executes native products on"
     say "    both x86-64 Linux and physical AArch64 hardware (Debian arm64 under"
     say "    PRoot on Android). It does NOT establish support for arbitrary"

@@ -227,9 +227,9 @@ if [ ! -d repo/.git ]; then git init -q repo; fi
 cd repo
 git config user.email arm@worker.local
 git config user.name  'ARM Worker'
-cp /data/data/com.termux/files/home/lexe-sync.bundle ./sync.bundle 2>/dev/null || cp \$HOME/../usr/../home/lexe-sync.bundle ./sync.bundle 2>/dev/null || true
-if [ ! -f ./sync.bundle ]; then echo NO_BUNDLE_IN_GUEST; exit 1; fi
-git fetch -q ./sync.bundle refs/lexe-arm-sync 2>&1 | tail -2 || true
+cp /data/data/com.termux/files/home/lexe-sync.bundle ../sync.bundle 2>/dev/null || cp \$HOME/../usr/../home/lexe-sync.bundle ../sync.bundle 2>/dev/null || true
+if [ ! -f ../sync.bundle ]; then echo NO_BUNDLE_IN_GUEST; exit 1; fi
+git fetch -q ../sync.bundle refs/lexe-arm-sync 2>&1 | tail -2 || true
 git checkout -q --detach $sha
 echo CHECKED_OUT=\$(git rev-parse HEAD)")"
 
