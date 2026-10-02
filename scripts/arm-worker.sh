@@ -205,19 +205,19 @@ cmd_sync() {
     (( brc == 0 )) || { infra "git bundle create failed"; return 1; }
     ok "bundle: $(du -h "$bundle" | cut -f1)"
 
-    MSYS2_ARG_CONV_EXCL=/sdcard adb push "$bundle" /sdcard/lexe-sync.bundle >/dev/null 2>&1 \
-        || { infra "adb push to /sdcard failed"; return 1; }
-    ok "pushed to /sdcard"
-
-    # Termux reads /sdcard only after termux-setup-storage; ~/storage/shared is
-    # the symlink it creates. Try both, and say which worked.
-    local moved
-    moved="$(arm_termux 'p=""; for c in "$HOME/storage/shared/lexe-sync.bundle" /sdcard/lexe-sync.bundle; do [ -r "$c" ] && p="$c" && break; done; if [ -z "$p" ]; then echo NO_READABLE_COPY; else cp "$p" "$HOME/lexe-sync.bundle" && echo "COPIED_FROM=$p"; fi')"
-    if [[ "$moved" == *NO_READABLE_COPY* ]]; then
-        infra "Termux cannot read /sdcard -- run termux-setup-storage in Termux and grant the permission"
+    # Bytes travel over the same ssh channel as the commands. (The old route,
+    # adb push to /sdcard, needs Termux's storage permission -- a tap on the
+    # device -- and an unattended sync must not.) Hashed on both ends.
+    local want got_hash
+    want="$(sha256sum "$bundle" | cut -d' ' -f1)"
+    arm_ssh 'cat > "$HOME/lexe-sync.bundle"' < "$bundle" \
+        || { infra "streaming the bundle over ssh failed"; return 1; }
+    got_hash="$(arm_termux 'sha256sum "$HOME/lexe-sync.bundle"' | cut -d' ' -f1)"
+    if [[ "$got_hash" != "$want" ]]; then
+        infra "bundle hash on the worker '$got_hash' != host '$want'"
         return 1
     fi
-    ok "termux: ${moved}"
+    ok "termux: bundle received, sha256 ${want:0:16}... matches"
 
     local out
     out="$(arm_guest "set -e
