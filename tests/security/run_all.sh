@@ -345,10 +345,26 @@ for info, data in items:
         data = json.dumps(m).encode()
     out.append((info, data))
 '
-# Rewriting the manifest breaks its signature, so this is refused for that
-# reason. The escaping itself is pinned in tests/test_security_boundary.cpp; what
-# matters here is that a signed manifest cannot be edited at all.
+# A name carrying a newline is not a valid manifest at all (FORMAT §5.2), so it
+# is refused at the manifest stage -- before the signature is even consulted.
+# The escaping itself is still pinned in tests/test_security_boundary.cpp.
 out="$("$LEXE" verify "$WORK/evilname.lexe" 2>&1)"
+acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
+    "a name that could inject a desktop key is refused"
+acc_contains "$out" "U+000A" "and the reason is the control character in the name"
+
+# And a signed manifest cannot be edited at all: the same rewrite with a name
+# that is valid text fails on the signature.
+sec_rewrite "$GOOD" "$WORK/editedname.lexe" '
+import json
+for info, data in items:
+    if info.filename == "lexe.json":
+        m = json.loads(data)
+        m["name"] = "Innocent Edited"
+        data = json.dumps(m).encode()
+    out.append((info, data))
+'
+out="$("$LEXE" verify "$WORK/editedname.lexe" 2>&1)"
 acc_true "$([[ $? -ne 0 ]] && echo 0 || echo 1)" \
     "an edited manifest is refused — the signature covers the name too"
 acc_contains "$out" "signature" "and the reason is the signature"
