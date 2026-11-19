@@ -1,5 +1,5 @@
 // Operation locking (runtime-trust WS9). POSIX backend uses flock(2); the
-// non-POSIX backend is a permissive single-writer stand-in. See lock.hpp for
+// Windows backend uses LockFileEx with the same contract. See lock.hpp for
 // the design contract (kernel-released locks, no timestamp staleness, no
 // check-then-create).
 
@@ -28,6 +28,14 @@
 #include <unistd.h>
 #else
 #include <process.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <cstdint>
 #endif
 
 namespace lexe {
@@ -324,44 +332,178 @@ private:
 
 #else // _WIN32
 
-/// Permissive single-writer handle: no OS lock (the Windows dev host is a
-/// single user with no isolation backend), only lock-order tracking.
-class NullHandle : public TrackedHandle {
+/// Windows backend: LockFileEx byte-range locks, the same contract as the flock
+/// backend above -- kernel-released on handle close or process death, shared
+/// vs exclusive, non-blocking probe plus bounded wait, no staleness heuristics.
+///
+/// This replaced a permissive stand-in that took no lock at all, on the theory
+/// that a Windows dev host has one user. It has one user and many processes:
+/// repair rewrote a version a running program held a lease on, and the
+/// mutation lock that serialises install against uninstall excluded nobody.
+///
+/// Windows byte-range locks are MANDATORY (a locked range refuses other
+/// handles' reads and writes), so the lock covers one byte far beyond any
+/// content the file will ever hold; the owner record at offset 0 stays
+/// writable and readable for diagnostics.
+constexpr DWORD kLockOffsetHigh = 0x7FFFFFFF;
+
+HANDLE open_lock_file(const fs::path& file) {
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    // Not inheritable (no SECURITY_ATTRIBUTES): a launched program never holds
+    // our locks. FILE_SHARE_DELETE so purge can unlink a lease file whether or
+    // not someone still has it open, as unlink(2) can on POSIX.
+    const HANDLE h = ::CreateFileW(
+        file.wstring().c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        throw LockError("lock: cannot open " + file.string() + ": error " +
+                        std::to_string(::GetLastError()));
+    }
+    return h;
+}
+
+bool win_lock_once(HANDLE h, LockMode mode, bool fail_immediately) {
+    OVERLAPPED ov{};
+    ov.Offset = 0;
+    ov.OffsetHigh = kLockOffsetHigh;
+    DWORD flags = 0;
+    if (mode == LockMode::Exclusive) flags |= LOCKFILE_EXCLUSIVE_LOCK;
+    if (fail_immediately) flags |= LOCKFILE_FAIL_IMMEDIATELY;
+    return ::LockFileEx(h, flags, 0, 1, 0, &ov) != 0;
+}
+
+bool win_acquire(HANDLE h, LockMode mode, const WaitPolicy& wait,
+                 const fs::path& file) {
+    if (wait.block_forever) {
+        if (win_lock_once(h, mode, false)) return true;
+        throw LockError("lock: LockFileEx(" + file.string() + "): error " +
+                        std::to_string(::GetLastError()));
+    }
+    const auto deadline = std::chrono::steady_clock::now() + wait.timeout;
+    for (;;) {
+        if (win_lock_once(h, mode, true)) return true;
+        const DWORD err = ::GetLastError();
+        if (err != ERROR_LOCK_VIOLATION && err != ERROR_IO_PENDING) {
+            throw LockError("lock: LockFileEx(" + file.string() + "): error " +
+                            std::to_string(err));
+        }
+        if (wait.timeout.count() <= 0 ||
+            std::chrono::steady_clock::now() >= deadline) {
+            return false; // held by another; bound elapsed
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+class WinLockHandle : public TrackedHandle {
 public:
-    explicit NullHandle(LockClass cls) : TrackedHandle(cls) {}
-    ~NullHandle() override { unregister_once(); }
-    void release() override { unregister_once(); }
-    bool held() const override { return registered_; }
+    WinLockHandle(HANDLE h, LockClass cls) : TrackedHandle(cls), h_(h) {}
+    ~WinLockHandle() override { release(); }
+
+    void release() override {
+        if (h_ != INVALID_HANDLE_VALUE) {
+            OVERLAPPED ov{};
+            ov.OffsetHigh = kLockOffsetHigh;
+            ::UnlockFileEx(h_, 0, 1, 0, &ov);
+            ::CloseHandle(h_);
+            h_ = INVALID_HANDLE_VALUE;
+        }
+        unregister_once();
+    }
+    bool held() const override { return h_ != INVALID_HANDLE_VALUE; }
+
+private:
+    HANDLE h_;
 };
 
-class NullLockManager : public OperationLockManager {
+void write_owner_record(HANDLE h, const LockOwner& owner) {
+    const std::string line = owner.to_line();
+    LARGE_INTEGER zero{};
+    if (!::SetFilePointerEx(h, zero, nullptr, FILE_BEGIN)) return;
+    DWORD written = 0;
+    ::WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    ::SetEndOfFile(h);
+}
+
+class WinLockManager : public OperationLockManager {
 public:
-    explicit NullLockManager(Paths paths) : paths_(std::move(paths)) {}
+    explicit WinLockManager(Paths paths)
+        : paths_(std::move(paths)), registry_(paths_) {}
 
     AppLock lock_app_mutation(const std::string& id, const std::string& op,
-                              const WaitPolicy&) override {
-        return AppLock(std::make_unique<NullHandle>(LockClass::AppMutation), id,
-                       op);
+                              const WaitPolicy& wait) override {
+        const fs::path file = registry_.mutation_lock_file(id); // validates id
+        const HANDLE h = open_lock_file(file);
+        if (!win_acquire(h, LockMode::Exclusive, wait, file)) {
+            ::CloseHandle(h);
+            throw BusyError("application " + id +
+                            " is busy: another operation (" + op +
+                            ") holds its mutation lock");
+        }
+        write_owner_record(h, self_owner(op));
+        if (const auto hold = test_hold("LEXE_TEST_HOLD_APPLOCK_MS");
+            hold.count() > 0) {
+            std::this_thread::sleep_for(hold);
+        }
+        return AppLock(std::make_unique<WinLockHandle>(h, LockClass::AppMutation),
+                       id, op);
     }
+
     LaunchLease acquire_launch_lease(const std::string& id,
                                      const std::string& version,
-                                     const WaitPolicy&) override {
-        return LaunchLease(std::make_unique<NullHandle>(LockClass::VersionLease),
-                           id, version, LockMode::Shared);
+                                     const WaitPolicy& wait) override {
+        const fs::path file = registry_.version_lease_file(id, version);
+        const HANDLE h = open_lock_file(file);
+        if (!win_acquire(h, LockMode::Shared, wait, file)) {
+            ::CloseHandle(h);
+            throw BusyError("cannot lease " + id + " " + version +
+                            ": a version-exclusive operation is in progress");
+        }
+        return LaunchLease(
+            std::make_unique<WinLockHandle>(h, LockClass::VersionLease), id,
+            version, LockMode::Shared);
     }
+
     std::optional<LaunchLease> try_lock_version_for_gc(
         const std::string& id, const std::string& version) override {
-        return LaunchLease(std::make_unique<NullHandle>(LockClass::VersionLease),
-                           id, version, LockMode::Exclusive);
+        const fs::path file = registry_.version_lease_file(id, version);
+        const HANDLE h = open_lock_file(file);
+        if (!win_acquire(h, LockMode::Exclusive, WaitPolicy::none(), file)) {
+            ::CloseHandle(h);
+            return std::nullopt; // a runner holds the version; do not touch it
+        }
+        return LaunchLease(
+            std::make_unique<WinLockHandle>(h, LockClass::VersionLease), id,
+            version, LockMode::Exclusive);
     }
-    GlobalRecoveryLock lock_global_recovery(const WaitPolicy&) override {
+
+    GlobalRecoveryLock lock_global_recovery(const WaitPolicy& wait) override {
+        const fs::path file = registry_.global_recovery_lock_file();
+        const HANDLE h = open_lock_file(file);
+        if (!win_acquire(h, LockMode::Exclusive, wait, file)) {
+            ::CloseHandle(h);
+            throw BusyError("global recovery is already in progress");
+        }
+        write_owner_record(h, self_owner("recover"));
         return GlobalRecoveryLock(
-            std::make_unique<NullHandle>(LockClass::GlobalRecovery));
+            std::make_unique<WinLockHandle>(h, LockClass::GlobalRecovery));
     }
+
     LockOwner self_owner(const std::string& operation) const override {
         LockOwner o;
         o.pid = static_cast<long>(::_getpid());
-        o.start_token = "win";
+        FILETIME created{}, exited{}, kernel{}, user{};
+        if (::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel,
+                              &user)) {
+            const std::uint64_t t =
+                (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) |
+                created.dwLowDateTime;
+            o.start_token = std::to_string(t);
+        } else {
+            o.start_token = "unknown";
+        }
         o.operation = operation;
         o.acquired_at = util::now_utc_string();
         return o;
@@ -369,6 +511,7 @@ public:
 
 private:
     Paths paths_;
+    Registry registry_;
 };
 
 #endif
@@ -379,7 +522,7 @@ std::unique_ptr<OperationLockManager> make_lock_manager(const Paths& paths) {
 #ifndef _WIN32
     return std::make_unique<FlockLockManager>(paths);
 #else
-    return std::make_unique<NullLockManager>(paths);
+    return std::make_unique<WinLockManager>(paths);
 #endif
 }
 

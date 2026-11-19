@@ -166,7 +166,16 @@ TEST_CASE("a locally blocked application refuses to launch, allowed once unblock
     if (test::have_native_compiler()) { // else the payload is not runnable
         CHECK(run_app(paths, kId, {}) == 0); // launches normally again
     } else {
-        CHECK_NOTHROW(run_app(paths, kId, {})); // no longer refused
+        // The payload is a synthesized, non-runnable entrypoint here, so the
+        // launch may fail AFTER the trust gate (Windows: "cannot start
+        // process"). What this case asserts is the gate: no longer refused.
+        try {
+            (void)run_app(paths, kId, {});
+        } catch (const BlockedKeyError& e) {
+            FAIL("still refused as blocked after unblock: " << e.what());
+        } catch (const std::exception&) {
+            // past the trust gate; the payload itself cannot run on this host
+        }
     }
 }
 

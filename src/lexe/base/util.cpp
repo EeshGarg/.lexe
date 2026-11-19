@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <random>
 #include <system_error>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -305,6 +306,34 @@ void write_atomic(const fs::path& file, std::string_view text) {
         std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 
     spit(tmp, text);
+#ifdef _WIN32
+    // MoveFileExW(REPLACE_EXISTING) is the atomic replace on Windows, but it
+    // fails with a sharing/access error -- transiently -- while another process
+    // has the destination open (a reader without FILE_SHARE_DELETE, or another
+    // writer mid-replace). The old fallback answered that by REMOVING the
+    // destination and renaming again, so a concurrent reader could observe no
+    // file at all: the exact hazard described above, on the other platform
+    // (test_concurrent_state: 27 vanishings in one run). Retry the atomic
+    // replace instead; never delete what we have not replaced.
+    {
+        const std::wstring wtmp = tmp.wstring();
+        const std::wstring wfile = file.wstring();
+        for (int attempt = 0; attempt < 400; ++attempt) {
+            if (::MoveFileExW(wtmp.c_str(), wfile.c_str(),
+                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                return;
+            }
+            const DWORD err = ::GetLastError();
+            if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION &&
+                err != ERROR_LOCK_VIOLATION) {
+                break;
+            }
+            ::Sleep(static_cast<DWORD>(attempt < 10 ? 1 : 5));
+        }
+        remove_recursive(tmp);
+        throw Error("cannot write file atomically: " + file.string());
+    }
+#else
     std::error_code ec;
     fs::rename(tmp, file, ec);
     if (!ec) return;
@@ -322,6 +351,7 @@ void write_atomic(const fs::path& file, std::string_view text) {
     }
     remove_recursive(tmp);
     throw Error("cannot write file atomically: " + file.string());
+#endif
 }
 
 // ---------------------------------------------------------------- dir ops
@@ -621,6 +651,41 @@ static std::wstring quote_windows_arg(const std::wstring& arg) {
     return out;
 }
 
+namespace {
+
+// One captured stream of a Windows child. Same semantics as the POSIX drain
+// below: tee through in full first, then retain a rolling TAIL capped at
+// max_retained_bytes (0 = keep everything).
+struct WinStream {
+    HANDLE read = nullptr;
+    std::FILE* tee = nullptr;
+    std::string text;
+    std::uint64_t total = 0;
+    bool truncated = false;
+};
+
+void drain_win_stream(WinStream& s, std::size_t cap) {
+    char buf[65536];
+    DWORD n = 0;
+    while (::ReadFile(s.read, buf, sizeof(buf), &n, nullptr) && n > 0) {
+        const std::size_t got = static_cast<std::size_t>(n);
+        s.total += got;
+        if (s.tee != nullptr) {
+            std::fwrite(buf, 1, got, s.tee);
+            std::fflush(s.tee);
+        }
+        s.text.append(buf, got);
+        if (cap != 0 && s.text.size() > cap) {
+            s.text.erase(0, s.text.size() - cap);
+            s.truncated = true;
+        }
+    }
+    ::CloseHandle(s.read);
+    s.read = nullptr;
+}
+
+} // namespace
+
 ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions& opts) {
     if (argv.empty()) throw Error("run_process: empty argv");
 
@@ -634,19 +699,36 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
 
-    HANDLE read_pipe = nullptr;
-    HANDLE write_pipe = nullptr;
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    if (opts.capture_stdout) {
-        if (!::CreatePipe(&read_pipe, &write_pipe, &sa, 0)) {
+    WinStream out_stream;
+    WinStream err_stream;
+    out_stream.tee = opts.tee_stdout;
+    err_stream.tee = opts.tee_stderr;
+    HANDLE out_write = nullptr;
+    HANDLE err_write = nullptr;
+    auto close_all = [&] {
+        for (HANDLE* h : {&out_stream.read, &err_stream.read, &out_write, &err_write}) {
+            if (*h != nullptr) { ::CloseHandle(*h); *h = nullptr; }
+        }
+    };
+    auto make_pipe = [&](WinStream& s, HANDLE& w) {
+        if (!::CreatePipe(&s.read, &w, &sa, 0)) {
+            close_all();
             throw Error("run_process: CreatePipe failed");
         }
-        ::SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+        // Only the child's end is inheritable.
+        ::SetHandleInformation(s.read, HANDLE_FLAG_INHERIT, 0);
+    };
+    if (opts.capture_stdout) make_pipe(out_stream, out_write);
+    if (opts.capture_stderr) make_pipe(err_stream, err_write);
+
+    const bool redirect = opts.capture_stdout || opts.capture_stderr;
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    if (redirect) {
         si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdOutput = write_pipe;
-        si.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
         si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = opts.capture_stdout ? out_write : ::GetStdHandle(STD_OUTPUT_HANDLE);
+        si.hStdError = opts.capture_stderr ? err_write : ::GetStdHandle(STD_ERROR_HANDLE);
     }
 
     std::wstring wcwd;
@@ -656,23 +738,24 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     std::wstring mutable_cmdline = cmdline; // CreateProcessW may modify it
     const BOOL ok = ::CreateProcessW(
         nullptr, mutable_cmdline.data(), nullptr, nullptr,
-        opts.capture_stdout ? TRUE : FALSE, 0, nullptr,
+        redirect ? TRUE : FALSE, 0, nullptr,
         opts.cwd.has_value() ? wcwd.c_str() : nullptr, &si, &pi);
-    if (opts.capture_stdout) ::CloseHandle(write_pipe);
+    // Our copies of the write ends must go, or the reads never see EOF.
+    if (out_write != nullptr) { ::CloseHandle(out_write); out_write = nullptr; }
+    if (err_write != nullptr) { ::CloseHandle(err_write); err_write = nullptr; }
     if (!ok) {
-        if (opts.capture_stdout) ::CloseHandle(read_pipe);
+        close_all();
         throw Error("run_process: cannot start process: " + argv[0]);
     }
 
-    std::string output;
-    if (opts.capture_stdout) {
-        char buf[4096];
-        DWORD n = 0;
-        while (::ReadFile(read_pipe, buf, sizeof(buf), &n, nullptr) && n > 0) {
-            output.append(buf, n);
-        }
-        ::CloseHandle(read_pipe);
+    // Drain both pipes concurrently: reading one to EOF before the other would
+    // deadlock as soon as the child filled the pipe we are not reading.
+    std::thread err_reader;
+    if (opts.capture_stderr) {
+        err_reader = std::thread([&] { drain_win_stream(err_stream, opts.max_retained_bytes); });
     }
+    if (opts.capture_stdout) drain_win_stream(out_stream, opts.max_retained_bytes);
+    if (err_reader.joinable()) err_reader.join();
 
     ::WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
@@ -680,7 +763,15 @@ ProcessResult run_process(const std::vector<std::string>& argv, const RunOptions
     ::CloseHandle(pi.hProcess);
     ::CloseHandle(pi.hThread);
 
-    return ProcessResult{static_cast<int>(code), std::move(output)};
+    ProcessResult result;
+    result.exit_code = static_cast<int>(code);
+    result.stdout_text = std::move(out_stream.text);
+    result.stderr_text = std::move(err_stream.text);
+    result.stdout_total_bytes = out_stream.total;
+    result.stderr_total_bytes = err_stream.total;
+    result.stdout_truncated = out_stream.truncated;
+    result.stderr_truncated = err_stream.truncated;
+    return result;
 }
 
 #else // POSIX
@@ -1006,6 +1097,27 @@ std::string find_on_path(const std::string& name,
         if (!dir.empty()) {
             const fs::path candidate = fs::path(dir) / name;
             std::error_code ec;
+#ifdef _WIN32
+            // Windows resolves `cmd` to `cmd.exe` through PATHEXT; a bare-name
+            // lookup that skips it finds no installed program at all.
+            if (!fs::path(name).has_extension()) {
+                const std::string exts =
+                    get_env("PATHEXT").value_or(".COM;.EXE;.BAT;.CMD");
+                std::size_t e0 = 0;
+                while (e0 <= exts.size()) {
+                    const std::size_t e1 = exts.find(';', e0);
+                    const std::string ext = exts.substr(
+                        e0, e1 == std::string::npos ? std::string::npos : e1 - e0);
+                    if (!ext.empty()) {
+                        fs::path withext = candidate;
+                        withext += ext;
+                        if (fs::is_regular_file(withext, ec)) return withext.string();
+                    }
+                    if (e1 == std::string::npos) break;
+                    e0 = e1 + 1;
+                }
+            }
+#endif
             if (fs::is_regular_file(candidate, ec)) {
 #ifdef _WIN32
                 return candidate.string();

@@ -66,6 +66,15 @@ bool is_remote_url(const std::string& url) {
 std::string uri_scheme(const std::string& s) {
     const std::size_t colon = s.find(':');
     if (colon == std::string::npos || colon == 0) return {};
+#ifdef _WIN32
+    // `C:\dir\u.json` / `C:/dir/u.json` is an absolute Windows path, not the
+    // scheme "c". Only a single drive letter followed by a separator is exempt;
+    // `c:x` (drive-relative, ambiguous) still reads as a scheme and is refused.
+    if (colon == 1 && s.size() > 2 && (s[2] == '\\' || s[2] == '/') &&
+        std::isalpha(static_cast<unsigned char>(s[0])) != 0) {
+        return {};
+    }
+#endif
     if (std::isalpha(static_cast<unsigned char>(s[0])) == 0) return {};
     std::string out;
     out.reserve(colon);

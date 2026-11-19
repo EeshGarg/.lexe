@@ -33,9 +33,11 @@ The runtime instead uses **OS-backed advisory locks** (`flock(2)` on Linux):
   to decide liveness. Because the start token changes when the kernel reuses a
   pid, a recycled pid can never be mistaken for the original holder.
 
-On platforms without this mechanism (the Windows dev host) the abstraction falls
-back to a permissive single-writer backend; isolation and multi-process
-coordination are Linux features.
+On Windows the same contract is implemented with `LockFileEx` byte-range locks
+(shared/exclusive, released by the kernel on handle close or process death).
+Windows byte-range locks are mandatory, so the lock covers one byte far past any
+content and the owner record at offset 0 stays readable. Isolation remains a
+Linux feature; locking is not.
 
 ## The locks
 

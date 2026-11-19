@@ -281,7 +281,12 @@ TEST_CASE("the recorded mode cannot change what lands on disk") {
     // not become executable.
     const fs::perms p = fs::status(b / "data.txt").permissions();
     CHECK((p & fs::perms::set_uid) == fs::perms::none);
+#ifndef _WIN32
+    // Windows has no execute bit: std::filesystem reports every writable file
+    // there as 0777, so "not executable" is not observable through it. The
+    // original-vs-mutated equality above is the platform-neutral half.
     CHECK((p & fs::perms::owner_exec) == fs::perms::none);
+#endif
 }
 
 // FORMAT-0.1 §2.2 — a reader MUST reject a ZIP directory entry. Two spellings

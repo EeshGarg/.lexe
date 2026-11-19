@@ -72,6 +72,17 @@ bool contains(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
 
+/// A tool every host this suite runs on really has, for tests whose subject
+/// is some OTHER gate. "cc" is not on a Windows MSVC runner, so a test about
+/// the sandbox that declared it was decided by the toolchain probe instead.
+const char* host_present_tool() {
+#ifdef _WIN32
+    return "cmd";
+#else
+    return "sh";
+#endif
+}
+
 Manifest portable_manifest(BuildSystem system = BuildSystem::Command) {
     Manifest m;
     m.lexe_version = "0.1";
@@ -279,6 +290,7 @@ TEST_CASE("no isolation backend means no build") {
 
     CompileRequest request;
     request.manifest = portable_manifest();
+    request.manifest.build.toolchain = {host_present_tool()};
     request.build_tree = home.path() / "tree";
     request.scratch_dir = home.path() / "scratch";
     fs::create_directories(request.build_tree);
@@ -300,7 +312,7 @@ TEST_CASE("no isolation backend means no build") {
 TEST_CASE("the declared toolchain is probed against this host") {
     TempLexeHome home;
     BuildRecipe recipe;
-    recipe.toolchain = {"cc", "definitely-not-a-real-compiler-9e3a"};
+    recipe.toolchain = {host_present_tool(), "definitely-not-a-real-compiler-9e3a"};
 
     const ToolchainReport report = probe_toolchain(recipe);
     CHECK_FALSE(report.complete);

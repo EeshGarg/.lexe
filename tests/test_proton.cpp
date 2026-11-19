@@ -119,7 +119,8 @@ TEST_CASE("Proton is looked for where Proton actually lives, not on $PATH") {
     // Every candidate must be an absolute path ending in the proton script.
     for (const std::string& candidate : searched) {
         CAPTURE(candidate);
-        CHECK(candidate.front() == '/');
+        // is_absolute, not front()=='/': on Windows the scratch HOME is C:\...
+        CHECK(std::filesystem::path(candidate).is_absolute());
         CHECK(candidate.size() > 7);
         CHECK(candidate.rfind("/proton") == candidate.size() - 7);
     }
