@@ -1,3 +1,41 @@
+# Handoff — 2026-11-19, release hardening
+
+Written to be read cold. Previous handoff (FORMAT-0.1 hardening, 2026-10-02)
+follows below, unchanged.
+
+## What changed
+
+| Area | Change | Commit |
+|---|---|---|
+| Release | `install()` rules, `LEXE_STATIC_RUNTIME`, `scripts/package-release.sh` (reproducible tarball, glibc-only binary, re-extracted and re-installed before digest), `.github/workflows/release.yml` (tag-driven; SHA256SUMS, SBOM, provenance attestation). README install steps corrected | `c309ff6` |
+| Windows | Locks were a no-op → `LockFileEx` backend; `run_process` stderr/tee/caps; `write_atomic` no longer deletes the destination on a sharing violation; `find_on_path` honours `PATHEXT`; `C:\` update paths; `integrate` reports skipped | `e848d19`, `c70ab74` |
+| **Security** | Vendored Ed25519 fallback accepted every small-order key except all-zeros: an identity-point `publicKey` verified a fixed forgery over any manifest on builds without libsodium. libsodium's blacklist now applies to A and R on both backends | `c70ab74` |
+| FORMAT | A.7 decided: unsigned in-record bytes (extra fields, entry comments, post-DEFLATE slack, size mismatch — incl. zero-length entries) rejected §2.2; file/directory prefix conflicts rejected §2.1; bit 13 named | `c70ab74` |
+| Evidence | 11 corpus cases (210 total, 0 disagreements); C++ regressions shown to fail on the old reader | `c70ab74` |
+
+## Evidence
+
+* **Local, clean tree at `c70ab74`** (porcelain 0 before and after):
+  `scripts/test.sh --unit --acceptance --conformance --security` —
+  unit 788/788, acceptance 12/12, conformance 4/4 (corpus 210/210), security 27/27.
+  Host needs bubblewrap, GTK 3 dev, xvfb, x11-utils, xdotool, and an existing
+  `/tmp/.X11-unix` (the private-display helper mounts over it).
+* **GitHub CI on `c70ab74`** (run 44463437887): linux ✅, portability ✅,
+  **windows ✅ — first green Windows run** (was 20 failing tests).
+* Release workflow: YAML-validated and the packaging script run locally twice
+  (identical digest); **not yet run on GitHub** — a `workflow_dispatch` dry
+  run is the next step before tagging.
+
+## Still open
+
+* ARM / second-ISA gate (unchanged; needs real AArch64 host).
+* A.7 remainder: Unicode normalization, `updates.manifest` scheme at verify
+  time, launch refs for stateless validators, `integration` members, control
+  characters in `name`, session-service version drift, `build.json` vocabularies.
+* Not proven by a dedicated case: ZIP64 detection, non-canonical R.
+
+---
+
 # Handoff — 2026-10-02, FORMAT-0.1 foundation hardening
 
 Where .LEXE stands after the hardening campaign. Written to be read cold.

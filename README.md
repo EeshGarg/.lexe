@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/EeshGarg/.lexe/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/EeshGarg/.lexe/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599c" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-777%20%C2%B7%2010094%20assertions-2d7d46" />
+  <img alt="tests" src="https://img.shields.io/badge/tests-788%20cases-2d7d46" />
   <img alt="suites" src="https://img.shields.io/badge/acceptance-12%20suites%20green-2d7d46" />
   <img alt="Status" src="https://img.shields.io/badge/status-Developer%20Alpha-b4622a" />
 </p>
