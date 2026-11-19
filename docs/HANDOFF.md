@@ -29,10 +29,16 @@ follows below, unchanged.
 ## Still open
 
 * ARM / second-ISA gate (unchanged; needs real AArch64 host).
-* A.7 remainder: Unicode normalization, `updates.manifest` scheme at verify
-  time, launch refs for stateless validators, `integration` members, control
-  characters in `name`, session-service version drift, `build.json` vocabularies.
-* Not proven by a dedicated case: ZIP64 detection, non-canonical R.
+* A.7 also decided after the evidence run below (commit after `67ebf5d`):
+  display text in `name`/`publisher.name` (§5.2), `updates.manifest` at
+  verification (§7.0.1), `integration` members (§5.7); corpus 225 cases. A
+  `release-dry-run` CI job now rehearses packaging on every push.
+* A.7 remainder: Unicode normalization (0.2 question), launch refs for
+  stateless validators, session-service version drift, `build.json` vocabularies.
+* ZIP64 per-entry structures now have a case (`container-zip64-entry-extra`).
+  Non-canonical R has none: a signature with a non-canonical R cannot satisfy
+  the verification equation in any implementation, so no case could tell a
+  strict reader from a lenient one.
 
 ---
 

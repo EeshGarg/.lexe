@@ -581,6 +581,16 @@ case("container-entry-comment", "§2.2", "reject",
      lambda p: p.entry_opts.update({"payload/data.txt": {"comment": b"covert"}}))
 
 
+case("container-zip64-entry-extra", "§1/§2.2", "reject",
+     "a per-entry ZIP64 extended-information extra field (header 0x0001) is a "
+     "ZIP64 structure (§1) and unsigned bytes (§2.2); the EOCD-level ZIP64 "
+     "case is caught by framing, this one by the entry",
+     lambda p: p.entry_opts.update({"payload/data.txt": {
+         "extra_central": struct.pack("<HHQQ", 0x0001, 16,
+                                      len(p.members["payload/data.txt"]),
+                                      len(p.members["payload/data.txt"]))}}))
+
+
 def _deflate(data):
     co = zlib.compressobj(9, zlib.DEFLATED, -15)
     return co.compress(data) + co.flush()
@@ -1017,6 +1027,54 @@ case("field-name-too-long", "§5.2/§10.1", "reject",
      "`name` is bounded at 1024 bytes", _mf(name="n" * 1025))
 case("field-name-at-bound", "§5.2/§10.1", "accept",
      "exactly 1024 bytes is within bounds", _mf(name="n" * 1024))
+case("field-name-newline", "§5.2", "reject",
+     "a newline in `name` forged a 'Verification: PASSED' line under it on "
+     "the terminal; display text may carry no control characters",
+     _mf(name="Evil\n  Verification: PASSED"))
+case("field-name-tab", "§5.2", "reject",
+     "tab is a C0 control too: the rule is the whole class, not a list of the "
+     "dangerous-looking ones", _mf(name="A\tB"))
+case("field-name-c1-control", "§5.2", "reject",
+     "U+009B is a one-character CSI on terminals that honour C1",
+     _mf(name="A\u009b2K"))
+case("field-name-bidi-override", "§5.2", "reject",
+     "U+202E reverses what follows it: `exe.txt` reads as `txt.exe`",
+     _mf(name="Invoice\u202etxt.exe"))
+case("field-name-bidi-isolate", "§5.2", "reject",
+     "the isolates U+2066-U+2069 are bidi formatting too",
+     _mf(name="A\u2067B"))
+case("field-name-line-separator", "§5.2", "reject",
+     "U+2028 breaks a line in most renderers without being a C0 control",
+     _mf(name="A\u2028B"))
+case("field-publisher-name-escape", "§5.2", "reject",
+     "the publisher's name is shown at the trust prompt beside the key",
+     lambda p: p.manifest["publisher"].update(name="Trusted\u001b[32m Corp"))
+case("field-name-unicode-text", "§5.2", "accept",
+     "the control: ordinary non-ASCII text, including RTL script and an emoji "
+     "ZWJ sequence, is valid -- only formatting characters are refused",
+     _mf(name="\u05e9\u05dc\u05d5\u05dd Caf\u00e9 \U0001f469\u200d\U0001f4bb"))
+def _updates(url):
+    def m(p):
+        p.manifest["updates"] = {"enabled": True, "manifest": url}
+    return m
+
+
+case("updates-manifest-http", "§7.0.1", "reject",
+     "a plaintext update source can never update securely; it is refused at "
+     "verification rather than discovered at the first update",
+     _updates("http://updates.example.com/app.json"))
+case("updates-manifest-http-uppercase", "§7.0.1", "reject",
+     "schemes are case-insensitive: HTTP:// is http://",
+     _updates("HTTP://updates.example.com/app.json"))
+case("updates-manifest-javascript", "§7.0.1", "reject",
+     "a scheme needs only one colon; the allowlist is positive, not two "
+     "blocked prefixes", _updates("javascript:alert(1)"))
+case("updates-manifest-https", "§7.0.1", "accept",
+     "the supported remote transport", _updates("https://updates.example.com/app.json"))
+case("updates-manifest-file-url", "§7.0.1", "accept",
+     "file:// has no transport to protect", _updates("file:///srv/updates/app.json"))
+case("updates-manifest-relative-path", "§7.0.1", "accept",
+     "a plain path is not a URI and is exempt", _updates("updates/app.json"))
 case("field-id-single-segment", "§5.2", "reject",
      "an App ID needs 2+ dot-separated segments", _mf(id="single"))
 case("field-id-bad-character", "§5.2", "reject",

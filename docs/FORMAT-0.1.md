@@ -662,10 +662,22 @@ type error.
 |---|---|
 | `lexeVersion` | MUST be exactly the string `"0.1"`. Compared literally — `"0.1.0"` and `"0.10"` are other versions, not this one |
 | `id` | 2+ dot-separated segments of `[a-zA-Z0-9-]+`, ≤ 255 bytes |
-| `name` | non-empty, ≤ 1024 bytes |
+| `name` | non-empty, ≤ 1024 bytes, no display-control characters (below) |
 | `version` | see below |
-| `publisher.name` | non-empty, ≤ 1024 bytes |
+| `publisher.name` | non-empty, ≤ 1024 bytes, no display-control characters (below) |
 | `publisher.publicKey` | ≤ 128 bytes; see §4 |
+
+**`name` and `publisher.name` are display text** shown at a trust decision —
+the install prompt, the publisher line beside the key fingerprint. A reader MUST
+reject either when it contains: a C0 control (U+0000–U+001F, tab and newline
+included), DEL or a C1 control (U+007F–U+009F), a line or paragraph separator
+(U+2028, U+2029), or a bidirectional formatting character (U+061C, U+200E,
+U+200F, U+202A–U+202E, U+2066–U+2069). A newline in `name` once printed a
+forged `Verification: PASSED` line beneath it, and U+202E makes `exe.txt` read
+as `txt.exe`. Escaping on display (REFERENCE-POLICY §4) protected one reader;
+making the package invalid protects all of them. Ordinary text in any script,
+including right-to-left scripts and joiner sequences, is valid. *(Decided from
+Appendix A.7.)*
 
 **`id`.** "Reverse-DNS" describes the convention, not the rule: `-` is legal
 anywhere in a segment, including first, so `-foo.bar` is a valid App ID even
@@ -877,7 +889,10 @@ and a publisher who wants the stricter behaviour can set it explicitly.
 **`updates.enabled`** defaults to `false` and **`updates.channel`** to
 `"stable"`.
 
-**`integration.desktopEntry`** defaults to `true`.
+**`integration.desktopEntry`** defaults to `true`. It is the only member 0.1
+defines; any other member of `integration` is an unknown member and is ignored
+under §5.0, so it can neither enable nor suppress any behaviour. *(Decided from
+Appendix A.7.)*
 
 ### 5.8 Build recipe — `build` (portable packages)
 
@@ -1182,6 +1197,15 @@ whatever carried it. It is what protects the two things a signature cannot:
 
 `file://` URLs and plain paths are unaffected: they have no transport to
 protect.
+
+The rule is checked at **verification** (§6, manifest stage), not first at
+update time: a reader MUST reject a package whose `updates.manifest` is not an
+`https://` URL, a `file://` URL, or a plain filesystem path. A value that
+parses as a URI scheme (RFC 3986 §3.1: a letter, then letters, digits, `+`,
+`-`, `.`, then `:`) is a URI, compared case-insensitively — so `HTTP://`,
+`ftp://` and `javascript:` are all refused. A package that can never update
+securely is found out when it is published, not months later on a user's
+machine. *(Decided from Appendix A.7.)*
 
 ### 7.1 What update verification does NOT protect against
 
@@ -1779,6 +1803,12 @@ were checked against what writers emit first: the reference writer emits none
 of them, and both implementations plus the conformance corpus
 (`path-file-is-directory-of-another*`, `container-extra-field-*`,
 `container-entry-comment`, `container-deflate-*`) enforce them.
+Also decided: *text in `name`/`publisher.name`* — control, separator and
+bidi-formatting characters are rejected (§5.2; corpus `field-name-*`,
+`field-publisher-name-escape`) — and *`integration` members* — anything but
+`desktopEntry` is an ignored unknown member (§5.7).
+And *`updates.manifest` at verification time* — anything but https://, file://
+or a path fails verification (§7.0.1; corpus `updates-manifest-*`).
 
 Recorded rather than resolved, because each needs a decision this freeze does
 not force. None affects whether a conforming implementation can read a 0.1
@@ -1787,10 +1817,7 @@ package.
 | Question | Why it is open |
 |---|---|
 | Is execution-chain layer **order** normative? §5.5 says `fex+proton` "is not a chain", and nothing checks it. Order is a naming convention today | Resolving it toward "normative" would change which packages are valid, so it needs the compatibility work first |
-| **`updates.manifest` scheme at verification time.** §7 says "an https:// URL (also accepts file:// and paths)"; §7.0.1 says MUST be https and then exempts file/path. Whether an `http://` value fails §6 verification or only fails at update time is not stated | Either reading is defensible; the safer one (verify rejects anything but `https://` in a PACKAGE, local paths only from local configuration) changes which packages are valid |
 | **Launch references and a stateless validator.** §9.8.1 requires refusing a reference not signed by this machine's launch key; a validator with no such key cannot decide it | Likely answer: report "unverifiable here", never OK — needs wording |
-| **`integration` members.** §5.7 points at §9 for `integration`, which defines only `desktopEntry`. Other members are presumably ignored as unknown (§5.0), but this is not said | Text-only, but it fixes what an `integration` block may mean |
 | **Unicode normalization.** §2.1 compares bytes, so NFC/NFD-equivalent paths are distinct and both valid in 0.1. They alias on a normalizing filesystem exactly as ASCII case pairs alias on a folding one | Rejecting them changes which packages are valid; 0.2 question |
-| **Text in `name`/`publisher.name`.** No character restriction: a newline or bidi override is valid manifest text. The reference implementation escapes it on display (REFERENCE-POLICY) | Whether FORMAT should forbid control characters is a validity change |
 | **A session-managed service whose program is replaced underneath it.** `ExecStart` is version-independent (`lexe run <id> --wait`), so after an update the unit keeps executing the OLD version until something unrelated restarts it, at which point it silently switches — and `service status` reports it healthy throughout | §9.4 permits this (it forbids disturbing a running version) and §5.6 says detaching is not supervision, but neither covers the case where the runtime IS the supervisor and the program changed. The likely answer is a REPORT rather than a restart — `service status` saying "running 1.0.0, installed version is 2.0.0" — because restarting a service because a file changed is a policy decision that belongs to the user. Recorded as open rather than decided quietly |
 | `build.json` vocabularies: legal values of `hostIsa`, `approval.authority`, and a timestamp grammar | All three are free strings today. Tightening them is POLICY work, not format work |

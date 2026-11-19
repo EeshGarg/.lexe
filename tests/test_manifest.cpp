@@ -1051,4 +1051,46 @@ TEST_CASE("a windows package declares no build recipe") {
     CHECK_THROWS_AS(parse_json(j), VerificationError);
 }
 
+
+TEST_CASE("reject: display text with control or bidi characters (FORMAT §5.2)") {
+    check_rejects({
+        {"name newline", [](json& j) { j["name"] = "A\nB"; }},
+        {"name tab", [](json& j) { j["name"] = "A\tB"; }},
+        {"name ESC", [](json& j) { j["name"] = "A\x1b[2KB"; }},
+        {"name DEL", [](json& j) { j["name"] = "A\x7f"; }},
+        {"name C1 CSI", [](json& j) { j["name"] = "A\xc2\x9b" "2K"; }},
+        {"name RLO", [](json& j) { j["name"] = "A\xe2\x80\xae" "B"; }},
+        {"name LRM", [](json& j) { j["name"] = "A\xe2\x80\x8e" "B"; }},
+        {"name FSI", [](json& j) { j["name"] = "A\xe2\x81\xa8" "B"; }},
+        {"name ALM", [](json& j) { j["name"] = "A\xd8\x9c" "B"; }},
+        {"name LS", [](json& j) { j["name"] = "A\xe2\x80\xa8" "B"; }},
+        {"publisher.name ESC",
+         [](json& j) { j["publisher"]["name"] = "P\x1b[32m"; }},
+    });
+    check_accepts({
+        {"Hebrew, accented, emoji ZWJ",
+         [](json& j) {
+             j["name"] = "\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d Caf\xc3\xa9 "
+                         "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb";
+         }},
+        {"U+00A0 and U+200B are not formatting controls",
+         [](json& j) { j["publisher"]["name"] = "A\xc2\xa0" "B\xe2\x80\x8b" "C"; }},
+    });
+}
+
+TEST_CASE("updates.manifest transport is checked at verification (FORMAT §7.0.1)") {
+    check_rejects({
+        {"http", [](json& j) { j["updates"] = {{"manifest", "http://e.example/u.json"}}; }},
+        {"HTTP", [](json& j) { j["updates"] = {{"manifest", "HTTP://e.example/u.json"}}; }},
+        {"ftp", [](json& j) { j["updates"] = {{"manifest", "ftp://e.example/u.json"}}; }},
+        {"javascript", [](json& j) { j["updates"] = {{"manifest", "javascript:alert(1)"}}; }},
+    });
+    check_accepts({
+        {"https", [](json& j) { j["updates"] = {{"manifest", "https://e.example/u.json"}}; }},
+        {"file://", [](json& j) { j["updates"] = {{"manifest", "file:///srv/u.json"}}; }},
+        {"path", [](json& j) { j["updates"] = {{"manifest", "updates/u.json"}}; }},
+        {"absent", [](json& j) { j["updates"] = {{"enabled", false}}; }},
+    });
+}
+
 } // TEST_SUITE("manifest")

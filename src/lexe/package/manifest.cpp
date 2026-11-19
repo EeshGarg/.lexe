@@ -10,6 +10,7 @@
 #include "lexe/base/identity.hpp"
 
 #include "lexe/base/error.hpp"
+#include "lexe/base/http.hpp"
 #include "lexe/base/json_strict.hpp"
 #include "lexe/base/limits.hpp"
 #include "lexe/base/version.hpp"
@@ -18,6 +19,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +28,52 @@
 namespace lexe {
 
 namespace {
+
+/// FORMAT-0.1 §5.2 (decided from Appendix A.7): `name` and `publisher.name`
+/// are text a person reads at a trust decision -- the consent prompt, the
+/// installer, `lexe apps`. A control character or a bidirectional override in
+/// them can forge a line ("Verification: PASSED") or reverse what is read.
+/// The reference implementation escapes them on display, but every other
+/// consumer of the manifest (a store front, a file manager, a second
+/// implementation) would have to remember to; refusing them makes the package
+/// invalid instead of making every reader careful.
+///
+/// Refused: C0 controls U+0000-U+001F (incl. tab and newline), DEL and C1
+/// controls U+007F-U+009F, the line/paragraph separators U+2028/U+2029, and
+/// the bidi formatting characters U+061C, U+200E, U+200F, U+202A-U+202E,
+/// U+2066-U+2069. The input is already well-formed UTF-8 (strict JSON).
+std::optional<std::string> display_text_problem(const std::string& text) {
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        std::uint32_t cp = 0;
+        std::size_t len = 1;
+        if (c < 0x80) { cp = c; }
+        else if ((c >> 5) == 0x6) { cp = c & 0x1Fu; len = 2; }
+        else if ((c >> 4) == 0xE) { cp = c & 0x0Fu; len = 3; }
+        else { cp = c & 0x07u; len = 4; }
+        for (std::size_t k = 1; k < len && i + k < text.size(); ++k) {
+            cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3Fu);
+        }
+        const bool control = cp <= 0x1F || (cp >= 0x7F && cp <= 0x9F);
+        const bool separator = cp == 0x2028 || cp == 0x2029;
+        const bool bidi = cp == 0x061C || cp == 0x200E || cp == 0x200F ||
+                          (cp >= 0x202A && cp <= 0x202E) ||
+                          (cp >= 0x2066 && cp <= 0x2069);
+        if (control || separator || bidi) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "U+%04X", static_cast<unsigned>(cp));
+            return std::string("contains ") +
+                   (control ? "the control character "
+                            : separator ? "the line separator "
+                                        : "the bidirectional formatting character ") +
+                   buf + " (text shown at a trust decision may not carry it)";
+        }
+        i += len;
+    }
+    return std::nullopt;
+}
+
 
 using nlohmann::json;
 using nlohmann::ordered_json;
@@ -268,6 +317,19 @@ void parse_updates(const json& root, Manifest& m) {
         optional_string(*updates, "channel", "updates.channel", "stable");
     m.updates_manifest_url =
         optional_string(*updates, "manifest", "updates.manifest", "");
+    // FORMAT-0.1 §7.0.1 (decided from Appendix A.7): the transport rule is
+    // checked at VERIFICATION, not first at update time. A package declaring
+    // `http://` (or any scheme but https/file) can never update securely, and
+    // finding that out months later, on the user's machine, is the worst time.
+    // The allowlist is the one `lexe source set` already applies, so a package
+    // and local configuration are held to one rule.
+    if (!m.updates_manifest_url.empty()) {
+        try {
+            http::require_secure_url(m.updates_manifest_url);
+        } catch (const std::exception& e) {
+            fail(std::string("\"updates.manifest\": ") + e.what());
+        }
+    }
     m.updates_allow_source_change = optional_bool(
         *updates, "allowSourceChange", "updates.allowSourceChange", true);
 }
@@ -510,6 +572,9 @@ Manifest Manifest::parse(std::string_view json_text) {
         fail("\"name\" exceeds the " + std::to_string(limits::kMaxNameBytes) +
              "-byte limit");
     }
+    if (const auto bad = display_text_problem(m.name)) {
+        fail("\"name\" " + *bad);
+    }
     m.version = require_nonempty_string(root, "version", "version");
     // A version is a path component, part of lock and lease file names, and the
     // whole contents of current.txt on a host without symlinks. Refuse one that
@@ -530,6 +595,9 @@ Manifest Manifest::parse(std::string_view json_text) {
     if (m.publisher_name.size() > limits::kMaxNameBytes) {
         fail("\"publisher.name\" exceeds the " +
              std::to_string(limits::kMaxNameBytes) + "-byte limit");
+    }
+    if (const auto bad = display_text_problem(m.publisher_name)) {
+        fail("\"publisher.name\" " + *bad);
     }
     // Presence + string-ness only; decoding is pipeline stage 3 (§6). A giant
     // key field is rejected here before it ever reaches the base64 decoder.

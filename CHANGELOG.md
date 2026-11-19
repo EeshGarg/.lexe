@@ -24,6 +24,13 @@ baseline (`tux32-core-1`). Dates are UTC.
 - **File/directory prefix conflicts are rejected** (§2.1): `payload/bin` beside
   `payload/bin/app`, compared case-folded.
 - Encryption now names general-purpose bit 13 alongside 0 and 6 (§2.1).
+- **`name` and `publisher.name` may not carry control, line-separator or bidi
+  formatting characters** (§5.2). A newline in `name` forged a
+  `Verification: PASSED` line; display escaping protected only this runtime.
+- **`updates.manifest` transport is checked at verification** (§7.0.1): anything
+  but `https://`, `file://` or a path makes the package invalid, instead of
+  surfacing at the first update.
+- `integration` members other than `desktopEntry` are explicitly ignored (§5.7).
 
 ### Fixed (Windows)
 - **Locks were a no-op on Windows**: a permissive stand-in took no lock, so
@@ -37,7 +44,7 @@ baseline (`tux32-core-1`). Dates are UTC.
 - Windows CI: 20 failing tests → 0.
 
 ### Added
-- 11 conformance corpus cases (210 total) and C++ regressions for each rule
+- 26 conformance corpus cases (225 total) and C++ regressions for each rule
   above, each shown to fail against the previous reader.
 - **Prebuilt release archive and tag-driven release pipeline.** `install()` rules,
   `LEXE_STATIC_RUNTIME`, `scripts/package-release.sh` (reproducible tarball,

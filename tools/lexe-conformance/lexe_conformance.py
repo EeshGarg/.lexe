@@ -1279,6 +1279,25 @@ def check_executable_declaration(doc, covered, rep):
                     "%r is not under payload/" % item, "§3.6")
 
 
+def _forbidden_display_char(cp):
+    """§5.2: control, line-separator and bidi-formatting code points."""
+    return (cp <= 0x1F or 0x7F <= cp <= 0x9F or cp in (0x2028, 0x2029)
+            or cp in (0x061C, 0x200E, 0x200F)
+            or 0x202A <= cp <= 0x202E or 0x2066 <= cp <= 0x2069)
+
+
+def _display_text(value, field, rep):
+    """`name` / `publisher.name` are shown at a trust decision (§5.2)."""
+    if not isinstance(value, str):
+        return
+    for ch in value:
+        if _forbidden_display_char(ord(ch)):
+            rep.add("MANIFEST_DISPLAY_TEXT", field,
+                    "no control, line-separator or bidirectional formatting "
+                    "characters", "contains U+%04X" % ord(ch), "§5.2")
+            return
+
+
 def check_manifest(c, rep, manifest_raw):
     facts = ManifestFacts()
     if manifest_raw is None:
@@ -1307,7 +1326,8 @@ def check_manifest(c, rep, manifest_raw):
     # §10.1 budgets are counted in BYTES, not characters -- so a 1024-character
     # non-ASCII name exceeds a 1024-byte bound, and a validator comparing
     # len(str) would disagree with any reader that counts bytes.
-    require_string(doc, "name", "name", rep, "§5.2", max_len=MAX_NAME_BYTES)
+    _display_text(require_string(doc, "name", "name", rep, "§5.2",
+                                 max_len=MAX_NAME_BYTES), "name", rep)
 
     version = require_string(doc, "version", "version", rep, "§5.2")
     if version is not None:
@@ -1325,10 +1345,27 @@ def check_manifest(c, rep, manifest_raw):
         rep.add("MANIFEST_FIELD_TYPE", "publisher",
                 "publisher is a JSON object", type(publisher).__name__, "§5.2")
     else:
-        require_string(publisher, "name", "publisher.name", rep, "§5.2",
-                       max_len=MAX_NAME_BYTES)
+        _display_text(require_string(publisher, "name", "publisher.name", rep,
+                                     "§5.2", max_len=MAX_NAME_BYTES),
+                      "publisher.name", rep)
         facts.public_key_field = require_string(
             publisher, "publicKey", "publisher.publicKey", rep, "§4")
+
+    # §7.0.1: `updates.manifest` is https://, file://, or a plain path -- checked
+    # at verification. A URI scheme is ALPHA *(ALPHA / DIGIT / + - .) ":"
+    # (RFC 3986 §3.1); a string that does not start with one is a path.
+    updates = _get(doc, "updates")
+    if isinstance(updates, dict):
+        url = _get(updates, "manifest")
+        if isinstance(url, str) and url:
+            m = re.match(r"([A-Za-z][A-Za-z0-9+.\-]*):", url)
+            scheme = m.group(1).lower() if m else ""
+            ok = (scheme in ("", "https") or
+                  (scheme == "file" and url[:7].lower() == "file://"))
+            if not ok:
+                rep.add("MANIFEST_UPDATE_TRANSPORT", "updates.manifest",
+                        "an https:// URL, a file:// URL, or a filesystem path",
+                        "scheme %r" % scheme, "§7.0.1")
 
     # §5.0 + §5.7: `install.estimatedSize` is the one field 0.1 declares as an
     # integer, so it is the one field the integer-TOKEN rule applies to. `1.0`
