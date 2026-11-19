@@ -29,7 +29,11 @@ follows below, unchanged.
 ## Still open
 
 * ARM / second-ISA gate (unchanged; needs real AArch64 host).
-* A.7 also decided after the evidence run below (commit after `67ebf5d`):
+* **Second evidence run, clean tree at `ca5d929`:** unit 790/790, acceptance
+  12/12, conformance 4/4 (corpus 225/225), security 29/29. CI's new
+  `release-dry-run` job passed on `7c78e23` (packaging + reproducibility on
+  GitHub's ubuntu-22.04).
+* A.7 also decided after the first evidence run (`bf8fe94`):
   display text in `name`/`publisher.name` (§5.2), `updates.manifest` at
   verification (§7.0.1), `integration` members (§5.7); corpus 225 cases. A
   `release-dry-run` CI job now rehearses packaging on every push.
