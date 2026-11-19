@@ -17,3 +17,6 @@ CMakeUserPresets.json
 # artifacts that must never enter the repository.
 __pycache__/
 *.pyc
+
+# Release packaging output
+/dist/

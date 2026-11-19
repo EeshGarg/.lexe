@@ -1,0 +1,60 @@
+# Release pipeline. Triggered by pushing a version tag (v*) — a human creates
+# the tag; nothing here does. The job builds on the OLDEST supported runner so
+# the binary's glibc floor is as low as possible, runs the full suite against
+# the exact build being shipped, packages it with scripts/package-release.sh
+# (which re-extracts and re-installs the tarball before it writes a digest),
+# attaches build-provenance attestations, and publishes a GitHub release.
+# Tags containing "-" (alpha, beta, rc) are published as pre-releases.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # dry run: builds and uploads the artifact, publishes nothing
+
+permissions:
+  contents: write           # create the release
+  id-token: write           # OIDC for attestations
+  attestations: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev bubblewrap librsvg2-common
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+      - name: The tag must match the runtime version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have="$(grep -m1 -oP 'project\(lexe VERSION \K[0-9.]+' CMakeLists.txt)"
+          case "$want" in "$have"|"$have"-*) ;; *) echo "tag $want does not start from CMake version $have" >&2; exit 1;; esac
+      - name: Build, test, package
+        run: scripts/package-release.sh dist
+      - name: SBOM and notes alongside the archive
+        run: |
+          cp docs/SBOM.md dist/SBOM.md
+          (cd dist && sha256sum -- * | grep -v ' SHA256SUMS$' > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" dist/* $flags \
+            --title ".lexe ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag

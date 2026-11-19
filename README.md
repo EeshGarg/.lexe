@@ -316,11 +316,23 @@ contract](docs/ALPHA.md)** states exactly what is and is not claimed.
 
 ## Install the runtime
 
+**Prebuilt (Linux x86-64, needs only glibc):** download the archive and
+`SHA256SUMS` from the [latest release](https://github.com/EeshGarg/.lexe/releases),
+then
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+tar xzf lexe-*-linux-x86_64.tar.gz && cd lexe-*-linux-x86_64
+./install.sh                         # per-user, no root
+```
+
+**From source:**
+
 ```sh
 git clone https://github.com/EeshGarg/.lexe.git && cd .lexe
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
-sudo ./packaging/install.sh          # or: ./packaging/install.sh --user
+./packaging/install.sh build         # per-user (~/.local/bin), no root
 ```
 
 `packaging/install.sh` calls `lexe integrate` rather than hand-rolling MIME

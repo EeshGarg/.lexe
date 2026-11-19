@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LEXE_BUILD_GUI "Build the GTK 3 installer GUI (auto-enabled when gtk+-3.0 is found)" OFF)
+# Release builds link libstdc++/libgcc statically so the shipped binary needs
+# only glibc from the host (see scripts/package-release.sh). Off for development.
+option(LEXE_STATIC_RUNTIME "Link libstdc++ and libgcc statically (Linux release builds)" OFF)
 
 # ---------------------------------------------------------------------------
 # Third-party (vendored, pinned, never modified — third_party/README.md).
@@ -102,6 +105,9 @@ target_link_libraries(lexe_engine PUBLIC lexe_third_party lexe_settings)
 # ---------------------------------------------------------------------------
 add_executable(lexe src/lexe/commands/main.cpp)
 target_link_libraries(lexe PRIVATE lexe_engine)
+if(LEXE_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT WIN32)
+  target_link_options(lexe PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # ---------------------------------------------------------------------------
 # lexe_tests — doctest binary, registered with CTest as one test running all
@@ -159,3 +165,22 @@ if(LEXE_GUI_ENABLED)
   add_executable(lexe-ui src/gui/lexe-ui/ui.cpp)
   target_link_libraries(lexe-ui PRIVATE lexe_engine PkgConfig::GTK3)
 endif()
+
+# ---------------------------------------------------------------------------
+# install() — `cmake --install <build> --prefix <dir>` lays out exactly what a
+# release tarball ships. The per-user installer (packaging/install.sh) is the
+# supported way to put it on a desktop; this is for packagers and for
+# scripts/package-release.sh.
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+install(TARGETS lexe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(LEXE_GUI_ENABLED)
+  install(TARGETS lexe-ui lexe-builder RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES packaging/lexe-builder.desktop
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+endif()
+install(FILES LICENSE README.md CHANGELOG.md SECURITY.md SPEC.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
+        PATTERN "images" EXCLUDE)
+install(DIRECTORY schema/ DESTINATION ${CMAKE_INSTALL_DATADIR}/lexe/schema)

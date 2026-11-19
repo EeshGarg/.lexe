@@ -7,6 +7,13 @@ baseline (`tux32-core-1`). Dates are UTC.
 
 ## [Unreleased] — Uninstall and purge, and evidence that can reject itself
 
+### Added
+- **Prebuilt release archive and tag-driven release pipeline.** `install()` rules,
+  `LEXE_STATIC_RUNTIME`, `scripts/package-release.sh` (reproducible tarball,
+  glibc-only dependency, re-extracted and re-installed before it is digested) and
+  `.github/workflows/release.yml` (tests the shipped build; SHA256SUMS, SBOM and
+  build-provenance attestation; `-alpha`/`-rc` tags publish as pre-releases).
+
 ### Changed
 - **`lexe remove` is replaced by `lexe uninstall` and `lexe purge`** and retired
   (exit 2, naming both). Uninstall keeps data, the trust decision, permission
