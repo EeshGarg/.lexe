@@ -23,6 +23,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <cctype>
 #include <functional>
 #include <string>
 #include <vector>
@@ -89,6 +90,129 @@ fs::path pack_manifest(const fs::path& work, const crypto::KeyPair& key,
     const fs::path out = work / (tag + ".lexe");
     PackageWriter::write(in, key, out);
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// A minimal ZIP re-emitter for A.7 regressions: parse a valid package's
+// central directory, let a test edit the records, and write it back out with
+// every byte accounted for. Mutations that touch only unsigned bytes (extra
+// fields, comments, post-DEFLATE slack) leave every signature valid, which is
+// exactly why they used to verify.
+// ---------------------------------------------------------------------------
+struct ZipRecord {
+    std::uint16_t made = 0, needed = 0, flags = 0, method = 0, time = 0, date = 0;
+    std::uint32_t crc = 0, uncomp = 0;
+    std::uint16_t int_attr = 0;
+    std::uint32_t ext_attr = 0;
+    std::string name;
+    std::vector<std::uint8_t> data;        // stored (compressed) bytes
+    std::vector<std::uint8_t> local_extra; // local header extra field
+    std::vector<std::uint8_t> cd_extra;    // central extra field
+    std::string comment;                   // entry comment
+};
+
+std::vector<ZipRecord> parse_zip(const std::vector<std::uint8_t>& b) {
+    const auto rd16 = [&](std::size_t o) {
+        return static_cast<std::uint16_t>(b[o] | (b[o + 1] << 8));
+    };
+    const auto rd32 = [&](std::size_t o) {
+        return static_cast<std::uint32_t>(b[o]) | (b[o + 1] << 8) |
+               (b[o + 2] << 16) | (static_cast<std::uint32_t>(b[o + 3]) << 24);
+    };
+    const std::size_t eocd = b.size() - 22;
+    const std::uint16_t count = rd16(eocd + 10);
+    std::size_t pos = rd32(eocd + 16);
+    std::vector<ZipRecord> out;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        ZipRecord r;
+        r.made = rd16(pos + 4);
+        r.needed = rd16(pos + 6);
+        // Bit 3 (data descriptor) is dropped: the re-emitter writes the real
+        // sizes in the local header and no descriptor after the data.
+        r.flags = static_cast<std::uint16_t>(rd16(pos + 8) & ~0x8u);
+        r.method = rd16(pos + 10);
+        r.time = rd16(pos + 12);
+        r.date = rd16(pos + 14);
+        r.crc = rd32(pos + 16);
+        const std::uint32_t comp = rd32(pos + 20);
+        r.uncomp = rd32(pos + 24);
+        const std::uint16_t nl = rd16(pos + 28), el = rd16(pos + 30), cl = rd16(pos + 32);
+        r.int_attr = rd16(pos + 36);
+        r.ext_attr = rd32(pos + 38);
+        const std::uint32_t lho = rd32(pos + 42);
+        r.name.assign(reinterpret_cast<const char*>(&b[pos + 46]), nl);
+        const std::size_t data_at = lho + 30 + rd16(lho + 26) + rd16(lho + 28);
+        r.data.assign(b.begin() + static_cast<std::ptrdiff_t>(data_at),
+                      b.begin() + static_cast<std::ptrdiff_t>(data_at + comp));
+        out.push_back(std::move(r));
+        pos += 46u + nl + el + cl;
+    }
+    return out;
+}
+
+std::vector<std::uint8_t> emit_zip(const std::vector<ZipRecord>& recs) {
+    std::vector<std::uint8_t> b;
+    const auto w16 = [&](std::uint32_t v) {
+        b.push_back(static_cast<std::uint8_t>(v));
+        b.push_back(static_cast<std::uint8_t>(v >> 8));
+    };
+    const auto w32 = [&](std::uint32_t v) { w16(v & 0xFFFF); w16(v >> 16); };
+    const auto put = [&](const auto& bytes) { b.insert(b.end(), bytes.begin(), bytes.end()); };
+    std::vector<std::uint32_t> offsets;
+    for (const ZipRecord& r : recs) {
+        offsets.push_back(static_cast<std::uint32_t>(b.size()));
+        w32(0x04034b50); w16(r.needed); w16(r.flags); w16(r.method);
+        w16(r.time); w16(r.date); w32(r.crc);
+        w32(static_cast<std::uint32_t>(r.data.size())); w32(r.uncomp);
+        w16(static_cast<std::uint32_t>(r.name.size()));
+        w16(static_cast<std::uint32_t>(r.local_extra.size()));
+        put(r.name); put(r.local_extra); put(r.data);
+    }
+    const std::uint32_t cd_at = static_cast<std::uint32_t>(b.size());
+    for (std::size_t i = 0; i < recs.size(); ++i) {
+        const ZipRecord& r = recs[i];
+        w32(0x02014b50); w16(r.made); w16(r.needed); w16(r.flags); w16(r.method);
+        w16(r.time); w16(r.date); w32(r.crc);
+        w32(static_cast<std::uint32_t>(r.data.size())); w32(r.uncomp);
+        w16(static_cast<std::uint32_t>(r.name.size()));
+        w16(static_cast<std::uint32_t>(r.cd_extra.size()));
+        w16(static_cast<std::uint32_t>(r.comment.size()));
+        w16(0); w16(r.int_attr); w32(r.ext_attr); w32(offsets[i]);
+        put(r.name); put(r.cd_extra); put(r.comment);
+    }
+    const std::uint32_t cd_size = static_cast<std::uint32_t>(b.size()) - cd_at;
+    w32(0x06054b50); w16(0); w16(0);
+    w16(static_cast<std::uint32_t>(recs.size())); w16(static_cast<std::uint32_t>(recs.size()));
+    w32(cd_size); w32(cd_at); w16(0);
+    return b;
+}
+
+/// Re-emit `src` through `edit` into `dst`.
+fs::path rezip(const fs::path& src, const fs::path& dst,
+               const std::function<void(std::vector<ZipRecord>&)>& edit) {
+    std::vector<ZipRecord> recs = parse_zip(util::slurp(src));
+    edit(recs);
+    util::spit(dst, emit_zip(recs));
+    return dst;
+}
+
+ZipRecord& record_named(std::vector<ZipRecord>& recs, const std::string& name) {
+    for (ZipRecord& r : recs) {
+        if (r.name == name) return r;
+    }
+    FAIL("no record named " << name);
+    return recs.front();
+}
+
+bool contains(const std::string& haystack, const std::string& needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
+/// The first-failure detail of verifying `pkg`, or "" when it verifies.
+std::string first_failure_detail(const fs::path& pkg) {
+    const VerificationReport rep = verify_package(pkg, false);
+    if (rep.ok()) return {};
+    return rep.first_failure()->detail;
 }
 
 } // namespace
@@ -686,6 +810,101 @@ TEST_CASE("an architecture-incompatible package fails at the compatibility stage
     const fs::path pkg = pack_manifest(w, key, m, "wrong-arch", {other});
     // Passes structure/manifest/key/signatures/hashes, fails compatibility.
     expect_stage(pkg, /*check_arch=*/true, "compatibility");
+}
+
+
+// ---------------------------------------------------------------------------
+// FORMAT-0.1 Appendix A.7, resolved: unsigned bytes inside records, and
+// file/directory prefix conflicts. Every mutant below verified OK before.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("A.7: unsigned bytes inside records are rejected") {
+    test::TempLexeHome home;
+    const fs::path w = home.path();
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path good = test::make_test_package(w, key);
+    REQUIRE(verify_package(good, false).ok());
+
+    // The re-emitter itself is faithful: a no-op edit still verifies, so every
+    // rejection below is the mutation's and not the tool's.
+    const fs::path same = rezip(good, w / "same.lexe", [](auto&) {});
+    INFO("no-op re-emit: " << first_failure_detail(same));
+    REQUIRE(first_failure_detail(same).empty());
+
+    SUBCASE("a central-directory extra field") {
+        const fs::path p = rezip(good, w / "cd-extra.lexe", [](auto& r) {
+            r.front().cd_extra = {0xCA, 0xFE, 0x04, 0x00, 'l', 'e', 'a', 'k'};
+        });
+        CHECK(contains(first_failure_detail(p), "extra field"));
+    }
+    SUBCASE("a local-header extra field") {
+        const fs::path p = rezip(good, w / "lh-extra.lexe", [](auto& r) {
+            r.back().local_extra = {0xCA, 0xFE, 0x04, 0x00, 'l', 'e', 'a', 'k'};
+        });
+        CHECK(contains(first_failure_detail(p), "extra field"));
+    }
+    SUBCASE("an entry comment") {
+        const fs::path p = rezip(good, w / "comment.lexe", [](auto& r) {
+            r.front().comment = "covert channel";
+        });
+        CHECK(contains(first_failure_detail(p), "entry comment"));
+    }
+    SUBCASE("bytes after the end of a DEFLATE stream") {
+        bool mutated = false;
+        const fs::path p = rezip(good, w / "slack.lexe", [&](auto& recs) {
+            for (ZipRecord& r : recs) {
+                if (r.method == 8 && !mutated) {
+                    r.data.insert(r.data.end(), {'s', 'l', 'a', 'c', 'k'});
+                    mutated = true;
+                }
+            }
+        });
+        REQUIRE(mutated);
+        CHECK(contains(first_failure_detail(p), "after the end of its DEFLATE stream"));
+    }
+    SUBCASE("a STORE entry whose two sizes differ") {
+        bool mutated = false;
+        const fs::path p = rezip(good, w / "store-size.lexe", [&](auto& recs) {
+            for (ZipRecord& r : recs) {
+                if (r.method == 0 && !mutated && r.uncomp > 0) {
+                    r.data.push_back('x'); // one stored byte the data does not have
+                    mutated = true;
+                }
+            }
+        });
+        if (mutated) {
+            // miniz already refuses this when opening the archive; the reader's
+            // own STORE rule is the second line. Either way: structure stage.
+            expect_stage(p, false, "structure");
+        }
+    }
+}
+
+TEST_CASE("A.7: an entry path that is also a directory of another is rejected") {
+    test::TempLexeHome home;
+    const fs::path w = home.path();
+    const crypto::KeyPair key = test::make_keypair();
+    const fs::path good = test::make_test_package(w, key);
+    REQUIRE(verify_package(good, false).ok());
+
+    // Duplicate an existing payload record under its own parent directory's
+    // name: `payload/bin` beside `payload/bin/<entry>`. Checked BEFORE hash
+    // coverage, so the message names this rule rather than "not covered".
+    for (const bool fold : {false, true}) {
+        CAPTURE(fold);
+        const fs::path p = rezip(good, w / (fold ? "prefix-fold.lexe" : "prefix.lexe"),
+                                 [&](auto& recs) {
+            const std::string entry = "payload/" + test::TestAppSpec{}.entrypoint;
+            ZipRecord dup = record_named(recs, entry);
+            const std::string parent = entry.substr(0, entry.rfind('/'));
+            dup.name = parent;
+            if (fold) dup.name[dup.name.size() - 1] =
+                static_cast<char>(std::toupper(static_cast<unsigned char>(dup.name.back())));
+            recs.push_back(dup);
+        });
+        INFO(first_failure_detail(p));
+        CHECK(contains(first_failure_detail(p), "is also a directory of"));
+    }
 }
 
 } // TEST_SUITE("hostile_packages")

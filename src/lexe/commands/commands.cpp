@@ -3075,6 +3075,16 @@ int cmd_integrate(const std::vector<std::string>& args) {
         return 0;
     }
 
+#ifdef _WIN32
+    // The handler is an XDG desktop entry + shared-mime-info declaration: Linux
+    // desktop state. Writing those files on Windows registers nothing, and
+    // "Registered .LEXE as the persistent handler" would claim a double-click
+    // that no Windows shell will ever perform. Say what is true instead.
+    std::cout << "Desktop integration skipped: the .lexe handler is XDG desktop "
+                 "state (Linux only); nothing was registered on this host.\n";
+    (void)paths;
+    return 0;
+#else
     const IntegrationReport result = integration.install_runtime_handler();
     if (!result.ok) {
         for (const std::string& problem : result.unrepaired) {
@@ -3109,6 +3119,7 @@ int cmd_integrate(const std::vector<std::string>& args) {
                      "  env -u LEXE_HOME lexe integrate\n";
     }
     return 0;
+#endif
 }
 
 // ---------------------------------------------------------------- open

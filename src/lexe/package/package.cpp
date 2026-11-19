@@ -243,6 +243,18 @@ std::optional<std::string> central_directory_problem(
             return "central directory record " + std::to_string(i) +
                    " is not where the previous one ends";
         }
+        // FORMAT-0.1 §2.2 (A.7 resolved): no extra field and no entry comment.
+        // Neither is covered by any signature, neither changes what is
+        // extracted, and both made the package's SHA-256 malleable and gave it
+        // a covert channel. The reference writer emits neither.
+        if (rd16(pos + 30) != 0) {
+            return "central directory record " + std::to_string(i) +
+                   " carries an extra field (unsigned bytes; FORMAT §2.2)";
+        }
+        if (rd16(pos + 32) != 0) {
+            return "central directory record " + std::to_string(i) +
+                   " carries an entry comment (unsigned bytes; FORMAT §2.2)";
+        }
         pos += 46 + static_cast<std::size_t>(rd16(pos + 28)) + rd16(pos + 30) +
                rd16(pos + 32);
     }
@@ -257,6 +269,21 @@ std::optional<std::string> central_directory_problem(
     return std::nullopt;
 }
 
+/// The first entry path in `names` that is also a directory prefix of
+/// another (`a` and `a/...`), or nullopt. `names` is sorted, so every path
+/// under `n/` sorts at or after `n/` and a single lower_bound finds it.
+std::optional<std::string> path_prefix_conflict(const std::set<std::string>& names) {
+    for (const std::string& n : names) {
+        const std::string dir = n + "/";
+        const auto it = names.lower_bound(dir);
+        if (it != names.end() && it->compare(0, dir.size(), dir) == 0) {
+            return "entry '" + printable(n) + "' is also a directory of '" +
+                   printable(*it) + "' (FORMAT §2.1)";
+        }
+    }
+    return std::nullopt;
+}
+
 /// Exact raw entry name bytes (embedded NUL preserved — m_filename would
 /// truncate at the first NUL, hiding a FORMAT §2 violation).
 std::string raw_entry_name(mz_zip_archive& zip, mz_uint index) {
@@ -265,6 +292,107 @@ std::string raw_entry_name(mz_zip_archive& zip, mz_uint index) {
     std::vector<char> buf(needed);
     mz_zip_reader_get_filename(&zip, index, buf.data(), needed);
     return std::string(buf.data(), needed - 1);
+}
+
+/// Decompress one entry and prove its stored bytes are EXACTLY its data.
+///
+/// FORMAT-0.1 §2.2 (A.7 resolved): a DEFLATE stream must end at the last byte
+/// of the entry's compressed size. Bytes after the stream's end block were
+/// covered by nothing -- every digest is over the DECOMPRESSED bytes -- so a
+/// signed package could be re-emitted with arbitrary trailing content and still
+/// verify: a malleable SHA-256 and a covert channel. A STORE entry's
+/// compressed and uncompressed sizes must be equal (one stored size). In both
+/// cases the output must be exactly the declared size and match the CRC-32.
+///
+/// This replaces mz_zip_reader_extract_to_heap, which stops at the end block
+/// and never looks at what follows, and which a zero-size entry skipped
+/// entirely: `uncompressed_size == 0` returned early, so an empty entry could
+/// carry any number of compressed bytes. Every verified read goes through here.
+std::vector<std::uint8_t> exact_entry_bytes(mz_zip_archive& zip,
+                                            const std::vector<std::uint8_t>& b,
+                                            mz_uint index,
+                                            const std::string& entry_path) {
+    mz_zip_archive_file_stat st;
+    std::memset(&st, 0, sizeof(st));
+    if (!mz_zip_reader_file_stat(&zip, index, &st)) {
+        throw VerificationError("package: cannot read entry record: " + entry_path);
+    }
+    const std::uint64_t lho = st.m_local_header_ofs;
+    if (lho + 30 > b.size()) {
+        throw VerificationError("package: local header outside the file: " + entry_path);
+    }
+    const std::uint64_t name_len = static_cast<std::uint64_t>(b[lho + 26]) |
+                                   (static_cast<std::uint64_t>(b[lho + 27]) << 8);
+    const std::uint64_t extra_len = static_cast<std::uint64_t>(b[lho + 28]) |
+                                    (static_cast<std::uint64_t>(b[lho + 29]) << 8);
+    const std::uint64_t begin = lho + 30 + name_len + extra_len;
+    const std::uint64_t comp = st.m_comp_size;
+    const std::uint64_t uncomp = st.m_uncomp_size;
+    if (begin > b.size() || comp > b.size() - begin) {
+        throw VerificationError("package: entry data outside the file: " + entry_path);
+    }
+    const std::uint8_t* in = b.data() + begin;
+
+    std::vector<std::uint8_t> out;
+    if (st.m_method == 0) {
+        if (comp != uncomp) {
+            throw VerificationError(
+                "package: stored entry '" + entry_path + "' declares " +
+                std::to_string(comp) + " stored and " + std::to_string(uncomp) +
+                " uncompressed bytes; a stored entry has one size (FORMAT §2.2)");
+        }
+        out.assign(in, in + comp);
+    } else if (st.m_method == MZ_DEFLATED) {
+        // One spare byte so output beyond the declared size is detected rather
+        // than silently truncated.
+        out.resize(static_cast<std::size_t>(uncomp) + 1);
+        mz_stream zs;
+        std::memset(&zs, 0, sizeof(zs));
+        if (mz_inflateInit2(&zs, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK) {
+            throw VerificationError("package: cannot initialise inflate");
+        }
+        zs.next_in = in;
+        zs.avail_in = static_cast<unsigned int>(comp);
+        zs.next_out = out.data();
+        zs.avail_out = static_cast<unsigned int>(out.size());
+        const int rc = mz_inflate(&zs, MZ_FINISH);
+        const std::uint64_t consumed = zs.total_in;
+        const std::uint64_t produced = zs.total_out;
+        mz_inflateEnd(&zs);
+        if (rc != MZ_STREAM_END) {
+            throw VerificationError(
+                produced > uncomp
+                    ? "package: entry '" + entry_path +
+                          "' decompresses to more than its declared " +
+                          std::to_string(uncomp) + " bytes"
+                    : "package: cannot extract entry (corrupt DEFLATE stream): " +
+                          entry_path);
+        }
+        if (consumed != comp) {
+            throw VerificationError(
+                "package: entry '" + entry_path + "' has " +
+                std::to_string(comp - consumed) +
+                " byte(s) after the end of its DEFLATE stream (unsigned bytes; "
+                "FORMAT §2.2)");
+        }
+        if (produced != uncomp) {
+            throw VerificationError(
+                "package: entry '" + entry_path + "' decompresses to " +
+                std::to_string(produced) + " bytes, not its declared " +
+                std::to_string(uncomp));
+        }
+        out.resize(static_cast<std::size_t>(uncomp));
+    } else {
+        throw VerificationError("package: rejected entry '" + entry_path +
+                                "': compression method " +
+                                std::to_string(st.m_method) +
+                                " (only STORE and DEFLATE; FORMAT §1)");
+    }
+    const mz_ulong crc = mz_crc32(MZ_CRC32_INIT, out.data(), out.size());
+    if (static_cast<std::uint32_t>(crc) != st.m_crc32) {
+        throw VerificationError("package: CRC-32 mismatch for entry: " + entry_path);
+    }
+    return out;
 }
 
 /// Cross-check every local file header against the central directory, and
@@ -343,6 +471,10 @@ local_header_problem(mz_zip_archive& zip, const std::vector<std::uint8_t>& b,
         if (lho + 30 + name_len + extra_len > b.size()) {
             return "local header for '" + std::string(st.m_filename) +
                    "' is truncated";
+        }
+        if (extra_len != 0) {
+            return "local header for '" + printable(std::string(st.m_filename)) +
+                   "' carries an extra field (unsigned bytes; FORMAT §2.2)";
         }
 
         // The NAME. This is the one that matters most: a disagreement here is
@@ -640,6 +772,22 @@ PackageReader::PackageReader(const fs::path& lexe_file)
         impl_->files.push_back(std::move(f));
     }
 
+    // FORMAT-0.1 §2.1 (A.7 resolved): no entry path may also be a directory
+    // of another. `payload/bin` beside `payload/bin/app` satisfies every
+    // lexical rule and cannot be extracted to any filesystem: whichever comes
+    // second fails, or -- worse -- a tool that "fixes" it silently drops one.
+    // Compared case-folded, like the collision rule above, because
+    // `payload/Bin` + `payload/bin/app` is the same conflict on a folding
+    // filesystem.
+    if (const std::optional<std::string> conflict =
+            path_prefix_conflict(seen_casefold)) {
+        throw VerificationError(
+            "package: " + *conflict,
+            "An entry path cannot also be a directory of another entry: no "
+            "filesystem can hold both, so the archive cannot be extracted as "
+            "signed.");
+    }
+
     std::sort(impl_->files.begin(), impl_->files.end(),
               [](const Impl::File& a, const Impl::File& b) {
                   return a.entry.path < b.entry.path;
@@ -803,17 +951,7 @@ PackageReader::read_entry(const std::string& entry_path) const {
             " uncompressed bytes, exceeds the per-entry limit of " +
             std::to_string(limits::kMaxEntryUncompressedBytes));
     }
-    if (f.entry.uncompressed_size == 0) return {};
-    std::size_t size = 0;
-    void* p = mz_zip_reader_extract_to_heap(&impl_->zip, f.index, &size, 0);
-    if (p == nullptr) {
-        throw VerificationError("package: cannot extract entry (corrupt?): " +
-                                entry_path);
-    }
-    std::vector<std::uint8_t> out(static_cast<std::uint8_t*>(p),
-                                  static_cast<std::uint8_t*>(p) + size);
-    mz_free(p);
-    return out;
+    return exact_entry_bytes(impl_->zip, impl_->bytes, f.index, entry_path);
 }
 
 void PackageReader::extract_payload(const fs::path& dest_dir) const {

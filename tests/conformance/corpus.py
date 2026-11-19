@@ -131,7 +131,7 @@ class Entry:
                  extattr=None, dos_dir=False, central_name=None,
                  data_descriptor=None, extra_local=b"", extra_central=b"",
                  local_name=None, force_sizes=None, force_method_central=None,
-                 comp_override=None):
+                 comp_override=None, comment=b"", declared_uncomp=None):
         self.name = name if isinstance(name, bytes) else name.encode()
         self.local_name = (local_name.encode()
                            if isinstance(local_name, str) else local_name)
@@ -144,6 +144,10 @@ class Entry:
         self.dos_dir = dos_dir
         self.extra_local = extra_local
         self.extra_central = extra_central
+        self.comment = comment
+        # The uncompressed size BOTH records declare, when it is not the
+        # data's real length (the digest stays over the real data).
+        self.declared_uncomp = declared_uncomp
         # data_descriptor: None | "with-sig" | "no-sig"
         self.data_descriptor = data_descriptor
         self.force_sizes = force_sizes                # (comp, uncomp) in LFH
@@ -176,6 +180,8 @@ def build_zip(entries, *, comment=b"", prepend=b"", append=b"",
         offsets.append(len(out))
         dd = e.data_descriptor is not None
         comp_size, uncomp_size = len(e.comp), len(e.data)
+        if e.declared_uncomp is not None:
+            uncomp_size = e.declared_uncomp
         if e.force_sizes is not None:
             comp_size, uncomp_size = e.force_sizes
         lname = e.local_name if e.local_name is not None else e.name
@@ -203,10 +209,12 @@ def build_zip(entries, *, comment=b"", prepend=b"", append=b"",
                   else e.method)
         central += struct.pack("<IHHHHHHIIIHHHHHII", CDH, (3 << 8) | 20, 20,
                                e.gpflag | (0x08 if e.data_descriptor else 0),
-                               method, 0, 0, e.crc, len(e.comp), len(e.data),
-                               len(cname), len(e.extra_central), 0, 0, 0,
-                               ext, off)
-        central += cname + e.extra_central
+                               method, 0, 0, e.crc, len(e.comp),
+                               (e.declared_uncomp if e.declared_uncomp is not None
+                                else len(e.data)),
+                               len(cname), len(e.extra_central), len(e.comment),
+                               0, 0, ext, off)
+        central += cname + e.extra_central + e.comment
     # §2.2 shapes: an extra central record (a clone of the first entry under
     # another name) that the EOCD count does NOT include, and slack bytes after
     # the last record. Either way cd_size below covers them, so the end record
@@ -278,6 +286,7 @@ class Pkg:
         self.algorithm = "sha256"
         self.sig_manifest = None                   # raw bytes override
         self.sig_payload = None
+        self.sig_manifest_transform = None         # fn(sig bytes) -> bytes
         self.entry_opts = {}                       # path -> Entry kwargs
         self.extra_entries = []                    # Entry objects appended
         self.drop = set()                          # member paths to omit
@@ -311,6 +320,8 @@ class Pkg:
         key = signer(self.seed)
         sm = self.sig_manifest if self.sig_manifest is not None else key.sign(man)
         sp = self.sig_payload if self.sig_payload is not None else key.sign(hsh)
+        if self.sig_manifest_transform is not None:
+            sm = self.sig_manifest_transform(sm)
 
         blobs = dict(self.members)
         blobs["lexe.json"] = man
@@ -553,6 +564,87 @@ case("container-cd-uncounted-record", "§2.2", "reject",
      "invisible to a reader that walks the count and listed by one that scans; "
      "it was used to show `signatures/evil.bin` to one reader and not the other",
      lambda p: p.zip_opts.update(uncounted_cd_names=["signatures/evil.bin"]))
+
+# ===== Appendix A.7 resolved: unsigned bytes inside records (§2.2) =========
+# Each of these verified under the old rules: none of the bytes is covered by
+# any digest (digests are over DECOMPRESSED content), so they made a signed
+# package's SHA-256 malleable and gave it a covert channel.
+_XF = b"\xca\xfe\x04\x00leak"
+case("container-extra-field-local", "§2.2", "reject",
+     "a local-header extra field is a run of bytes no signature covers",
+     lambda p: p.entry_opts.update({"payload/data.txt": {"extra_local": _XF}}))
+case("container-extra-field-central", "§2.2", "reject",
+     "a central-directory extra field is a run of bytes no signature covers",
+     lambda p: p.entry_opts.update({"payload/data.txt": {"extra_central": _XF}}))
+case("container-entry-comment", "§2.2", "reject",
+     "a per-entry comment is a run of bytes no signature covers",
+     lambda p: p.entry_opts.update({"payload/data.txt": {"comment": b"covert"}}))
+
+
+def _deflate(data):
+    co = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return co.compress(data) + co.flush()
+
+
+case("container-deflate-trailing-slack", "§2.2", "reject",
+     "bytes after a DEFLATE stream's end block inflate to nothing, so the digest "
+     "of the content still matches -- which is exactly why they must be refused",
+     lambda p: [p.members.__setitem__("payload/data.txt", b"D" * 300),
+                p.entry_opts.update({"payload/data.txt": {
+                    "method": DEFLATE,
+                    "comp_override": _deflate(b"D" * 300) + b"SLACK"}})])
+case("container-deflate-empty-entry-slack", "§2.2", "reject",
+     "a zero-length entry is still a DEFLATE stream that must end at its last "
+     "stored byte; a reader that skips empty entries never looks",
+     lambda p: [p.members.__setitem__("payload/empty", b""),
+                p.entry_opts.update({"payload/empty": {
+                    "method": DEFLATE,
+                    "comp_override": _deflate(b"") + b"hidden payload"}})])
+case("container-deflate-empty-entry", "§2.2", "accept",
+     "the control: a zero-length DEFLATE entry whose stream is exactly the "
+     "empty stream is conformant",
+     lambda p: [p.members.__setitem__("payload/empty", b""),
+                p.entry_opts.update({"payload/empty": {"method": DEFLATE}})])
+case("container-deflate-declared-size-short", "§2.2", "reject",
+     "the stream yields more bytes than both records declare; a reader that "
+     "stops at the declaration hashes a prefix",
+     lambda p: [p.members.__setitem__("payload/data.txt", b"E" * 300),
+                p.entry_opts.update({"payload/data.txt": {
+                    "method": DEFLATE, "declared_uncomp": 299}})])
+case("container-gpflag-bit13", "§1", "reject",
+     "general-purpose bit 13 masks local-header values (central-directory "
+     "encryption), and 0.1 forbids encryption",
+     lambda p: p.entry_opts.update({"payload/data.txt": {"gpflag": 0x2000}}))
+
+# ===== Appendix A.7 resolved: file/directory prefix conflicts (§2.1) =======
+case("path-file-is-directory-of-another", "§2.1", "reject",
+     "`payload/bin` beside `payload/bin/app` satisfies every lexical rule and "
+     "cannot be extracted to any filesystem",
+     lambda p: p.members.__setitem__("payload/bin", b"I am also a directory\n"))
+case("path-file-is-directory-of-another-casefold", "§2.1", "reject",
+     "`payload/Bin` + `payload/bin/app` is the same conflict on a "
+     "case-folding filesystem",
+     lambda p: p.members.__setitem__("payload/Bin", b"case-folded conflict\n"))
+case("path-sibling-shares-prefix-text", "§2.1", "accept",
+     "the control: `payload/bin-tools` and `payload/binary` share the TEXT "
+     "`payload/bin` but are not under it ('-' sorts before '/')",
+     lambda p: [p.members.__setitem__("payload/bin-tools", b"x\n"),
+                p.members.__setitem__("payload/binary", b"y\n")])
+
+# ===== §4 strictness, previously stated without a case ======================
+_L = 2 ** 252 + 27742317777372353535851937790883648493
+
+
+def _malleate_s(sig):
+    """S + L: the same signature to a verifier that reduces S mod L."""
+    r, s_ = sig[:32], int.from_bytes(sig[32:], "little")
+    return r + (s_ + _L).to_bytes(32, "little")
+
+
+case("sig-manifest-s-not-reduced", "§4", "reject",
+     "S >= L is the classic Ed25519 malleation: a lenient verifier accepts "
+     "S+L as the same signature, so the signed bytes have two encodings",
+     lambda p: setattr(p, "sig_manifest_transform", _malleate_s))
 
 # Data descriptors are TOLERATED, in both encodings: APPNOTE 4.3.9.3 makes the
 # 0x08074b50 signature word optional, so both are legitimate and both must be

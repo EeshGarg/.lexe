@@ -7,7 +7,38 @@ baseline (`tux32-core-1`). Dates are UTC.
 
 ## [Unreleased] — Uninstall and purge, and evidence that can reject itself
 
+### Security
+- **Small-order Ed25519 keys and R values are now rejected on every build.**
+  The vendored verifier (used whenever libsodium is absent) refused only the
+  all-zero key, so a package whose `publicKey` was the identity point verified
+  with the signature `01 00..00 || 00*32` over ANY manifest. libsodium's
+  small-order blacklist is now applied before either backend. Found by the
+  conformance corpus (`key-identity-point`), where the independent validator
+  disagreed with `lexe verify`.
+
+### Changed (FORMAT-0.1, decided from Appendix A.7)
+- **Unsigned bytes inside records are rejected** (§2.2): extra fields, entry
+  comments, bytes after a DEFLATE stream's end block (including on zero-length
+  entries, which the reader previously never inflated), and output that differs
+  from the declared size. Each made a signed package's SHA-256 malleable.
+- **File/directory prefix conflicts are rejected** (§2.1): `payload/bin` beside
+  `payload/bin/app`, compared case-folded.
+- Encryption now names general-purpose bit 13 alongside 0 and 6 (§2.1).
+
+### Fixed (Windows)
+- **Locks were a no-op on Windows**: a permissive stand-in took no lock, so
+  repair rewrote leased versions and the install/uninstall mutation lock
+  excluded nobody. Replaced with a `LockFileEx` backend with the flock contract.
+- `run_process` ignored stderr capture, tee and retention caps on Windows.
+- `write_atomic` deleted the destination on a transient sharing violation, so
+  concurrent readers saw no file; it now retries the atomic replace.
+- `find_on_path` ignored `PATHEXT`; `source set C:\...` was refused as scheme `c:`;
+  `lexe integrate` claimed to register XDG files on Windows (now: skipped).
+- Windows CI: 20 failing tests → 0.
+
 ### Added
+- 11 conformance corpus cases (210 total) and C++ regressions for each rule
+  above, each shown to fail against the previous reader.
 - **Prebuilt release archive and tag-driven release pipeline.** `install()` rules,
   `LEXE_STATIC_RUNTIME`, `scripts/package-release.sh` (reproducible tarball,
   glibc-only dependency, re-extracted and re-installed before it is digested) and

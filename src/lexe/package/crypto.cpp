@@ -123,12 +123,11 @@ constexpr std::string_view kKeyPrefix = "ed25519:";
 // or point encodings (HARDENING.md §G). We enforce those before calling it:
 //   * the signature scalar S (bytes 32..63) must be < L (the group order) —
 //     otherwise S and S+L are two signatures for the same message (malleability);
-//   * the public key must be a canonically-encoded point (y < p) and not the
-//     all-zero small-order point.
-// Comprehensive small-order-point rejection is a property of the intended
-// libsodium backend (docs/TRUST.md) and is documented as such; these checks are
-// the strict guarantees the current backend can be given without curve
-// arithmetic, and they never reject a legitimately generated random key.
+//   * the public key must be a canonically-encoded point (y < p) and not any
+//     of the 8 small-order points (libsodium's blacklist, ported below);
+//   * the signature's R must not be a small-order point either.
+// These match libsodium's documented rejections, so both providers refuse the
+// same inputs, and none of them can reject a legitimately generated key.
 
 /// Little-endian 32-byte unsigned comparison: is a < b?
 bool le_less_than(const std::uint8_t* a, const std::uint8_t* b) {
@@ -156,9 +155,55 @@ bool signature_scalar_canonical(const Signature& signature) {
     return le_less_than(signature.data() + 32, kL);
 }
 
-/// The public key is a canonical point encoding (y < p) and not the all-zero
-/// degenerate small-order point.
+/// Is this 32-byte point encoding one of the 8 small-order (8-torsion) points,
+/// in any spelling? The table is libsodium's (ge25519_has_small_order): the
+/// identity, the order-2 point, the two order-4 and four order-8 points, plus
+/// the non-canonical y = p and y = p + 1 spellings, compared with the x-sign
+/// bit cleared so both signs of each are caught. Verified exhaustive against
+/// independent curve arithmetic (tools/lexe-conformance: 8 distinct points).
+///
+/// The vendored verifier accepted every one of these except all-zeros, so a
+/// package whose publicKey was the IDENTITY point (`01 00..00`) verified with
+/// a signature of `01 00..00 || 00*32` -- over any manifest, signed by nobody.
+/// The conformance corpus case `key-identity-point` caught the reference
+/// implementation disagreeing with the independent validator on any build
+/// without libsodium.
+bool has_small_order(const std::uint8_t* enc) {
+    static constexpr std::uint8_t kBlacklist[7][32] = {
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0, 0x45, 0xc3, 0xf4,
+         0x89, 0xf2, 0xef, 0x98, 0xf0, 0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6,
+         0x33, 0x39, 0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53, 0xfc, 0x05},
+        {0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b,
+         0x76, 0x0d, 0x10, 0x67, 0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39,
+         0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0x7a},
+        {0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
+        {0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
+        {0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
+    };
+    for (const auto& bad : kBlacklist) {
+        if (std::memcmp(enc, bad, 31) == 0 && (enc[31] & 0x7f) == bad[31]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The public key is a canonical point encoding (y < p) and not a
+/// small-order point.
 bool public_key_canonical(const PublicKey& public_key) {
+    if (has_small_order(public_key.data())) return false;
     bool all_zero = true;
     for (std::size_t i = 0; i < public_key.size(); ++i) {
         if (public_key[i] != 0) {
@@ -267,6 +312,8 @@ bool verify_signature(const std::vector<std::uint8_t>& message,
     // degenerate public-key encoding BEFORE the curve check.
     if (!signature_scalar_canonical(signature)) return false;
     if (!public_key_canonical(public_key)) return false;
+    // R of small order: libsodium refuses it too; the vendored verifier does not.
+    if (has_small_order(signature.data())) return false;
 #if defined(LEXE_HAVE_SODIUM)
     // libsodium's detached verify additionally rejects non-canonical S and
     // small-order / non-canonical point encodings per its documented API; the

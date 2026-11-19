@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import binascii
 import hashlib
 import json
@@ -30,6 +31,7 @@ import re
 import struct
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 # --------------------------------------------------------------------------
@@ -167,6 +169,7 @@ class Report:
 # need. zipfile is used ONLY to inflate entry data.
 # ==========================================================================
 STORE_METHOD = 0
+DEFLATE_METHOD = 8
 EOCD_SIG = b"PK\x05\x06"
 CD_SIG = b"PK\x01\x02"
 
@@ -175,7 +178,7 @@ class RawEntry:
     __slots__ = (
         "index", "name_bytes", "name", "name_decodable", "flags",
         "method", "comp_size", "uncomp_size", "external_attr", "is_directory",
-        "local_header_off",
+        "local_header_off", "cd_extra_len", "comment_len",
     )
 
 
@@ -303,6 +306,8 @@ class Container:
             e.uncomp_size = uncomp_size
             e.external_attr = external_attr
             e.local_header_off = local_header_off
+            e.cd_extra_len = extra_len
+            e.comment_len = comment_len
             try:
                 e.name = name_bytes.decode("utf-8")
                 e.name_decodable = True
@@ -483,6 +488,33 @@ LOCAL_SIG = b"PK\x03\x04"
 DATA_DESCRIPTOR_SIG = b"PK\x07\x08"
 
 
+def _deflate_exactness(raw, declared):
+    """None when `raw` is one raw DEFLATE stream using every byte and yielding
+    exactly `declared` bytes; otherwise what was observed. Bounded: inflates in
+    chunks and stops one byte past the declaration."""
+    d = zlib.decompressobj(-15)
+    produced = 0
+    data = raw
+    try:
+        while True:
+            out = d.decompress(data, 1 << 20)
+            produced += len(out)
+            if produced > declared:
+                return "inflates past its declared %d bytes" % declared
+            data = d.unconsumed_tail
+            if d.eof or not data:
+                break
+        if not d.eof:
+            return "the stream has no end block within its stored bytes"
+    except zlib.error as exc:
+        return "corrupt DEFLATE stream (%s)" % exc
+    if d.unused_data:
+        return "%d byte(s) follow the end of the DEFLATE stream" % len(d.unused_data)
+    if produced != declared:
+        return "inflates to %d bytes, declared %d" % (produced, declared)
+    return None
+
+
 def check_local_headers(c, rep):
     """FORMAT-0.1 §2.2 — one archive, not two.
 
@@ -543,8 +575,30 @@ def check_local_headers(c, rep):
                     "local (%d, %d) vs central (%d, %d)"
                     % (lh_comp, lh_uncomp, e.comp_size, e.uncomp_size), "§2.2")
 
+        # §2.2: no extra field in either record, no entry comment. Each is a
+        # run of bytes no hash and no signature covers.
+        if extra_len or e.cd_extra_len:
+            rep.add("CONTAINER_EXTRA_FIELD", where,
+                    "no extra field in the local header or the central directory",
+                    "local extra %d byte(s), central extra %d byte(s)"
+                    % (extra_len, e.cd_extra_len), "§2.2")
+        if e.comment_len:
+            rep.add("CONTAINER_ENTRY_COMMENT", where,
+                    "no entry comment", "comment of %d byte(s)" % e.comment_len,
+                    "§2.2")
+
         data_begin = lho + 30 + name_len + extra_len
         data_end = data_begin + e.comp_size
+        # §2.2: a DEFLATE stream ends exactly at the entry's last stored byte,
+        # and produces exactly the declared size. Bytes after the end block are
+        # outside every digest (digests are over decompressed bytes).
+        if method == DEFLATE_METHOD and data_end <= len(b):
+            problem = _deflate_exactness(bytes(b[data_begin:data_end]),
+                                         e.uncomp_size)
+            if problem:
+                rep.add("CONTAINER_DEFLATE_NOT_EXACT", where,
+                        "the DEFLATE stream ends at the entry's last stored byte "
+                        "and yields exactly the declared size", problem, "§2.2")
         if has_descriptor:
             at = data_end
             has_word = bytes(b[at:at + 4]) == DATA_DESCRIPTOR_SIG
@@ -728,6 +782,23 @@ def check_container(c, rep):
                 "threshold" % (MAX_EXPANSION_RATIO, RATIO_GRACE_BYTES),
                 "%d uncompressed bytes from a %d-byte package (%.1fx)"
                 % (total_declared, c.size, total_declared / c.size), "§1")
+
+    # §2.1: no entry path is also a directory of another (`a` beside `a/b`),
+    # compared ASCII-case-folded like the collision rule. No filesystem holds
+    # both, so such an archive cannot be extracted as signed.
+    folded = sorted(set(bytes(ch + 32 if 65 <= ch <= 90 else ch for ch in e.name_bytes)
+                        for e in c.entries))
+    folded_set = folded
+    for n in folded_set:
+        prefix = n + b"/"
+        i = bisect.bisect_left(folded_set, prefix)
+        if i < len(folded_set) and folded_set[i].startswith(prefix):
+            rep.add("CONTAINER_PATH_PREFIX_CONFLICT", n.decode("utf-8", "replace"),
+                    "no entry path that is also a directory of another entry",
+                    "%r is a directory of %r"
+                    % (n.decode("utf-8", "replace"),
+                       folded_set[i].decode("utf-8", "replace")), "§2.1")
+            break
 
     present = set(e.name_bytes for e in c.entries if not e.is_directory)
     for required in REQUIRED_ENTRIES:

@@ -187,10 +187,17 @@ A reader MUST also reject an archive when:
   host filesystem, because whether a package is valid MUST NOT depend on where
   it is read;
 * an entry is a symbolic link (ZIP external attributes: Unix mode `S_IFLNK`);
-* an entry is encrypted (general-purpose bit 0 or 6 set), or uses a compression
+* an entry is encrypted (general-purpose bit 0, 6 or 13 set), or uses a compression
   method other than STORE or DEFLATE (§1);
 * a required entry is missing;
-* `payload/` entries are absent and the manifest's `role` is not `"launch"`.
+* `payload/` entries are absent and the manifest's `role` is not `"launch"`;
+* an entry path is also a **directory of another** entry path: `payload/bin`
+  beside `payload/bin/app`, or a bare file named `payload` beside any
+  `payload/...`. Compared ASCII-case-folded, like the collision rule above
+  (`payload/Bin` + `payload/bin/app` is the same conflict on a folding
+  filesystem). Such an archive satisfies every lexical rule and cannot be
+  extracted to any filesystem as signed; whichever entry comes second fails,
+  or a tool that "repairs" it silently drops one. *(Decided from Appendix A.7.)*
 
 **Paths are compared as bytes.** Every comparison in this document between
 entry paths, or between an entry path and a manifest value, is an exact
@@ -240,6 +247,24 @@ central directory, and says nothing about holes before it.
 A data descriptor (general-purpose bit 3) is tolerated: it legitimately leaves
 the local size fields zero, with the real values following the data. Its
 presence changes where a record ends, not whether every byte is accounted for.
+
+**No unsigned bytes inside a record.** Every digest in this format is over an
+entry's *decompressed* content, so bytes a ZIP carries beside that content are
+covered by nothing. A reader MUST reject an archive in which:
+
+* any local header or central-directory record has a non-empty **extra field**;
+* any central-directory record has a non-empty **entry comment**;
+* a DEFLATE entry's stream does not end at the **last byte** of its compressed
+  size (bytes after the end block inflate to nothing, so the content digest
+  still matches), or does not inflate to **exactly** its declared uncompressed
+  size. This applies to zero-length entries too: an empty DEFLATE entry is the
+  empty stream and nothing else;
+* a STORE entry's compressed and uncompressed sizes differ (§1).
+
+Each of these once verified: they cannot change what is extracted, but they make
+a signed package's SHA-256 malleable — two byte-different files with one valid
+signature — and give it a covert channel. A writer MUST NOT emit any of them;
+the reference writer never has. *(Decided from Appendix A.7.)*
 
 A reader MUST reject an archive containing a ZIP **directory entry** (a record
 whose name ends in `/`), and a writer MUST NOT emit one.
@@ -1747,6 +1772,14 @@ reader to assume otherwise.
 
 ### A.7 Still open
 
+**Decided since the freeze (2026-11):** *file/directory prefix conflicts* are
+now rejected (§2.1), and *unsigned bytes inside records* — extra fields, entry
+comments, bytes after a DEFLATE stream's end — are now rejected (§2.2). Both
+were checked against what writers emit first: the reference writer emits none
+of them, and both implementations plus the conformance corpus
+(`path-file-is-directory-of-another*`, `container-extra-field-*`,
+`container-entry-comment`, `container-deflate-*`) enforce them.
+
 Recorded rather than resolved, because each needs a decision this freeze does
 not force. None affects whether a conforming implementation can read a 0.1
 package.
@@ -1758,8 +1791,6 @@ package.
 | **Launch references and a stateless validator.** §9.8.1 requires refusing a reference not signed by this machine's launch key; a validator with no such key cannot decide it | Likely answer: report "unverifiable here", never OK — needs wording |
 | **`integration` members.** §5.7 points at §9 for `integration`, which defines only `desktopEntry`. Other members are presumably ignored as unknown (§5.0), but this is not said | Text-only, but it fixes what an `integration` block may mean |
 | **Unicode normalization.** §2.1 compares bytes, so NFC/NFD-equivalent paths are distinct and both valid in 0.1. They alias on a normalizing filesystem exactly as ASCII case pairs alias on a folding one | Rejecting them changes which packages are valid; 0.2 question |
-| **File/directory prefix conflicts.** An entry `payload/bin` beside `payload/bin/app`, or a bare file named `payload`/`metadata`/`signatures`, satisfies every §2.1 rule but cannot be extracted to any filesystem. Both implementations accept it today | Deterministic rejection is the likely answer; it is a validity change for both implementations, not made in this campaign |
-| **Unsigned bytes inside records.** Per-entry comments, local extra fields and bytes after a DEFLATE stream's end are covered by no signature. They cannot change what is extracted, but they make the package's SHA-256 malleable and are a covert channel | Rejecting them needs a check of what real writers emit first |
 | **Text in `name`/`publisher.name`.** No character restriction: a newline or bidi override is valid manifest text. The reference implementation escapes it on display (REFERENCE-POLICY) | Whether FORMAT should forbid control characters is a validity change |
 | **A session-managed service whose program is replaced underneath it.** `ExecStart` is version-independent (`lexe run <id> --wait`), so after an update the unit keeps executing the OLD version until something unrelated restarts it, at which point it silently switches — and `service status` reports it healthy throughout | §9.4 permits this (it forbids disturbing a running version) and §5.6 says detaching is not supervision, but neither covers the case where the runtime IS the supervisor and the program changed. The likely answer is a REPORT rather than a restart — `service status` saying "running 1.0.0, installed version is 2.0.0" — because restarting a service because a file changed is a policy decision that belongs to the user. Recorded as open rather than decided quietly |
 | `build.json` vocabularies: legal values of `hostIsa`, `approval.authority`, and a timestamp grammar | All three are free strings today. Tightening them is POLICY work, not format work |
