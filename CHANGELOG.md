@@ -7,6 +7,27 @@ baseline (`tux32-core-1`). Dates are UTC.
 
 ## [Unreleased] — Uninstall and purge, and evidence that can reject itself
 
+### Changed — the double-click experience
+- **Opening a `.lexe` opens a focused installer window, not the console.**
+  Icon, name and publisher up top; the trust state in a sentence; what the app
+  can and cannot do on this computer (from its permissions and the probed
+  sandbox — never a claim the runtime does not enforce); the action pinned at
+  the bottom; everything technical under Details.
+- **Installing and opening are no longer confused.** An app whose version is
+  already installed offers **Open** (Reinstall secondary) instead of Install;
+  an older installed version offers **Update**; a newer one **Downgrade**
+  behind its own consent. A launch reference starts the app and gets out of
+  the way.
+- **Updates that ask for new permissions, and downgrades, now work from the
+  GUI.** It passed neither consent to the installer, so both failed at the end;
+  each is now an explicit checkbox naming exactly what is being allowed.
+- A package that fails verification shows a plain-language reason and none of
+  its own claims (name as heading, capabilities) as fact.
+- Console: your applications on Home with icons and one-click **Open**;
+  "last opened 5 minutes ago" instead of ISO timestamps; one card style; the
+  application page leads with its icon and Open. Dropping `.lexe` files on any
+  window opens them (the README promised this; the current frontend had lost it).
+
 ### Security
 - **Small-order Ed25519 keys and R values are now rejected on every build.**
   The vendored verifier (used whenever libsodium is absent) refused only the

@@ -11,10 +11,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/installer-light.png" alt="The .lexe installer showing an application's publisher, signing-key fingerprint, requested permissions and the isolation that will be applied, before anything is written" width="420" />
+  <img src="docs/images/installer-light.png" alt="The .lexe installer window: the app's icon, name and publisher, its trust state in plain words, what it can do on this computer, and the Install button" width="420" />
 </p>
 
-<p align="center"><em>What you see before anything is installed: who signed it, what it may do, and what the sandbox will enforce.</em></p>
+<p align="center"><em>What a double-click shows before anything is installed: who signed it, and what it can and cannot do on this computer.</em></p>
 
 ---
 

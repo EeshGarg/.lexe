@@ -62,6 +62,7 @@
 // both frontends include: `lexe::gui::build_view_model` and friends below come
 // from there, and no second copy of it exists anywhere.
 #include "gui/package_view.hpp"
+#include "gui/installer_flow.hpp"
 
 #include "lexe/state/appconfig.hpp"
 #include "lexe/diagnostics/diagnostics.hpp"
@@ -85,6 +86,8 @@
 #endif
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -316,6 +319,77 @@ inline std::string format_last_run(const std::string& last_run_at,
                 ? " — exited 0 (success)"
                 : " — exited " + std::to_string(last_exit_code);
     return text;
+}
+
+/// Seconds since the epoch for a runtime timestamp ("YYYY-MM-DDTHH:MM:SSZ",
+/// the form every record uses), or nullopt for anything else. Civil-date
+/// arithmetic rather than timegm(), which is not portable to MSVC.
+inline std::optional<std::int64_t> parse_utc_timestamp(const std::string& iso) {
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
+    char tail = 0;
+    if (iso.size() < 20 ||
+        std::sscanf(iso.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d%c", &y, &mo, &d, &h,
+                    &mi, &se, &tail) != 7 ||
+        tail != 'Z' || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 ||
+        mi > 59 || se > 60) {
+        return std::nullopt;
+    }
+    // days_from_civil (H. Hinnant), proleptic Gregorian.
+    const int yy = y - (mo <= 2 ? 1 : 0);
+    const int era = (yy >= 0 ? yy : yy - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(yy - era * 400);
+    const unsigned doy =
+        static_cast<unsigned>((153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const std::int64_t days = static_cast<std::int64_t>(era) * 146097 +
+                              static_cast<std::int64_t>(doe) - 719468;
+    return days * 86400 + h * 3600 + mi * 60 + se;
+}
+
+/// "just now", "5 minutes ago", "yesterday", "3 days ago", or the date.
+inline std::string relative_time(std::int64_t then, std::int64_t now) {
+    const std::int64_t ago = now - then;
+    if (ago < 0) return "just now"; // a clock that moved backwards
+    if (ago < 60) return "just now";
+    if (ago < 3600) {
+        const std::int64_t m = ago / 60;
+        return std::to_string(m) + (m == 1 ? " minute ago" : " minutes ago");
+    }
+    if (ago < 86400) {
+        const std::int64_t h = ago / 3600;
+        return std::to_string(h) + (h == 1 ? " hour ago" : " hours ago");
+    }
+    const std::int64_t days = ago / 86400;
+    if (days == 1) return "yesterday";
+    if (days < 14) return std::to_string(days) + " days ago";
+    // Older than two weeks: the date says more than "37 days ago".
+    const std::int64_t z = then / 86400 + 719468;
+    const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const std::int64_t doe = z - era * 146097;
+    const std::int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const std::int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const std::int64_t mp = (5 * doy + 2) / 153;
+    const std::int64_t day = doy - (153 * mp + 2) / 5 + 1;
+    const std::int64_t month = mp < 10 ? mp + 3 : mp - 9;
+    const std::int64_t year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+    static const char* const kMonths[] = {"Jan", "Feb", "Mar", "Apr",
+                                          "May", "Jun", "Jul", "Aug",
+                                          "Sep", "Oct", "Nov", "Dec"};
+    return "on " + std::to_string(day) + " " + kMonths[month - 1] + " " +
+           std::to_string(year);
+}
+
+/// The one-line "when did I last use this" for app rows and headers. The exact
+/// record (timestamp, exit code) stays in format_last_run for the detail views.
+inline std::string friendly_last_opened(const std::string& last_run_at,
+                                        int last_exit_code, std::int64_t now) {
+    if (last_run_at.empty()) return "Not opened yet";
+    const std::optional<std::int64_t> then = parse_utc_timestamp(last_run_at);
+    const std::string when = then.has_value() ? relative_time(*then, now)
+                                              : "at " + last_run_at;
+    if (last_exit_code == 0) return "Last opened " + when;
+    return "Last run " + when + " ended with an error (exit code " +
+           std::to_string(last_exit_code) + ")";
 }
 
 /// The LOCAL trust state of an installed application, from its local trust
@@ -1075,6 +1149,8 @@ inline std::string format_handler_state(const IntegrationReport& report) {
 
 #include <gtk/gtk.h>
 
+#include <cctype>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -1129,7 +1205,6 @@ struct Ui {
     GtkWidget* compat_auto_radio = nullptr;
     GtkWidget* compat_manual_radio = nullptr;
     GtkWidget* compat_combo = nullptr;
-    GtkWidget* channel_combo = nullptr;
     GtkWidget* error_details_view = nullptr;
     GtkWidget* wait_check = nullptr;
     GtkWidget* uninstall_radios[2] = {nullptr, nullptr};
@@ -1148,25 +1223,14 @@ struct Ui {
     bool errors_entry = false; // opened via --errors: Close closes the window
     std::string status;
 
-    // Install flow (reuses the installer's view model).
-    std::string install_stage = "choose"; // choose|working|details|progress|done|blocked
-    fs::path package_path;
-    lexe::gui::ViewModel vm;
-    std::string install_note;
-    std::string selected_channel = "stable";
-    /// ADMIN COMPILE APPROVAL for a portable package (§5A). Its own flag and
-    /// its own control, kept separate from every other consent for the same
-    /// reason the CLI keeps `--approve-compile` separate from `--yes`.
-    bool approve_compile = false;
-    GtkWidget* approve_compile_check = nullptr;
+    // Opening and installing a .lexe happens in its own installer window
+    // (InstallerWin, below); the console only offers the file chooser.
     /// What the DESKTOP wants, snapshotted before the first style::apply
     /// overwrites the flag that answers it. See apply_theme().
     gboolean desktop_prefers_dark = FALSE;
     /// The navigation items, by page name, so the current one can be marked.
     /// A nav pane that does not show where you are is a list of links.
     std::map<std::string, GtkWidget*> nav_buttons;
-    std::string installed_id;
-    std::string installed_version;
 
     // Desktop integration (Home tile + Settings handler state).
     bool integration_loaded = false;
@@ -1289,21 +1353,16 @@ GtkWidget* add_severity(GtkWidget* box, const std::string& severity,
     return label;
 }
 
-/// A titled card; returns the box its contents go into.
+/// A titled card; returns the box its contents go into. The same hairline
+/// `.lexe-card` surface as every other block, not a GtkFrame: frames were the
+/// last stock-toolkit look left in the window, and two card styles on one page
+/// read as two different applications.
 GtkWidget* add_card(GtkWidget* box, const std::string& title) {
-    GtkWidget* frame = gtk_frame_new(nullptr);
-    GtkWidget* header = gtk_label_new(nullptr);
-    gchar* escaped = g_markup_escape_text(title.c_str(), -1);
-    gchar* markup = g_strdup_printf("<b> %s </b>", escaped);
-    gtk_label_set_markup(GTK_LABEL(header), markup);
-    g_free(markup);
-    g_free(escaped);
-    gtk_frame_set_label_widget(GTK_FRAME(frame), header);
-    GtkWidget* inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(inner), 12);
-    gtk_container_add(GTK_CONTAINER(frame), inner);
-    gtk_box_pack_start(GTK_BOX(box), frame, FALSE, FALSE, 0);
-    return inner;
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    style::add_class(card, "lexe-card");
+    add_heading(card, title);
+    gtk_box_pack_start(GTK_BOX(box), card, FALSE, FALSE, 0);
+    return card;
 }
 
 GtkWidget* add_button_row(GtkWidget* box) {
@@ -1819,49 +1878,6 @@ void start_reclaim(Ui* ui, const std::string& id, int keep) {
         });
 }
 
-void start_install(Ui* ui) {
-    ui->install_stage = "progress";
-    refresh(ui);
-    const lexe::Paths paths = ui->paths;
-    const fs::path package = ui->package_path;
-    const std::string channel = ui->selected_channel;
-    const bool approve_compile = ui->approve_compile;
-    auto result = std::make_shared<lexe::InstallResult>();
-    auto failure = std::make_shared<std::string>();
-    run_task(
-        ui,
-        [paths, package, channel, approve_compile, result, failure] {
-            try {
-                lexe::InstallOptions options;
-                options.channel = channel;
-                // §5A: a separate, explicit act. Pressing Install is not it.
-                options.approve_compile = approve_compile;
-                *result = lexe::Installer(paths).install(package, options);
-            } catch (const std::exception& e) {
-                *failure = e.what();
-            }
-        },
-        [ui, result, failure] {
-            if (failure->empty()) {
-                ui->installed_id = result->id;
-                ui->installed_version = result->version;
-                ui->install_stage = "done";
-                ui->install_note.clear();
-                ui->integration_loaded = false; // install changed integration
-                ui->health_loaded = false;
-                set_status(ui, "Installed " + result->id + " " +
-                                   result->version + ".");
-            } else {
-                // Back to the consent screen with the failure stated; the
-                // verification state is unchanged, so the user may retry.
-                ui->install_stage = "details";
-                ui->install_note = "Installation failed: " + *failure;
-                set_status(ui, ui->install_note);
-            }
-            refresh(ui);
-        });
-}
-
 // ------------------------------------------------- opening a .lexe artifact
 
 /// Everything reading a `.lexe` produces, gathered off the UI thread. Each
@@ -1876,6 +1892,13 @@ struct PackageView {
     /// What this host can build, when the package is portable (§5A). Probed
     /// here with the other host facts so the pure view model only formats it.
     lexe::ToolchainReport toolchain;
+    /// The version of this application already installed here ("" if none).
+    /// The review screen used to be told nothing, so opening an installed app's
+    /// package offered a plain "Install" again.
+    std::string installed_version;
+    /// The package's best icon, read ONLY when every verification stage passed:
+    /// an image decoder is not something to feed bytes nobody vouched for.
+    std::vector<std::uint8_t> icon_bytes;
 };
 
 PackageView gather_package_view(const lexe::Paths& paths, const fs::path& file) {
@@ -1918,6 +1941,8 @@ PackageView gather_package_view(const lexe::Paths& paths, const fs::path& file) 
                 view.manifest->id, view.manifest->decoded_public_key(),
                 signature, retained);
             if (registry.is_installed(view.manifest->id)) {
+                view.installed_version =
+                    registry.current_version(view.manifest->id);
                 const lexe::InstallationRecord record =
                     registry.read_record(view.manifest->id);
                 view.delta = lexe::permission_delta(
@@ -1937,62 +1962,28 @@ PackageView gather_package_view(const lexe::Paths& paths, const fs::path& file) 
         view.manifest->application_kind == lexe::ApplicationType::Portable) {
         view.toolchain = lexe::probe_toolchain(view.manifest->build);
     }
+    if (view.report.ok()) {
+        try {
+            lexe::PackageReader reader(file);
+            std::vector<std::string> names;
+            for (const lexe::PackageEntry& e : reader.entries()) {
+                names.push_back(e.path);
+            }
+            const std::string best = lexe::gui::best_icon_entry(names);
+            if (!best.empty()) view.icon_bytes = reader.read_entry(best);
+        } catch (const std::exception&) {
+            view.icon_bytes.clear(); // no icon is a cosmetic loss, nothing more
+        }
+    }
     return view;
 }
 
-/// The handler decision. Dispatch is on the SIGNED manifest role, never on the
-/// file name (Definitive Architecture §15.1).
-void apply_package_view(Ui* ui, const PackageView& view) {
-    if (ui->window == nullptr) return;
-    const lexe::ui::OpenDispatch dispatch =
-        lexe::ui::decide_open_dispatch(view.report, view.manifest);
-
-    // The probe already ran for this package; reuse it for the Permissions page.
-    ui->caps = view.caps;
-    ui->caps_loaded = true;
-
-    if (dispatch.action == lexe::ui::OpenAction::LaunchApp) {
-        if (is_installed(ui->paths, dispatch.application_id)) {
-            set_status(ui, dispatch.reason);
-            navigate_app(ui, dispatch.application_id, "launch");
-            start_launch(ui, dispatch.application_id);
-            return;
-        }
-        ui->install_stage = "blocked";
-        ui->install_note =
-            lexe::ui::missing_launch_target_text(dispatch.application_id);
-        set_status(ui, dispatch.reason);
-        navigate(ui, "install");
-        return;
-    }
-
-    ui->vm = lexe::gui::build_view_model(
-        view.manifest, view.report, ui->package_path, ui->paths,
-        lexe::host_architecture(), view.eval, view.caps, view.delta,
-        /*payload_bytes=*/0, /*installed_version=*/"", view.toolchain);
-    ui->approve_compile = false; // a fresh package, a fresh decision
-    if (!ui->vm.channels.empty()) {
-        ui->selected_channel =
-            ui->vm.channels[static_cast<std::size_t>(ui->vm.active_channel)];
-    }
-    ui->install_stage = "details";
-    ui->install_note = dispatch.action == lexe::ui::OpenAction::Refuse
-                           ? dispatch.reason
-                           : std::string();
-    set_status(ui, dispatch.reason);
-    navigate(ui, "install");
-}
+void open_installer(Ui* ui, const fs::path& file);
 
 void start_open_file(Ui* ui, const fs::path& file) {
-    ui->package_path = file;
-    ui->install_stage = "working";
-    ui->install_note.clear();
-    navigate(ui, "install");
-    const lexe::Paths paths = ui->paths;
-    auto view = std::make_shared<PackageView>();
-    run_task(
-        ui, [paths, file, view] { *view = gather_package_view(paths, file); },
-        [ui, view] { apply_package_view(ui, *view); });
+    // A file chosen in the console gets the same installer window a
+    // double-click does: one review experience, not two.
+    open_installer(ui, file);
 }
 
 void choose_package_file(Ui* ui) {
@@ -2020,6 +2011,730 @@ void choose_package_file(Ui* ui) {
         g_free(filename);
         start_open_file(ui, chosen);
     }
+}
+
+// ===================================================== the installer window
+//
+// What double-clicking a `.lexe` opens. Deliberately NOT the management
+// console: one compact window about one file, with the app's icon and name at
+// the top, what it can do on this computer in plain words, and the command bar
+// pinned at the bottom so the decision is always on screen. Everything the
+// console showed is still here, folded under Details.
+//
+// Executing and installing are different acts and this window keeps them
+// apart: an application package whose version is already installed offers
+// OPEN as its primary action (Reinstall is secondary), and a launch reference
+// never shows an installer at all — it starts the application and the window
+// closes itself, staying only to explain a failure.
+//
+// The decisions are made by lexe::gui::plan_installer (installer_flow.hpp,
+// unit-tested); this code only renders them and runs the engine off-thread.
+
+struct InstallerWin {
+    Ui* ui = nullptr;
+    GtkWidget* window = nullptr;
+    GtkWidget* content = nullptr;
+    GtkWidget* footer = nullptr;
+    bool alive = true;
+    fs::path file;
+    // checking | review | refused | progress | done | failed | opening |
+    // launch-missing | launch-failed
+    std::string stage = "checking";
+    std::shared_ptr<PackageView> view;
+    lexe::gui::ViewModel vm;
+    lexe::gui::InstallerPlan plan;
+    bool downgrade_ok = false;
+    bool permissions_ok = false;
+    bool compile_ok = false;
+    std::string channel = "stable";
+    std::string error;
+    std::string app_id;       // the application this window is about
+    std::string launch_title; // display name while opening
+    lexe::ui::LaunchLines launch_lines;
+    GdkPixbuf* icon = nullptr;
+    GtkWidget* primary = nullptr;
+    GtkWidget* secondary = nullptr;
+};
+
+std::vector<std::shared_ptr<InstallerWin>>& live_installers() {
+    static std::vector<std::shared_ptr<InstallerWin>> live;
+    return live;
+}
+
+void ensure_window(Ui* ui);
+void ensure_theme(Ui* ui);
+void installer_render(InstallerWin* w);
+
+std::string lowercase(std::string text) {
+    for (char& c : text) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return text;
+}
+
+GtkWidget* label_with_class(const std::string& text, const char* klass,
+                            bool wrap = true) {
+    GtkWidget* label = gtk_label_new(text.c_str());
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(label), wrap ? TRUE : FALSE);
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    if (klass != nullptr) style::add_class(label, klass);
+    return label;
+}
+
+/// The app's icon at 64 px, or a lettered tile when the package has none.
+GtkWidget* installer_icon(InstallerWin* w) {
+    GtkWidget* tile = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    style::add_class(tile, "lexe-icon-tile");
+    gtk_widget_set_valign(tile, GTK_ALIGN_START);
+    if (w->icon != nullptr) {
+        gtk_box_pack_start(GTK_BOX(tile), gtk_image_new_from_pixbuf(w->icon),
+                           FALSE, FALSE, 0);
+    } else {
+        std::string letter = "?";
+        const bool trusted = w->plan.intent != lexe::gui::InstallIntent::Refused;
+        for (const char c : trusted ? w->vm.app_name : std::string()) {
+            if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+                letter = std::string(1, static_cast<char>(
+                                            std::toupper(static_cast<unsigned char>(c))));
+                break;
+            }
+        }
+        GtkWidget* l = gtk_label_new(letter.c_str());
+        style::add_class(l, "lexe-icon-letter");
+        gtk_widget_set_size_request(l, 64, 64);
+        gtk_box_pack_start(GTK_BOX(tile), l, FALSE, FALSE, 0);
+    }
+    return tile;
+}
+
+void installer_hero(InstallerWin* w, const std::string& headline,
+                    const std::string& sub) {
+    GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_box_pack_start(GTK_BOX(row), installer_icon(w), FALSE, FALSE, 0);
+    GtkWidget* text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_valign(text, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(text),
+                       label_with_class(headline, "lexe-hero-title"), FALSE,
+                       FALSE, 0);
+    if (!sub.empty()) {
+        gtk_box_pack_start(GTK_BOX(text), label_with_class(sub, "lexe-hero-sub"),
+                           FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(row), text, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(w->content), row, FALSE, FALSE, 0);
+}
+
+void installer_pill(GtkWidget* box, const std::string& severity,
+                    const std::string& text, const std::string& explainer) {
+    GtkWidget* row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget* pill = label_with_class(text, "lexe-pill", false);
+    style::add_class(pill, severity == "ok"        ? "ok"
+                           : severity == "caution" ? "caution"
+                                                   : "danger");
+    gtk_box_pack_start(GTK_BOX(row), pill, FALSE, FALSE, 0);
+    if (!explainer.empty()) {
+        gtk_box_pack_start(GTK_BOX(row), label_with_class(explainer, "lexe-muted"),
+                           FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+}
+
+void installer_capabilities(InstallerWin* w) {
+    if (w->plan.capabilities.empty()) return;
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    style::add_class(card, "lexe-card");
+    gtk_box_pack_start(GTK_BOX(card),
+                       label_with_class("On this computer, it", "lexe-section-heading"),
+                       FALSE, FALSE, 0);
+    for (const lexe::gui::CapabilityLine& line : w->plan.capabilities) {
+        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        const char* glyph = line.tone == "ok"        ? "✓"
+                            : line.tone == "caution" ? "!"
+                            : line.tone == "danger"  ? "✕"
+                                                     : "•";
+        GtkWidget* mark = label_with_class(glyph, "lexe-glyph", false);
+        style::add_class(mark, line.tone.c_str());
+        gtk_widget_set_valign(mark, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(row), mark, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(row), label_with_class(line.text, "lexe-body"),
+                           TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(card), row, FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(w->content), card, FALSE, FALSE, 0);
+}
+
+/// Everything the console's review page showed, folded away.
+void installer_details(InstallerWin* w) {
+    const lexe::gui::ViewModel& vm = w->vm;
+    GtkWidget* expander = gtk_expander_new("Details");
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_margin_top(box, 8);
+    if (!vm.refusal_text.empty()) add_section(box, "Verification:", vm.refusal_text);
+    {
+        std::string trust = vm.signature_text;
+        if (!vm.key_text.empty()) trust += "\n" + vm.key_text;
+        if (!vm.fingerprint_text.empty()) {
+            trust += "\nSigning key fingerprint: " + vm.fingerprint_text;
+        }
+        if (!vm.expected_fingerprint_text.empty()) {
+            trust += "\nExpected fingerprint: " + vm.expected_fingerprint_text;
+        }
+        if (!vm.identity_caveat.empty()) trust += "\n" + vm.identity_caveat;
+        add_section(box, "Authenticity & local trust:", trust);
+    }
+    if (!vm.app_id.empty()) add_section(box, "Application ID:", vm.app_id);
+    if (!vm.replacement_text.empty()) add_section(box, "Replaces:", vm.replacement_text);
+    add_section(box, "Source:", vm.source_text);
+    add_section(box, "Application type:", vm.type_text);
+    if (vm.requires_compile_approval) {
+        add_section(box, "Compiles on this machine:", vm.compile_text);
+    }
+    add_section(box, "Permissions:", vm.permissions_text);
+    if (!vm.permission_delta_text.empty()) {
+        add_section(box, "Permission changes:", vm.permission_delta_text);
+    }
+    add_section(box, "Installation:", vm.install_text);
+    add_section(box, "Updates:", vm.updates_text);
+    add_section(box, "Isolation on this platform:", vm.isolation_text);
+    add_section(box, "Where it goes:", vm.advanced_dirs_text);
+    add_section(box, "Removing it later:", vm.after_install_text);
+    add_section(box, "Verify later:", vm.verify_later_text);
+    if (vm.has_update_source && vm.channels.size() > 1) {
+        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Update channel:"), FALSE,
+                           FALSE, 0);
+        GtkWidget* combo = gtk_combo_box_text_new();
+        int active = 0;
+        for (std::size_t i = 0; i < vm.channels.size(); ++i) {
+            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo),
+                                           vm.channels[i].c_str());
+            if (vm.channels[i] == w->channel) active = static_cast<int>(i);
+        }
+        gtk_combo_box_set_active(GTK_COMBO_BOX(combo), active);
+        g_signal_connect(combo, "changed", G_CALLBACK(+[](GtkComboBox* c, gpointer d) {
+                             auto* win = static_cast<InstallerWin*>(d);
+                             gchar* text = gtk_combo_box_text_get_active_text(
+                                 GTK_COMBO_BOX_TEXT(c));
+                             if (text != nullptr) {
+                                 win->channel = text;
+                                 g_free(text);
+                             }
+                         }),
+                         w);
+        gtk_box_pack_start(GTK_BOX(row), combo, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+    }
+    gtk_container_add(GTK_CONTAINER(expander), box);
+    gtk_box_pack_start(GTK_BOX(w->content), expander, FALSE, FALSE, 4);
+}
+
+void installer_spinner(InstallerWin* w, const std::string& text) {
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+    gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
+    gtk_widget_set_vexpand(box, TRUE);
+    GtkWidget* spinner = gtk_spinner_new();
+    gtk_widget_set_size_request(spinner, 40, 40);
+    gtk_spinner_start(GTK_SPINNER(spinner));
+    gtk_box_pack_start(GTK_BOX(box), spinner, FALSE, FALSE, 0);
+    GtkWidget* label = gtk_label_new(text.c_str());
+    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_justify(GTK_LABEL(label), GTK_JUSTIFY_CENTER);
+    style::add_class(label, "lexe-body");
+    gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(w->content), box, TRUE, TRUE, 0);
+}
+
+void installer_center_mark(InstallerWin* w, const char* glyph, const char* klass,
+                           const std::string& headline,
+                           const std::string& detail) {
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_widget_set_valign(box, GTK_ALIGN_START);
+    gtk_widget_set_vexpand(box, TRUE);
+    // Alone on the page, the mark sits in the middle; under an icon tile the
+    // tile takes the top half and this follows it.
+    GList* existing = gtk_container_get_children(GTK_CONTAINER(w->content));
+    if (existing == nullptr) gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
+    g_list_free(existing);
+    GtkWidget* mark = gtk_label_new(glyph);
+    style::add_class(mark, klass);
+    gtk_box_pack_start(GTK_BOX(box), mark, FALSE, FALSE, 0);
+    for (const auto& [text, cls] :
+         {std::pair<std::string, const char*>{headline, "lexe-hero-title"},
+          std::pair<std::string, const char*>{detail, "lexe-muted"}}) {
+        if (text.empty()) continue;
+        GtkWidget* l = gtk_label_new(text.c_str());
+        gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
+        gtk_label_set_justify(GTK_LABEL(l), GTK_JUSTIFY_CENTER);
+        gtk_label_set_selectable(GTK_LABEL(l), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(l), 56);
+        style::add_class(l, cls);
+        gtk_box_pack_start(GTK_BOX(box), l, FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(w->content), box, TRUE, TRUE, 0);
+}
+
+GtkWidget* installer_button(InstallerWin* w, const std::string& label,
+                            void (*on_click)(InstallerWin*), const char* klass,
+                            bool at_start = false) {
+    GtkWidget* button = gtk_button_new_with_label(label.c_str());
+    if (klass != nullptr) style::add_class(button, klass);
+    struct Cb { InstallerWin* w; void (*fn)(InstallerWin*); };
+    g_signal_connect_data(
+        button, "clicked", G_CALLBACK(+[](GtkButton*, gpointer d) {
+            Cb* cb = static_cast<Cb*>(d);
+            cb->fn(cb->w);
+        }),
+        new Cb{w, on_click},
+        [](gpointer d, GClosure*) { delete static_cast<Cb*>(d); },
+        GConnectFlags(0));
+    if (at_start) {
+        gtk_box_pack_start(GTK_BOX(w->footer), button, FALSE, FALSE, 0);
+    } else {
+        gtk_box_pack_end(GTK_BOX(w->footer), button, FALSE, FALSE, 0);
+    }
+    return button;
+}
+
+GtkWidget* installer_consent(InstallerWin* w, const std::string& label, bool* flag) {
+    GtkWidget* check = gtk_check_button_new_with_label(label.c_str());
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check), *flag ? TRUE : FALSE);
+    gtk_label_set_line_wrap(GTK_LABEL(gtk_bin_get_child(GTK_BIN(check))), TRUE);
+    struct Cb { InstallerWin* w; bool* flag; };
+    g_signal_connect_data(
+        check, "toggled", G_CALLBACK(+[](GtkToggleButton* t, gpointer d) {
+            Cb* cb = static_cast<Cb*>(d);
+            *cb->flag = gtk_toggle_button_get_active(t) != FALSE;
+            // Only the buttons depend on the consents; no rebuild, so focus
+            // and scroll position stay where the user left them.
+            const lexe::gui::InstallerPlan& plan = cb->w->plan;
+            if (cb->w->primary != nullptr) {
+                gtk_widget_set_sensitive(
+                    cb->w->primary,
+                    lexe::gui::primary_enabled(plan, cb->w->downgrade_ok,
+                                               cb->w->permissions_ok,
+                                               cb->w->compile_ok));
+            }
+            if (cb->w->secondary != nullptr) {
+                gtk_widget_set_sensitive(
+                    cb->w->secondary,
+                    lexe::gui::secondary_enabled(plan, cb->w->permissions_ok,
+                                                 cb->w->compile_ok));
+            }
+        }),
+        new Cb{w, flag}, [](gpointer d, GClosure*) { delete static_cast<Cb*>(d); },
+        GConnectFlags(0));
+    gtk_box_pack_start(GTK_BOX(w->content), check, FALSE, FALSE, 0);
+    return check;
+}
+
+void installer_close(InstallerWin* w) {
+    if (w->window != nullptr) gtk_widget_destroy(w->window);
+}
+
+/// "Manage…": the application's page in the console, which is where its
+/// settings, compatibility, diagnostics and uninstall live.
+void installer_manage(InstallerWin* w) {
+    Ui* ui = w->ui;
+    const std::string id = w->app_id;
+    ensure_window(ui);
+    gtk_window_present(GTK_WINDOW(ui->window));
+    ui->errors_entry = false;
+    navigate_app(ui, id, w->stage == "launch-failed" ? "errors" : "launch");
+    installer_close(w);
+}
+
+void installer_open_app(InstallerWin* w);
+void installer_install(InstallerWin* w, bool reinstall);
+
+void installer_do_primary(InstallerWin* w) {
+    if (w->plan.primary_is_open) {
+        installer_open_app(w);
+    } else {
+        installer_install(w, false);
+    }
+}
+void installer_do_reinstall(InstallerWin* w) { installer_install(w, true); }
+void installer_back_to_review(InstallerWin* w) {
+    w->stage = w->plan.intent == lexe::gui::InstallIntent::Refused ? "refused"
+                                                                   : "review";
+    installer_render(w);
+}
+
+void installer_render(InstallerWin* w) {
+    if (!w->alive || w->window == nullptr) return;
+    clear_container(w->content);
+    clear_container(w->footer);
+    w->primary = nullptr;
+    w->secondary = nullptr;
+    const lexe::gui::InstallerPlan& plan = w->plan;
+    std::string title = plan.window_title;
+
+    if (w->stage == "checking") {
+        title = "Opening " + w->file.filename().string();
+        installer_spinner(w, "Checking " + w->file.filename().string() +
+                                 "…\nSignature, contents and what it asks for.");
+        installer_button(w, "Cancel", installer_close, nullptr);
+    } else if (w->stage == "review" || w->stage == "refused") {
+        installer_hero(w, plan.headline, plan.subline);
+        installer_pill(w->content, plan.trust_severity, plan.trust_badge,
+                       plan.trust_explainer);
+        if (!plan.context_line.empty()) {
+            gtk_box_pack_start(GTK_BOX(w->content),
+                               label_with_class(plan.context_line, "lexe-body"),
+                               FALSE, FALSE, 0);
+        }
+        if (!plan.blocked_reason.empty()) {
+            add_severity(w->content, "danger", plan.blocked_reason);
+        }
+        installer_capabilities(w);
+        if (w->stage == "review") {
+            if (plan.needs_downgrade_consent) {
+                installer_consent(w, plan.downgrade_consent_label, &w->downgrade_ok);
+            }
+            if (plan.needs_permission_consent) {
+                installer_consent(w, plan.permission_consent_label,
+                                  &w->permissions_ok);
+            }
+            if (plan.needs_compile_consent && plan.compile_possible) {
+                installer_consent(w, plan.compile_consent_label, &w->compile_ok);
+            }
+        }
+        installer_details(w);
+
+        if (w->stage == "refused") {
+            installer_button(w, "Close", installer_close, "lexe-primary");
+        } else {
+            w->primary = installer_button(
+                w, plan.primary_label, installer_do_primary,
+                plan.primary_destructive ? "lexe-destructive" : "lexe-primary");
+            gtk_widget_set_sensitive(
+                w->primary, lexe::gui::primary_enabled(plan, w->downgrade_ok,
+                                                       w->permissions_ok,
+                                                       w->compile_ok));
+            if (!plan.secondary_label.empty()) {
+                w->secondary = installer_button(w, plan.secondary_label,
+                                                installer_do_reinstall, nullptr);
+                gtk_widget_set_sensitive(
+                    w->secondary, lexe::gui::secondary_enabled(
+                                      plan, w->permissions_ok, w->compile_ok));
+            }
+            installer_button(w, "Cancel", installer_close, nullptr);
+            if (!w->view->installed_version.empty()) {
+                installer_button(w, "Manage…", installer_manage, "lexe-link", true);
+            }
+        }
+    } else if (w->stage == "progress") {
+        installer_spinner(w, plan.progress_label + "\nVerifying again, extracting "
+                                                   "and registering it.");
+        GtkWidget* wait = installer_button(w, "Cancel", installer_close, nullptr);
+        gtk_widget_set_sensitive(wait, FALSE); // an install is transactional; it finishes
+    } else if (w->stage == "done") {
+        if (w->icon != nullptr) {
+            GtkWidget* tile = installer_icon(w);
+            gtk_widget_set_halign(tile, GTK_ALIGN_CENTER);
+            gtk_widget_set_valign(tile, GTK_ALIGN_END);
+            gtk_widget_set_vexpand(tile, TRUE);
+            gtk_box_pack_start(GTK_BOX(w->content), tile, TRUE, TRUE, 0);
+        }
+        installer_center_mark(w, "✓", "lexe-done-mark", plan.done_headline,
+                              plan.done_detail);
+        w->primary = installer_button(w, "Open", installer_open_app, "lexe-primary");
+        installer_button(w, "Done", installer_close, nullptr);
+        installer_button(w, "Manage…", installer_manage, "lexe-link", true);
+    } else if (w->stage == "failed") {
+        installer_center_mark(w, "✕", "lexe-fail-mark",
+                              "Couldn't " + lowercase(plan.primary_is_open
+                                                          ? std::string("reinstall")
+                                                          : plan.primary_label) +
+                                  " " + w->vm.app_name,
+                              w->error + "\n\nNothing was changed: an install "
+                                         "either completes or leaves the "
+                                         "previous state exactly as it was.");
+        w->primary = installer_button(w, "Try again", installer_back_to_review,
+                                      "lexe-primary");
+        installer_button(w, "Close", installer_close, nullptr);
+    } else if (w->stage == "opening") {
+        title = w->launch_title;
+        installer_spinner(w, "Opening " + w->launch_title + "…");
+    } else if (w->stage == "launch-missing") {
+        title = "Not installed";
+        installer_center_mark(w, "?", "lexe-fail-mark",
+                              w->app_id + " isn't installed",
+                              lexe::ui::missing_launch_target_text(w->app_id));
+        installer_button(w, "Close", installer_close, "lexe-primary");
+    } else if (w->stage == "launch-failed") {
+        title = w->launch_title;
+        installer_center_mark(w, "✕", "lexe-fail-mark", w->launch_lines.headline,
+                              w->launch_lines.detail);
+        installer_button(w, "Close", installer_close, nullptr);
+        w->primary = installer_button(w, "Show diagnostics", installer_manage,
+                                      "lexe-primary");
+    }
+    gtk_window_set_title(GTK_WINDOW(w->window),
+                         title.empty() ? "Lexe" : title.c_str());
+    gtk_widget_show_all(w->window);
+    if (w->primary != nullptr && gtk_widget_get_sensitive(w->primary)) {
+        gtk_widget_set_can_default(w->primary, TRUE);
+        gtk_widget_grab_default(w->primary);
+        gtk_widget_grab_focus(w->primary);
+    }
+}
+
+void installer_set_icon(InstallerWin* w, const std::vector<std::uint8_t>& bytes) {
+    if (bytes.empty()) return;
+    GdkPixbufLoader* loader = gdk_pixbuf_loader_new();
+    gdk_pixbuf_loader_set_size(loader, 64, 64);
+    GError* error = nullptr;
+    if (gdk_pixbuf_loader_write(loader, bytes.data(), bytes.size(), &error) &&
+        gdk_pixbuf_loader_close(loader, &error)) {
+        if (GdkPixbuf* pixbuf = gdk_pixbuf_loader_get_pixbuf(loader)) {
+            w->icon = GDK_PIXBUF(g_object_ref(pixbuf));
+            gtk_window_set_icon(GTK_WINDOW(w->window), w->icon);
+        }
+    } else {
+        gdk_pixbuf_loader_close(loader, nullptr);
+    }
+    if (error != nullptr) g_error_free(error);
+    g_object_unref(loader);
+}
+
+/// Start an installed application, detached, and close this window once it is
+/// running. Stays open only to explain a failure.
+void installer_launch(const std::shared_ptr<InstallerWin>& w) {
+    w->stage = "opening";
+    installer_render(w.get());
+    const lexe::Paths paths = w->ui->paths;
+    const std::string id = w->app_id;
+    auto report = std::make_shared<lexe::ExecutionReport>();
+    auto failure = std::make_shared<std::string>();
+    run_task(
+        w->ui,
+        [paths, id, report, failure] {
+            try {
+                lexe::RunRequest request;
+                request.id = id;
+                request.detach = true;
+                request.allow_terminal_spawn = true;
+                *report = lexe::run_application(paths, request);
+            } catch (const std::exception& e) {
+                *failure = e.what();
+            }
+        },
+        [w, report, failure] {
+            if (!w->alive) return;
+            if (failure->empty()) {
+                installer_close(w.get());
+                return;
+            }
+            w->launch_lines = lexe::ui::format_launch_failure(*failure);
+            w->stage = "launch-failed";
+            installer_render(w.get());
+        });
+}
+
+std::shared_ptr<InstallerWin> shared_of(InstallerWin* w) {
+    for (const auto& live : live_installers()) {
+        if (live.get() == w) return live;
+    }
+    return {};
+}
+
+void installer_open_app(InstallerWin* raw) {
+    const std::shared_ptr<InstallerWin> w = shared_of(raw);
+    if (!w) return;
+    if (w->launch_title.empty()) w->launch_title = w->vm.app_name;
+    installer_launch(w);
+}
+
+void installer_install(InstallerWin* raw, bool reinstall) {
+    const std::shared_ptr<InstallerWin> w = shared_of(raw);
+    if (!w) return;
+    (void)reinstall; // same transaction; the plan already says what it replaces
+    w->stage = "progress";
+    installer_render(w.get());
+    Ui* ui = w->ui;
+    const lexe::Paths paths = ui->paths;
+    const fs::path package = w->file;
+    lexe::InstallOptions options;
+    options.channel = w->channel;
+    // Each a separate, explicit act — the plan only enables the button once
+    // the matching box is ticked, and nothing here defaults any of them on.
+    options.approve_compile = w->plan.needs_compile_consent && w->compile_ok;
+    options.allow_downgrade = w->plan.needs_downgrade_consent && w->downgrade_ok;
+    options.allow_permission_expansion =
+        w->plan.needs_permission_consent && w->permissions_ok;
+    auto result = std::make_shared<lexe::InstallResult>();
+    auto failure = std::make_shared<std::string>();
+    run_task(
+        ui,
+        [paths, package, options, result, failure] {
+            try {
+                *result = lexe::Installer(paths).install(package, options);
+            } catch (const std::exception& e) {
+                *failure = e.what();
+            }
+        },
+        [w, ui, result, failure] {
+            // The console, if it is open, reflects the change either way.
+            ui->integration_loaded = false;
+            ui->health_loaded = false;
+            if (ui->window != nullptr) refresh(ui);
+            if (!w->alive) return;
+            if (failure->empty()) {
+                w->app_id = result->id;
+                w->launch_title = w->vm.app_name;
+                w->stage = "done";
+            } else {
+                w->error = *failure;
+                w->stage = "failed";
+            }
+            installer_render(w.get());
+        });
+}
+
+void installer_apply_view(const std::shared_ptr<InstallerWin>& w) {
+    const PackageView& view = *w->view;
+    const lexe::ui::OpenDispatch dispatch =
+        lexe::ui::decide_open_dispatch(view.report, view.manifest);
+    Ui* ui = w->ui;
+    ui->caps = view.caps;
+    ui->caps_loaded = true;
+
+    if (dispatch.action == lexe::ui::OpenAction::LaunchApp) {
+        // A launch reference: this is EXECUTING, not installing. No review
+        // screen; start the application and get out of the way.
+        w->app_id = dispatch.application_id;
+        if (!is_installed(ui->paths, w->app_id)) {
+            w->stage = "launch-missing";
+            installer_render(w.get());
+            return;
+        }
+        const std::optional<lexe::Manifest> installed =
+            try_manifest(ui->paths, w->app_id);
+        w->launch_title = installed.has_value() ? installed->name : w->app_id;
+        installer_launch(w);
+        return;
+    }
+
+    w->vm = lexe::gui::build_view_model(
+        view.manifest, view.report, w->file, ui->paths,
+        lexe::host_architecture(), view.eval, view.caps, view.delta,
+        /*payload_bytes=*/0, view.installed_version, view.toolchain);
+    w->plan = lexe::gui::plan_installer(w->vm, view.report, view.manifest,
+                                        view.installed_version, view.caps,
+                                        view.delta);
+    w->app_id = w->vm.app_id;
+    if (view.manifest.has_value()) w->channel = view.manifest->updates_channel;
+    installer_set_icon(w.get(), view.icon_bytes);
+    w->stage = w->plan.intent == lexe::gui::InstallIntent::Refused ? "refused"
+                                                                   : "review";
+    installer_render(w.get());
+}
+
+/// Accept `.lexe` files dropped on `widget`: each opens in its own installer
+/// window, exactly as a double-click would. Dropping is a way to OPEN a file,
+/// never a shortcut past review — the installer runs the same verification and
+/// asks the same questions.
+void accept_dropped_packages(Ui* ui, GtkWidget* widget) {
+    static GtkTargetEntry targets[] = {
+        {const_cast<gchar*>("text/uri-list"), 0, 0}};
+    gtk_drag_dest_set(widget, GTK_DEST_DEFAULT_ALL, targets, 1, GDK_ACTION_COPY);
+    g_signal_connect(
+        widget, "drag-data-received",
+        G_CALLBACK(+[](GtkWidget*, GdkDragContext*, gint, gint,
+                       GtkSelectionData* data, guint, guint, gpointer d) {
+            Ui* u = static_cast<Ui*>(d);
+            gchar** uris = gtk_selection_data_get_uris(data);
+            if (uris == nullptr) return;
+            for (gchar** uri = uris; *uri != nullptr; ++uri) {
+                gchar* path = g_filename_from_uri(*uri, nullptr, nullptr);
+                if (path == nullptr) continue; // not a local file
+                open_installer(u, fs::path(path));
+                g_free(path);
+            }
+            g_strfreev(uris);
+        }),
+        ui);
+}
+
+/// Open the installer window for `file`. Opening a file that already has a
+/// window brings that window forward instead of starting a second review.
+void open_installer(Ui* ui, const fs::path& file) {
+    ensure_theme(ui);
+    std::error_code ec;
+    const fs::path canonical = fs::weakly_canonical(file, ec);
+    const fs::path key = ec ? file : canonical;
+    for (const auto& live : live_installers()) {
+        if (live->alive && live->file == key && live->window != nullptr) {
+            gtk_window_present(GTK_WINDOW(live->window));
+            return;
+        }
+    }
+    auto w = std::make_shared<InstallerWin>();
+    w->ui = ui;
+    w->file = key;
+    w->view = std::make_shared<PackageView>();
+    live_installers().push_back(w);
+
+    w->window = gtk_application_window_new(ui->app);
+    gtk_window_set_default_size(GTK_WINDOW(w->window), 580, 600);
+    gtk_window_set_position(GTK_WINDOW(w->window), GTK_WIN_POS_CENTER);
+    g_signal_connect(w->window, "destroy", G_CALLBACK(+[](GtkWidget*, gpointer d) {
+                         auto* raw = static_cast<InstallerWin*>(d);
+                         raw->alive = false;
+                         raw->window = nullptr;
+                         if (raw->icon != nullptr) {
+                             g_object_unref(raw->icon);
+                             raw->icon = nullptr;
+                         }
+                         auto& live = live_installers();
+                         for (auto it = live.begin(); it != live.end(); ++it) {
+                             if (it->get() == raw) {
+                                 live.erase(it); // in-flight tasks hold their own ref
+                                 break;
+                             }
+                         }
+                     }),
+                     w.get());
+    // Escape closes, as it does in every dialog — except mid-install, where
+    // the transaction finishes regardless and closing would only hide it.
+    g_signal_connect(w->window, "key-press-event",
+                     G_CALLBACK(+[](GtkWidget*, GdkEventKey* event, gpointer d) -> gboolean {
+                         auto* raw = static_cast<InstallerWin*>(d);
+                         if (event->keyval == GDK_KEY_Escape &&
+                             raw->stage != "progress") {
+                             installer_close(raw);
+                             return TRUE;
+                         }
+                         return FALSE;
+                     }),
+                     w.get());
+
+    GtkWidget* root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(w->window), root);
+    GtkWidget* scroller = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_NEVER,
+                                   GTK_POLICY_AUTOMATIC);
+    w->content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+    gtk_container_set_border_width(GTK_CONTAINER(w->content), 24);
+    gtk_container_add(GTK_CONTAINER(scroller), w->content);
+    gtk_box_pack_start(GTK_BOX(root), scroller, TRUE, TRUE, 0);
+    w->footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    style::add_class(w->footer, "lexe-actionbar");
+    gtk_box_pack_start(GTK_BOX(root), w->footer, FALSE, FALSE, 0);
+
+    accept_dropped_packages(ui, w->window);
+    installer_render(w.get());
+    gtk_window_present(GTK_WINDOW(w->window));
+
+    const lexe::Paths paths = ui->paths;
+    auto view = w->view;
+    run_task(
+        ui, [paths, key, view] { *view = gather_package_view(paths, key); },
+        [w] {
+            if (w->alive) installer_apply_view(w);
+        });
 }
 
 // ------------------------------------------------------------- handlers
@@ -2050,34 +2765,6 @@ void on_open_app_clicked(GtkButton*, gpointer data) {
 
 void on_choose_file_clicked(GtkButton*, gpointer data) {
     choose_package_file(action_of(data)->ui);
-}
-
-void on_install_clicked(GtkButton*, gpointer data) {
-    start_install(action_of(data)->ui);
-}
-
-void on_channel_changed(GtkComboBox* combo, gpointer data) {
-    Ui* ui = action_of(data)->ui;
-    if (ui->building) return;
-    gchar* text = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo));
-    if (text != nullptr && *text != '\0') ui->selected_channel = text;
-    if (text != nullptr) g_free(text);
-}
-
-void on_approve_compile_toggled(GtkToggleButton* toggle, gpointer data) {
-    Ui* ui = action_of(data)->ui;
-    if (ui->building) return;
-    ui->approve_compile = gtk_toggle_button_get_active(toggle) != FALSE;
-    // Rebuild so the Install button follows the decision immediately; a
-    // disabled button whose reason is a tick box above it is a dead end.
-    refresh(ui);
-}
-
-void on_install_reset_clicked(GtkButton*, gpointer data) {
-    Ui* ui = action_of(data)->ui;
-    ui->install_stage = "choose";
-    ui->install_note.clear();
-    refresh(ui);
 }
 
 void on_launch_clicked(GtkButton*, gpointer data) {
@@ -2342,33 +3029,198 @@ void on_setting_toggled(GtkToggleButton* toggle, gpointer data) {
 
 // ----------------------------------------------------------------- Home
 
+// ----------------------------------------------------- app rows and icons
+// The console's lists used to be text: a name, a version, an id and an ISO
+// timestamp, and opening an application took three clicks (Apps → the app →
+// Launch). Each installed application is now a row with its own icon, when it
+// was last used in words, and Open right there.
+
+std::int64_t now_epoch() {
+    return static_cast<std::int64_t>(g_get_real_time() / G_USEC_PER_SEC);
+}
+
+/// The installed icon for `id`, from the hicolor copies the runtime itself
+/// installed (validated at install time), or a lettered tile.
+GtkWidget* app_icon_widget(const lexe::Paths& paths, const std::string& id,
+                           const std::string& name, int size) {
+    GtkWidget* tile = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    style::add_class(tile, "lexe-icon-tile");
+    if (size < 56) style::add_class(tile, "small");
+    gtk_widget_set_valign(tile, GTK_ALIGN_CENTER);
+    const fs::path& theme = paths.icons_dir(); // already <...>/icons/hicolor
+    const std::string file = "lexe-" + id;
+    for (const char* sub : {"128x128", "256x256", "64x64"}) {
+        const fs::path candidate = theme / sub / "apps" / (file + ".png");
+        std::error_code ec;
+        if (!fs::is_regular_file(candidate, ec)) continue;
+        if (GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file_at_size(
+                candidate.string().c_str(), size, size, nullptr)) {
+            gtk_box_pack_start(GTK_BOX(tile), gtk_image_new_from_pixbuf(pixbuf),
+                               FALSE, FALSE, 0);
+            g_object_unref(pixbuf);
+            return tile;
+        }
+    }
+    std::string letter = "?";
+    for (const char c : name) {
+        if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+            letter = std::string(
+                1, static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+            break;
+        }
+    }
+    GtkWidget* l = gtk_label_new(letter.c_str());
+    style::add_class(l, size < 56 ? "lexe-icon-letter-small" : "lexe-icon-letter");
+    gtk_widget_set_size_request(l, size, size);
+    gtk_box_pack_start(GTK_BOX(tile), l, FALSE, FALSE, 0);
+    return tile;
+}
+
+/// Open an installed application the way a user means it: started, detached,
+/// and out of the way. A failure lands on its Launch section, stated.
+void quick_open(Ui* ui, const std::string& id, const std::string& name) {
+    set_status(ui, "Opening " + name + "…");
+    const lexe::Paths paths = ui->paths;
+    auto report = std::make_shared<lexe::ExecutionReport>();
+    auto failure = std::make_shared<std::string>();
+    run_task(
+        ui,
+        [paths, id, report, failure] {
+            try {
+                lexe::RunRequest request;
+                request.id = id;
+                request.detach = true;
+                request.allow_terminal_spawn = true;
+                *report = lexe::run_application(paths, request);
+            } catch (const std::exception& e) {
+                *failure = e.what();
+            }
+        },
+        [ui, id, name, failure] {
+            if (ui->window == nullptr) return;
+            if (failure->empty()) {
+                set_status(ui, name + " is open.");
+                return;
+            }
+            set_status(ui, "Could not open " + name + ".");
+            navigate_app(ui, id, "launch");
+            ui->launch_reported = true;
+            ui->launch_lines = lexe::ui::format_launch_failure(*failure);
+            refresh(ui);
+        });
+}
+
+void on_quick_open_clicked(GtkButton*, gpointer data) {
+    Action* action = action_of(data);
+    quick_open(action->ui, action->a, action->b);
+}
+
+/// One installed application: icon, name, last used, Open and Manage.
+void add_app_row(Ui* ui, GtkWidget* box, const std::string& id) {
+    const std::optional<lexe::InstallationRecord> record = try_record(ui->paths, id);
+    GtkWidget* card = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
+    style::add_class(card, "lexe-card");
+    gtk_box_pack_start(GTK_BOX(box), card, FALSE, FALSE, 0);
+    if (!record.has_value()) {
+        GtkWidget* text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        add_heading(text, id);
+        add_body(text, "Its installation record could not be read. Open it to "
+                       "diagnose or repair.");
+        gtk_box_pack_start(GTK_BOX(card), text, TRUE, TRUE, 0);
+        GtkWidget* manage = gtk_button_new_with_label("Manage");
+        connect_action(manage, "clicked", G_CALLBACK(on_open_app_clicked), ui, id,
+                       "diagnostics");
+        gtk_widget_set_valign(manage, GTK_ALIGN_CENTER);
+        gtk_box_pack_end(GTK_BOX(card), manage, FALSE, FALSE, 0);
+        return;
+    }
+    const std::optional<lexe::Manifest> manifest = try_manifest(ui->paths, id);
+    const lexe::ui::AppRow row =
+        lexe::ui::build_app_row(*record, manifest, try_trust(ui->paths, id));
+    gtk_box_pack_start(GTK_BOX(card), app_icon_widget(ui->paths, id, row.title, 40),
+                       FALSE, FALSE, 0);
+    GtkWidget* text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_valign(text, GTK_ALIGN_CENTER);
+    GtkWidget* name = label_with_class(row.title, "lexe-section-heading");
+    style::add_class(name, "lexe-row-title");
+    gtk_box_pack_start(GTK_BOX(text), name, FALSE, FALSE, 0);
+    GtkWidget* meta = label_with_class(
+        "Version " + record->version + "  ·  " +
+            lexe::ui::friendly_last_opened(record->last_run_at,
+                                           record->last_exit_code, now_epoch()),
+        "lexe-muted");
+    gtk_widget_set_tooltip_text(meta, (row.subtitle + "\n" + row.last_run + "\n" +
+                                       row.trust_line)
+                                          .c_str());
+    gtk_box_pack_start(GTK_BOX(text), meta, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(card), text, TRUE, TRUE, 0);
+
+    GtkWidget* manage = gtk_button_new_with_label("Manage");
+    connect_action(manage, "clicked", G_CALLBACK(on_open_app_clicked), ui, id,
+                   "launch");
+    gtk_widget_set_valign(manage, GTK_ALIGN_CENTER);
+    GtkWidget* open = gtk_button_new_with_label("Open");
+    style::add_class(open, "lexe-primary");
+    connect_action(open, "clicked", G_CALLBACK(on_quick_open_clicked), ui, id,
+                   row.title);
+    gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
+    gtk_box_pack_end(GTK_BOX(card), open, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(card), manage, FALSE, FALSE, 0);
+}
+
 void build_home_page(Ui* ui) {
     GtkWidget* box = ui->home_box;
-    add_title(box, ".LEXE");
-    add_body(box, "Runtime " + ui->runtime_version + "  ·  package format " +
-                      lexe::version::kPackageFormat + "\nApplications and data "
-                      "live under " + ui->paths.home().string() + ".");
-
-    // The prominent primary action.
-    {
-        GtkWidget* row = add_button_row(box);
-        GtkWidget* install = add_button(row, "Install a .lexe file…",
-                                        G_CALLBACK(on_choose_file_clicked), ui);
-        style_class(install, "suggested-action");
-        gtk_widget_set_size_request(install, 260, 44);
-        add_button(row, "Browse installed applications",
-                   G_CALLBACK(on_nav_clicked), ui, "apps");
+    std::vector<std::string> ids;
+    try {
+        ids = lexe::Registry(ui->paths).list_installed();
+    } catch (const std::exception&) {
     }
 
-    // Installed applications.
-    {
-        std::size_t installed = 0;
-        try {
-            installed = lexe::Registry(ui->paths).list_installed().size();
-        } catch (const std::exception&) {
-        }
-        GtkWidget* card = add_card(box, "Installed applications");
-        add_body(card, lexe::ui::format_installed_count(installed));
+    GtkWidget* top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget* titles = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_box_pack_start(GTK_BOX(titles), label_with_class("Your applications",
+                                                         "lexe-hero-title"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(
+        GTK_BOX(titles),
+        label_with_class(ids.empty()
+                             ? std::string("Nothing installed yet. Double-click "
+                                           "a .lexe file, or choose one here.")
+                             : lexe::ui::format_installed_count(ids.size()) +
+                                   " Each runs in its own sandbox.",
+                         "lexe-muted"),
+        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(top), titles, TRUE, TRUE, 0);
+    GtkWidget* install = gtk_button_new_with_label("Install a .lexe file…");
+    style::add_class(install, "lexe-primary");
+    gtk_widget_set_valign(install, GTK_ALIGN_CENTER);
+    connect_action(install, "clicked", G_CALLBACK(on_choose_file_clicked), ui);
+    gtk_box_pack_end(GTK_BOX(top), install, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), top, FALSE, FALSE, 4);
+
+    // The applications themselves, most recently used first: the console's
+    // front page is about what you have, not about how many.
+    std::vector<std::pair<std::string, std::string>> by_recent; // (last_run, id)
+    for (const std::string& id : ids) {
+        const std::optional<lexe::InstallationRecord> record =
+            try_record(ui->paths, id);
+        by_recent.emplace_back(record.has_value() ? record->last_run_at
+                                                  : std::string(),
+                               id);
+    }
+    std::sort(by_recent.begin(), by_recent.end(),
+              [](const auto& x, const auto& y) { return x.first > y.first; });
+    constexpr std::size_t kHomeRows = 6;
+    for (std::size_t i = 0; i < by_recent.size() && i < kHomeRows; ++i) {
+        add_app_row(ui, box, by_recent[i].second);
+    }
+    if (by_recent.size() > kHomeRows) {
+        GtkWidget* more = gtk_button_new_with_label(
+            ("See all " + std::to_string(by_recent.size()) + " applications").c_str());
+        style::add_class(more, "lexe-link");
+        gtk_widget_set_halign(more, GTK_ALIGN_START);
+        connect_action(more, "clicked", G_CALLBACK(on_nav_clicked), ui, "apps");
+        gtk_box_pack_start(GTK_BOX(box), more, FALSE, FALSE, 0);
     }
 
     // System health, from DesktopIntegration::verify().
@@ -2449,165 +3301,19 @@ void add_spinner_page(GtkWidget* box, const std::string& message) {
     add_body(box, message);
 }
 
-void build_install_details(Ui* ui, GtkWidget* box) {
-    const lexe::gui::ViewModel& vm = ui->vm;
-
-    add_severity(box, vm.trust_severity, vm.status_text);
-    add_title(box, vm.app_name);
-    add_body(box, vm.publisher_line);
-    add_body(box, vm.version_line);
-
-    {
-        std::string trust = vm.signature_text;
-        if (!vm.key_text.empty()) trust += "\n" + vm.key_text;
-        if (!vm.fingerprint_text.empty()) {
-            trust += "\nSigning key fingerprint: " + vm.fingerprint_text;
-        }
-        if (!vm.identity_caveat.empty()) trust += "\n" + vm.identity_caveat;
-        add_section(box, "Authenticity & local trust:", trust);
-    }
-    add_section(box, "Source:", vm.source_text);
-    add_section(box, "Application Type:", vm.type_text);
-    if (vm.requires_compile_approval) {
-        add_section(box, "Compiles on this machine:", vm.compile_text);
-    }
-    add_section(box, "Permissions:", vm.permissions_text);
-    if (!vm.permission_delta_text.empty()) {
-        add_section(box, "Permission changes:", vm.permission_delta_text);
-    }
-    add_section(box, "Installation:", vm.install_text);
-    add_section(box, "Updates:", vm.updates_text);
-    add_section(box, "Isolation on this platform:", vm.isolation_text);
-    add_section(box, "After install:", vm.after_install_text);
-    add_section(box, "Verify later:", vm.verify_later_text);
-
-    GtkWidget* expander = gtk_expander_new("Advanced options");
-    GtkWidget* advanced = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(advanced), 8);
-    add_section(advanced, "Directories used:", vm.advanced_dirs_text);
-    GtkWidget* channel_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(channel_row), gtk_label_new("Update channel:"),
-                       FALSE, FALSE, 0);
-    ui->channel_combo = gtk_combo_box_text_new();
-    for (const std::string& channel : vm.channels) {
-        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(ui->channel_combo),
-                                       channel.c_str());
-    }
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ui->channel_combo), vm.active_channel);
-    connect_action(ui->channel_combo, "changed", G_CALLBACK(on_channel_changed),
-                   ui);
-    gtk_box_pack_start(GTK_BOX(channel_row), ui->channel_combo, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(advanced), channel_row, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(expander), advanced);
-    gtk_box_pack_start(GTK_BOX(box), expander, FALSE, FALSE, 0);
-
-    // The compile consent sits with the button it gates, and is only offered
-    // when this host can actually build the package: a tick box that can only
-    // lead to a failed install is worse than no tick box.
-    ui->approve_compile_check = nullptr;
-    if (vm.requires_compile_approval && vm.compile_possible) {
-        ui->approve_compile_check =
-            gtk_check_button_new_with_label(vm.compile_consent_label.c_str());
-        gtk_toggle_button_set_active(
-            GTK_TOGGLE_BUTTON(ui->approve_compile_check),
-            ui->approve_compile ? TRUE : FALSE);
-        gtk_label_set_line_wrap(
-            GTK_LABEL(gtk_bin_get_child(GTK_BIN(ui->approve_compile_check))),
-            TRUE);
-        connect_action(ui->approve_compile_check, "toggled",
-                       G_CALLBACK(on_approve_compile_toggled), ui);
-        gtk_box_pack_start(GTK_BOX(box), ui->approve_compile_check, FALSE,
-                           FALSE, 0);
-    }
-
-    GtkWidget* row = add_button_row(box);
-    GtkWidget* install =
-        add_button(row, "Install", G_CALLBACK(on_install_clicked), ui);
-    const bool compile_approved =
-        !vm.requires_compile_approval || ui->approve_compile;
-    const bool ready = vm.can_install && compile_approved;
-    gtk_widget_set_sensitive(install, ready ? TRUE : FALSE);
-    if (ready) style_class(install, "suggested-action");
-    if (vm.can_install && !compile_approved) {
-        add_body(box, "Install is waiting on your approval to compile this "
-                      "application's source on this machine.");
-    }
-    add_button(row, "Choose a different file…",
-               G_CALLBACK(on_choose_file_clicked), ui);
-    if (!vm.can_install) {
-        add_body(box, "Install is disabled: the package must pass every "
-                      "verification stage and the local key decision must "
-                      "allow it.");
-    }
-}
-
 void build_install_page(Ui* ui) {
     GtkWidget* box = ui->install_box;
-
-    if (ui->install_stage == "choose") {
-        add_title(box, "Install a .lexe file");
-        add_body(box,
-                 "Choose a .lexe artifact. What happens next is decided by the "
-                 "SIGNED manifest inside it, not by the file's name: an "
-                 "application package opens this review screen, while a launch "
-                 "reference goes straight to that application's page.");
-        GtkWidget* row = add_button_row(box);
-        GtkWidget* choose = add_button(row, "Choose a .lexe file…",
-                                       G_CALLBACK(on_choose_file_clicked), ui);
-        style_class(choose, "suggested-action");
-        gtk_widget_set_size_request(choose, 260, 44);
-        return;
-    }
-
-    if (ui->install_stage == "working") {
-        add_title(box, "Checking the file");
-        add_spinner_page(box, "Running the verification pipeline on " +
-                                  ui->package_path.filename().string() + "…");
-        return;
-    }
-
-    if (ui->install_stage == "blocked") {
-        add_title(box, ui->package_path.filename().string());
-        add_severity(box, "danger", "This file was not acted on.");
-        add_body(box, ui->install_note);
-        GtkWidget* row = add_button_row(box);
-        add_button(row, "Choose a different file…",
-                   G_CALLBACK(on_choose_file_clicked), ui);
-        add_button(row, "Back to Home", G_CALLBACK(on_nav_clicked), ui, "home");
-        return;
-    }
-
-    if (ui->install_stage == "progress") {
-        add_title(box, "Installing");
-        add_spinner_page(box, "Installing " + ui->vm.app_name + "…");
-        return;
-    }
-
-    if (ui->install_stage == "done") {
-        add_title(box, "Installed");
-        add_severity(box, "ok",
-                     ui->vm.app_name + " " + ui->installed_version +
-                         " has been installed for the current user.");
-        add_body(box, "It now has a menu entry and a launch reference, and it "
-                      "can be launched from its application page here.");
-        GtkWidget* row = add_button_row(box);
-        GtkWidget* open =
-            add_button(row, "Open its application page",
-                       G_CALLBACK(on_open_app_clicked), ui, ui->installed_id,
-                       "launch");
-        style_class(open, "suggested-action");
-        add_button(row, "Launch now", G_CALLBACK(on_launch_clicked), ui,
-                   ui->installed_id);
-        add_button(row, "Install another file…",
-                   G_CALLBACK(on_install_reset_clicked), ui);
-        return;
-    }
-
-    // "details"
-    if (!ui->install_note.empty()) {
-        add_severity(box, "danger", ui->install_note);
-    }
-    build_install_details(ui, box);
+    add_title(box, "Install a .lexe file");
+    add_body(box,
+             "Choose a .lexe file and it opens in the installer, exactly as a "
+             "double-click from your file manager does. What happens next is "
+             "decided by the SIGNED manifest inside it, never by the file's "
+             "name: an application package is reviewed before anything is "
+             "written, and a launch shortcut opens its application.");
+    GtkWidget* row = add_button_row(box);
+    GtkWidget* choose = add_button(row, "Choose a .lexe file…",
+                                   G_CALLBACK(on_choose_file_clicked), ui);
+    style::add_class(choose, "lexe-primary");
 }
 
 // ----------------------------------------------------------------- Apps
@@ -2637,30 +3343,7 @@ void build_apps_page(Ui* ui) {
         return;
     }
 
-    for (const std::string& id : ids) {
-        const std::optional<lexe::InstallationRecord> record =
-            try_record(ui->paths, id);
-        if (!record.has_value()) {
-            GtkWidget* card = add_card(box, id);
-            add_body(card, "The installation record for this application could "
-                           "not be read.");
-            continue;
-        }
-        const lexe::ui::AppRow row = lexe::ui::build_app_row(
-            *record, try_manifest(ui->paths, id), try_trust(ui->paths, id));
-
-        GtkWidget* button = gtk_button_new();
-        GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_container_set_border_width(GTK_CONTAINER(content), 8);
-        add_heading(content, row.title);
-        add_body(content, row.subtitle);
-        add_body(content, row.last_run);
-        add_body(content, row.trust_line);
-        gtk_container_add(GTK_CONTAINER(button), content);
-        connect_action(button, "clicked", G_CALLBACK(on_open_app_clicked), ui,
-                       row.id, "launch");
-        gtk_box_pack_start(GTK_BOX(box), button, FALSE, FALSE, 0);
-    }
+    for (const std::string& id : ids) add_app_row(ui, box, id);
 }
 
 // ------------------------------------------------------------- App page
@@ -3147,17 +3830,44 @@ void build_app_page(Ui* ui) {
     const std::optional<lexe::Manifest> manifest =
         try_manifest(ui->paths, ui->app_id);
 
-    GtkWidget* header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget* header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_container_set_border_width(GTK_CONTAINER(header), 16);
     gtk_box_pack_start(GTK_BOX(box), header, FALSE, FALSE, 0);
-    add_button(add_button_row(header), "← All applications",
-               G_CALLBACK(on_nav_clicked), ui, "apps");
-    add_title(header, manifest.has_value() && !manifest->name.empty()
-                          ? manifest->name
-                          : record->id);
-    add_body(header, "Version " + record->version + "  ·  " + record->id);
-    add_body(header, lexe::ui::format_last_run(record->last_run_at,
-                                               record->last_exit_code));
+    GtkWidget* back = add_button(add_button_row(header), "← All applications",
+                                 G_CALLBACK(on_nav_clicked), ui, "apps");
+    style::add_class(back, "lexe-link");
+    const std::string display = manifest.has_value() && !manifest->name.empty()
+                                    ? manifest->name
+                                    : record->id;
+    GtkWidget* hero = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_box_pack_start(GTK_BOX(hero),
+                       app_icon_widget(ui->paths, record->id, display, 56), FALSE,
+                       FALSE, 0);
+    GtkWidget* titles = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_valign(titles, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(titles), label_with_class(display, "lexe-hero-title"),
+                       FALSE, FALSE, 0);
+    std::string meta = "Version " + record->version + "  ·  " + record->id;
+    if (manifest.has_value()) meta = manifest->publisher_name + "  ·  " + meta;
+    gtk_box_pack_start(GTK_BOX(titles), label_with_class(meta, "lexe-muted"),
+                       FALSE, FALSE, 0);
+    GtkWidget* when = label_with_class(
+        lexe::ui::friendly_last_opened(record->last_run_at, record->last_exit_code,
+                                       now_epoch()),
+        "lexe-muted");
+    gtk_widget_set_tooltip_text(
+        when, lexe::ui::format_last_run(record->last_run_at, record->last_exit_code)
+                  .c_str());
+    gtk_box_pack_start(GTK_BOX(titles), when, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hero), titles, TRUE, TRUE, 0);
+    GtkWidget* open = gtk_button_new_with_label("Open");
+    style::add_class(open, "lexe-primary");
+    gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
+    gtk_widget_set_size_request(open, 110, -1);
+    connect_action(open, "clicked", G_CALLBACK(on_quick_open_clicked), ui,
+                   record->id, display);
+    gtk_box_pack_end(GTK_BOX(hero), open, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(header), hero, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE,
                        FALSE, 0);
@@ -3320,7 +4030,6 @@ void refresh(Ui* ui) {
     ui->compat_auto_radio = nullptr;
     ui->compat_manual_radio = nullptr;
     ui->compat_combo = nullptr;
-    ui->channel_combo = nullptr;
     ui->error_details_view = nullptr;
     ui->wait_check = nullptr;
     ui->uninstall_radios[0] = nullptr;
@@ -3406,13 +4115,22 @@ void apply_theme(Ui* ui, const std::string& value) {
     style::apply(style::theme_from_string(value));
 }
 
-void build_window(Ui* ui) {
+/// Apply the persisted theme once per process, whichever window comes first:
+/// the console, or an installer window opened by a double-click.
+void ensure_theme(Ui* ui) {
+    static bool done = false;
+    if (done) return;
+    done = true;
     // Before the first style::apply, which overwrites the flag this reads.
     if (GtkSettings* settings = gtk_settings_get_default()) {
         g_object_get(settings, "gtk-application-prefer-dark-theme",
                      &ui->desktop_prefers_dark, nullptr);
     }
     apply_theme(ui, ui->settings.get("theme"));
+}
+
+void build_window(Ui* ui) {
+    ensure_theme(ui);
 
     ui->window = gtk_application_window_new(ui->app);
     gtk_window_set_default_size(GTK_WINDOW(ui->window), 1020, 740);
@@ -3498,6 +4216,7 @@ void build_window(Ui* ui) {
     gtk_widget_set_margin_bottom(ui->status_label, 4);
     gtk_box_pack_start(GTK_BOX(root), ui->status_label, FALSE, FALSE, 0);
 
+    accept_dropped_packages(ui, ui->window);
     gtk_widget_show_all(ui->window);
     set_status(ui, ui->status);
 }
@@ -3598,6 +4317,17 @@ gint on_command_line(GApplication*, GApplicationCommandLine* cmdline,
         g_application_command_line_printerr(cmdline, "%s\n", error.c_str());
         show_fatal(error);
         return 1;
+    }
+
+    // A double-click is about ONE file: it gets its own compact installer
+    // window (or, for a launch reference, just starts the app), never the
+    // management console. Still one process — GApplication forwards every
+    // later invocation here.
+    if (request.mode == lexe::ui::StartMode::OpenFile) {
+        fs::path file(request.argument);
+        if (file.is_relative() && !cwd.empty()) file = fs::path(cwd) / file;
+        open_installer(ui, file);
+        return 0;
     }
 
     ensure_window(ui);

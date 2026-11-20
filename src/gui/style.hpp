@@ -176,6 +176,32 @@ entry:disabled { color: #7a7a7a; }
 .lexe-nav-item.selected        { background-color: #3a3a3a; border-left: 3px solid @lexe_accent; font-weight: 600; }
 .lexe-nav-item.selected:hover  { background-color: #404040; }
 
+/* ---- The installer window (lexe-ui --open): hero, trust pill, capability
+   rows. Same metrics in both palettes; only colours differ. */
+.lexe-hero-title { font-size: 22px; font-weight: 700; color: @lexe_text; }
+.lexe-hero-sub   { font-size: 13px; color: @lexe_muted; }
+.lexe-icon-tile  { background-color: @lexe_surface; border: 1px solid @lexe_border; border-radius: 16px; padding: 8px; }
+.lexe-icon-letter { font-size: 34px; font-weight: 700; color: @lexe_accent; }
+.lexe-icon-tile.small { border-radius: 10px; padding: 4px; }
+.lexe-icon-letter-small { font-size: 20px; font-weight: 700; color: @lexe_accent; }
+.lexe-row-title { font-size: 14px; }
+.lexe-pill { border-radius: 999px; padding: 3px 12px; font-size: 12px; font-weight: 600; }
+.lexe-pill.ok      { background-color: #393d1b; color: #6ccb5f; }
+.lexe-pill.caution { background-color: #433519; color: #fce100; }
+.lexe-pill.danger  { background-color: #442726; color: #ff99a4; }
+.lexe-glyph { font-size: 14px; font-weight: 700; min-width: 20px; }
+.lexe-glyph.ok      { color: #6ccb5f; }
+.lexe-glyph.caution { color: #fce100; }
+.lexe-glyph.danger  { color: #ff99a4; }
+.lexe-glyph.neutral { color: @lexe_muted; }
+.lexe-done-mark { font-size: 48px; font-weight: 700; color: #6ccb5f; }
+.lexe-fail-mark { font-size: 48px; font-weight: 700; color: #ff99a4; }
+button.lexe-destructive { background-color: #c42b1c; color: #ffffff; font-weight: 600; border: 1px solid #c42b1c; }
+button.lexe-destructive:hover { background-color: #d13438; }
+button.lexe-destructive:disabled { background-color: #404040; color: #7a7a7a; border-color: @lexe_border; }
+button.lexe-link { background-color: transparent; border: none; color: @lexe_accent; min-width: 0; padding: 5px 4px; }
+button.lexe-link:hover { text-decoration: underline; background-color: transparent; }
+
 .lexe-mono { font-family: monospace; font-size: 12px; }
 )CSS";
     }
@@ -282,6 +308,32 @@ entry:disabled { color: #a0a0a0; }
 .lexe-nav-item:hover           { background-color: #ededed; }
 .lexe-nav-item.selected        { background-color: #e8e8e8; border-left: 3px solid @lexe_accent; font-weight: 600; }
 .lexe-nav-item.selected:hover  { background-color: #e0e0e0; }
+
+/* ---- The installer window (lexe-ui --open): hero, trust pill, capability
+   rows. Same metrics in both palettes; only colours differ. */
+.lexe-hero-title { font-size: 22px; font-weight: 700; color: @lexe_text; }
+.lexe-hero-sub   { font-size: 13px; color: @lexe_muted; }
+.lexe-icon-tile  { background-color: @lexe_surface; border: 1px solid @lexe_border; border-radius: 16px; padding: 8px; }
+.lexe-icon-letter { font-size: 34px; font-weight: 700; color: @lexe_accent; }
+.lexe-icon-tile.small { border-radius: 10px; padding: 4px; }
+.lexe-icon-letter-small { font-size: 20px; font-weight: 700; color: @lexe_accent; }
+.lexe-row-title { font-size: 14px; }
+.lexe-pill { border-radius: 999px; padding: 3px 12px; font-size: 12px; font-weight: 600; }
+.lexe-pill.ok      { background-color: #dff6dd; color: #0f7b0f; }
+.lexe-pill.caution { background-color: #fff4ce; color: #9d5d00; }
+.lexe-pill.danger  { background-color: #fde7e9; color: #c42b1c; }
+.lexe-glyph { font-size: 14px; font-weight: 700; min-width: 20px; }
+.lexe-glyph.ok      { color: #0f7b0f; }
+.lexe-glyph.caution { color: #9d5d00; }
+.lexe-glyph.danger  { color: #c42b1c; }
+.lexe-glyph.neutral { color: @lexe_muted; }
+.lexe-done-mark { font-size: 48px; font-weight: 700; color: #0f7b0f; }
+.lexe-fail-mark { font-size: 48px; font-weight: 700; color: #c42b1c; }
+button.lexe-destructive { background-color: #c42b1c; color: #ffffff; font-weight: 600; border: 1px solid #c42b1c; }
+button.lexe-destructive:hover { background-color: #d13438; }
+button.lexe-destructive:disabled { background-color: #e5e5e5; color: #a0a0a0; border-color: @lexe_border; }
+button.lexe-link { background-color: transparent; border: none; color: @lexe_accent; min-width: 0; padding: 5px 4px; }
+button.lexe-link:hover { text-decoration: underline; background-color: transparent; }
 
 .lexe-mono { font-family: monospace; font-size: 12px; }
 )CSS";

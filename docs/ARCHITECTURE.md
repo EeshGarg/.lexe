@@ -183,14 +183,23 @@ because no colors or sizes are hard-coded over the theme. `lexe-builder` opens
 with a first-run welcome screen (shown once).
 
 * **`lexe-ui`** — the consumer and power-user frontend, and the registered
-  `.lexe` handler. `--open <file.lexe>` verifies the artifact, reads its SIGNED
-  role and dispatches: role `application` → the install flow (verification →
-  primary screen → Install → progress → success with Launch); role `launch` →
-  resolve the application id and launch it. `--app <id>` opens an application's
-  page (".LEXE Menu"); `--errors <id>` opens its Error History (".LEXE Error").
-  Single-instance: a second invocation focuses the existing window and
-  navigates. Pages: Home, Install, Apps → App (Launch, Compatibility, Runtime,
-  Permissions, Diagnostics, Error History, Uninstall), Settings.
+  `.lexe` handler. `--open <file.lexe>` (a double-click) opens a compact
+  **installer window** for that one file — never the console — verifies it,
+  reads its SIGNED role and dispatches: role `application` → a review showing
+  the app's icon, publisher, trust state in plain words and what it can do on
+  this computer (derived from its permissions and the probed sandbox), with the
+  action decided by `gui/installer_flow.hpp`: **Install**, **Update**,
+  **Downgrade** (separate consent), or — when that version is already
+  installed — **Open** with Reinstall secondary. New permissions on an update
+  and compiling a portable package are each their own consent. A package that
+  fails verification gets a plain-language reason and none of its claims shown
+  as fact. Role `launch` → the application starts and the window closes
+  itself, staying only to explain a failure. Dropped `.lexe` files open the
+  same way. `--app <id>` opens an application's page (".LEXE Menu");
+  `--errors <id>` its Error History (".LEXE Error"). Single-instance: later
+  invocations are forwarded to the running process. Console pages: Home (your
+  applications, each with Open), Install, Apps → App (Launch, Compatibility,
+  Runtime, Permissions, Diagnostics, Error History, Uninstall), Settings.
 * **`lexe-builder`** — a seven-step wizard (Source → Dependencies → Architecture →
   Installer → Signing → Output → Build) that turns a project folder into a signed
   `.lexe`. The Build step enforces the Core Portable / Tux32 Core 1 gate (a

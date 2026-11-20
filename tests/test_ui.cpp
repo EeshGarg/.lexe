@@ -1000,4 +1000,27 @@ TEST_CASE("a failed removal says the active version was not touched") {
     CHECK(text.find("not touched") != std::string::npos);
 }
 
+TEST_CASE("friendly times") {
+    const auto t = lexe::ui::parse_utc_timestamp("2026-11-20T05:00:00Z");
+    REQUIRE(t.has_value());
+    CHECK(*t == 1795150800); // date -u -d 2026-11-20T05:00:00Z +%s
+    CHECK_FALSE(lexe::ui::parse_utc_timestamp("yesterday").has_value());
+    CHECK_FALSE(lexe::ui::parse_utc_timestamp("2026-13-01T00:00:00Z").has_value());
+
+    CHECK(lexe::ui::relative_time(*t, *t + 5) == "just now");
+    CHECK(lexe::ui::relative_time(*t, *t + 60) == "1 minute ago");
+    CHECK(lexe::ui::relative_time(*t, *t + 7 * 60) == "7 minutes ago");
+    CHECK(lexe::ui::relative_time(*t, *t + 3 * 3600) == "3 hours ago");
+    CHECK(lexe::ui::relative_time(*t, *t + 86400 + 10) == "yesterday");
+    CHECK(lexe::ui::relative_time(*t, *t + 5 * 86400) == "5 days ago");
+    CHECK(lexe::ui::relative_time(*t, *t + 40 * 86400) == "on 20 Nov 2026");
+    CHECK(lexe::ui::relative_time(*t, *t - 100) == "just now"); // clock skew
+
+    CHECK(lexe::ui::friendly_last_opened("", 0, *t) == "Not opened yet");
+    CHECK(lexe::ui::friendly_last_opened("2026-11-20T05:00:00Z", 0, *t + 120) ==
+          "Last opened 2 minutes ago");
+    CHECK(contains(lexe::ui::friendly_last_opened("2026-11-20T05:00:00Z", 3, *t + 120),
+              "exit code 3"));
+}
+
 } // TEST_SUITE("ui")
